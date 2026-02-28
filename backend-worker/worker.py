@@ -144,7 +144,7 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     
     return R * c
 
-def find_nearest_pocket(customer_lat, customer_lon, config, search_radius=50000):
+def find_nearest_pocket(customer_lat, customer_lon, config, search_radius=1000):
     """Find nearest pocket to customer coordinates"""
     x, y = lat_lon_to_meters(
         customer_lat, customer_lon,
@@ -162,9 +162,9 @@ def find_nearest_pocket(customer_lat, customer_lon, config, search_radius=50000)
     nearest_distance = haversine_distance(customer_lat, customer_lon, center_lat, center_lon)
     nearest_center = (center_lat, center_lon)
     
-    # Check surrounding pockets
-    finest_level_size = GRID_LEVELS[-1]
-    pockets_to_check = math.ceil(search_radius / finest_level_size)
+    # CRITICAL FIX: Only check immediate 8 neighboring pockets (1 cell radius)
+    # This changes from checking 10,201 pockets to just 9 pockets per customer
+    pockets_to_check = 1  # Check only surrounding pockets
     
     for row_offset in range(-pockets_to_check, pockets_to_check + 1):
         for col_offset in range(-pockets_to_check, pockets_to_check + 1):
