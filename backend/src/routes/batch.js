@@ -14,29 +14,6 @@ const branchFinderService = require('../services/BranchFinderService');
 
 const router = express.Router();
 
-// Create a dedicated Redis client for Python worker communication
-const Redis = require('ioredis');
-const pythonRedisClient = new Redis({
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-  retryStrategy: (times) => {
-    const delay = Math.min(times * 50, 2000);
-    return delay;
-  },
-});
-
-pythonRedisClient.on('error', (error) => {
-  logger.error('Python Redis client error', { error: error.message });
-});
-
-pythonRedisClient.on('connect', () => {
-  logger.info('Python Redis client connected');
-});
-
-pythonRedisClient.on('ready', () => {
-  logger.info('Python Redis client ready');
-});
-
 // Create uploads directory for disk storage
 const uploadDir = path.join(__dirname, '../../uploads');
 if (!fs.existsSync(uploadDir)) {
@@ -361,26 +338,31 @@ router.post(
         config
       };
       
-      // Ensure Redis client is ready
-      if (pythonRedisClient.status !== 'ready') {
-        logger.warn('Python Redis client not ready, waiting...', { status: pythonRedisClient.status, jobId });
-        await new Promise((resolve) => {
-          if (pythonRedisClient.status === 'ready') {
-            resolve();
-          } else {
-            pythonRedisClient.once('ready', resolve);
-          }
-        });
-        logger.info('Python Redis client now ready', { jobId });
-      }
-      
-      // Use the dedicated Python Redis client (not Bull's client)
+      // CRITICAL FIX: Use Bull's existing Redis client instead of separate pythonRedisClient
+      // This avoids the "ready" status issue that was causing uploads to hang
       try {
-        await pythonRedisClient.lpush('python_batch_jobs', JSON.stringify(jobPayload));
-        console.log("4. Raw Redis push finished.");
+        await batchQueue.client.lpush('python_batch_jobs', JSON.stringify(jobPayload));
+        console.log("4. Raw Redis push finished using Bull's client.");
         logger.info('Python job queued successfully', { jobId });
       } catch (err) {
-        logger.error('Failed to queue Python job', { error: err.message, jobId });
+        logger.error('Failed to queue Python job', { error: err.message, stack: err.stack, jobId });
+        
+        // Clean up uploaded file on error
+        if (fs.existsSync(filePath)) {
+          try {
+            fs.unlinkSync(filePath);
+            logger.info('Cleaned up uploaded file after Redis error', { jobId, filePath });
+          } catch (cleanupErr) {
+            logger.warn('Failed to clean up file after Redis error', { jobId, filePath });
+          }
+        }
+        
+        // Update job status to failed
+        await query(
+          `UPDATE jobs SET status = 'failed', error = $1 WHERE job_id = $2`,
+          ['Failed to queue job to Python worker: ' + err.message, jobId]
+        );
+        
         throw new AppError('Failed to queue job to Python worker', 500, 'REDIS_PUSH_ERROR');
       }
 

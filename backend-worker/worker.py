@@ -162,6 +162,9 @@ def find_nearest_pocket(customer_lat, customer_lon, config, search_radius=1000):
     nearest_distance = haversine_distance(customer_lat, customer_lon, center_lat, center_lon)
     nearest_center = (center_lat, center_lon)
     
+    # Get finest level size
+    finest_level_size = GRID_LEVELS[-1]
+    
     # CRITICAL FIX: Only check immediate 8 neighboring pockets (1 cell radius)
     # This changes from checking 10,201 pockets to just 9 pockets per customer
     pockets_to_check = 1  # Check only surrounding pockets
@@ -418,17 +421,20 @@ def process_job(job_data):
         
         print(f"💾 Saving {len(all_mappings)} mappings to database...")
         
-        # Bulk insert mappings
+        # Bulk insert mappings in small batches to avoid PostgreSQL parameter limit
         if all_mappings:
-            mappings_df = pd.DataFrame(all_mappings)
-            mappings_df.to_sql(
-                'customer_pocket_mappings',
-                db_engine,
-                if_exists='append',
-                index=False,
-                method='multi',
-                chunksize=1000
-            )
+            batch_size = 100
+            for i in range(0, len(all_mappings), batch_size):
+                batch = all_mappings[i:i + batch_size]
+                mappings_df = pd.DataFrame(batch)
+                mappings_df.to_sql(
+                    'customer_pocket_mappings',
+                    db_engine,
+                    if_exists='append',
+                    index=False
+                )
+                if (i + batch_size) % 1000 == 0:
+                    print(f"  Saved {min(i + batch_size, len(all_mappings))}/{len(all_mappings)} mappings...")
         
         # Finalize job
         stats = {
