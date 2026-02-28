@@ -1,0 +1,130 @@
+I see exactly why your frontend is giving you the silent treatment!
+
+You built a great Python worker to handle large files, but your Node.js API is actually "stealing" the file and trying to process it before Python ever gets a chance.
+
+In batch.js, inside your /encode route, you have this code:
+
+JavaScript
+// Quick row count to determine processing strategy
+const workbook = xlsx.read(fs.readFileSync(filePath), { type: 'buffer' });
+const sheetName = workbook.SheetNames[0];
+const sheet = workbook.Sheets[sheetName];
+const data = xlsx.utils.sheet_to_json(sheet);
+While you wrote this just to get a "quick row count" to decide whether to use Node or Python, xlsx.read loads the entire massive file into your server's RAM synchronously. Node.js freezes completely, crashes silently, and never sends the jobId back to your React frontend. Thus, the frontend waits forever and shows no progress bar.
+
+Here are the exact fixes for backend/src/routes/batch.js to get this working smoothly.
+
+Fix 1: Stop Parsing Excel in Node.js
+Instead of freezing the server to count exact rows, we will use File Size as an instant, zero-memory proxy to decide between the Node.js and Python workers. (Rule of thumb: 500KB is roughly 5,000 rows of coordinate data).
+
+Replace your entire POST /encode route with this:
+
+JavaScript
+router.post(
+  '/encode',
+  upload.single('file'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) {
+      throw new AppError('No file uploaded', 400, 'NO_FILE');
+    }
+
+    const fileName = req.file.originalname;
+    const filePath = req.file.path;
+    const fileSizeMB = req.file.size / (1024 * 1024);
+    
+    // We cannot use xlsx.read() here because large files will crash the Node.js event loop.
+    // Instead, we use file size as a fast, safe proxy for the Python worker threshold.
+    // 0.5 MB is approximately 5000 rows of standard location data.
+    const usePythonWorker = fileSizeMB > 0.5; 
+
+    // Get current configuration
+    const configResult = await query('SELECT * FROM config WHERE id = 1');
+    const config = configResult.rows.length > 0 ? {
+      originLat: configResult.rows[0].origin_lat,
+      originLon: configResult.rows[0].origin_lon,
+      alphabet: configResult.rows[0].alphabet,
+    } : {};
+
+    const jobId = uuidv4();
+
+    // Create job in database (Setting total to 0, the worker will update it with exact count)
+    await query(
+      `INSERT INTO jobs (job_id, type, status, total, data)
+       VALUES ($1, 'batch_encode', 'pending', 0, $2)`,
+      [jobId, JSON.stringify({ 
+        fileName,
+        worker: usePythonWorker ? 'python' : 'nodejs'
+      })]
+    );
+
+    if (usePythonWorker) {
+      logger.info('Routing to Python worker (large file)', { jobId, fileSizeMB, fileName });
+
+      const jobPayload = JSON.stringify({
+        jobId,
+        filePath,
+        fileName,
+        config
+      });
+      
+      await redisClient.lPush('python_batch_jobs', jobPayload);
+      
+      res.json({
+        message: 'Large file uploaded successfully. Processing with optimized Python worker.',
+        jobId,
+        fileName,
+        worker: 'python',
+        statusUrl: `/api/v1/batch/status/${jobId}`,
+      });
+    } else {
+      logger.info('Routing to Node.js worker (small file)', { jobId, fileSizeMB, fileName });
+
+      // Only parse the file in Node if we know it's small!
+      const workbook = xlsx.read(fs.readFileSync(filePath), { type: 'buffer' });
+      const data = xlsx.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+
+      await query('UPDATE jobs SET total = $1 WHERE job_id = $2', [data.length, jobId]);
+
+      await batchQueue.add({
+        jobId,
+        data,
+        config,
+        fileName,
+        filePath, 
+      });
+
+      res.json({
+        message: 'File uploaded successfully. Processing in background.',
+        jobId,
+        fileName,
+        total: data.length,
+        worker: 'nodejs',
+        statusUrl: `/api/v1/batch/status/${jobId}`,
+      });
+    }
+  })
+);
+Fix 2: Prevent the Download Route from Crashing
+In your GET /download/:jobId route, there is a hidden bug that will trigger when a job finishes. The pg (Postgres) driver automatically parses JSONB columns into Javascript objects.
+
+If you try to run JSON.parse() on an object that is already parsed, Node will throw a SyntaxError, and your file download will fail.
+
+Find this code in your /download/:jobId route:
+
+JavaScript
+    const job = jobRecord.rows[0];
+    const jobData = job.data ? JSON.parse(job.data) : {};
+Change it to safely handle the JSON format:
+
+JavaScript
+    const job = jobRecord.rows[0];
+    // Postgres pg driver auto-parses JSONB. Only parse if it comes back as a string.
+    const jobData = typeof job.data === 'string' ? JSON.parse(job.data) : (job.data || {});
+What about worker.py and the Services?
+I reviewed worker.py, MappingService.js, and BranchFinderService.js.
+
+MappingService.js: The baseIndex bug mentioned in your docs is correctly fixed (index * 9).
+
+worker.py: Your chunking logic with Pandas is perfect for memory management. Now that Node.js isn't hoarding the file, the queue payload will instantly push to Redis, and Python will be able to do its job.
+
+Make those two changes to batch.js, restart your Node server, and try uploading the large file again. Your React frontend should instantly show the progress bar moving! Let me know if you run into any other snags.

@@ -1,0 +1,227 @@
+import axios, { AxiosInstance, AxiosError } from 'axios';
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api/v1';
+
+class ApiService {
+  private client: AxiosInstance;
+
+  constructor() {
+    this.client = axios.create({
+      baseURL: API_URL,
+      timeout: 120000, // 2 minutes for large file uploads
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    // Request interceptor
+    this.client.interceptors.request.use(
+      (config) => {
+        // Add any auth tokens here if needed
+        return config;
+      },
+      (error) => Promise.reject(error)
+    );
+
+    // Response interceptor
+    this.client.interceptors.response.use(
+      (response) => response,
+      (error: AxiosError) => {
+        if (error.response) {
+          // Server responded with error
+          console.error('API Error:', error.response.data);
+        } else if (error.request) {
+          // Request made but no response
+          console.error('Network Error:', error.message);
+        }
+        return Promise.reject(error);
+      }
+    );
+  }
+
+  // Configuration endpoints
+  async getConfig() {
+    const response = await this.client.get('/config');
+    return response.data;
+  }
+
+  async updateConfig(config: any) {
+    const response = await this.client.put('/config', config);
+    return response.data;
+  }
+
+  async getConfigHistory(limit = 10, offset = 0) {
+    const response = await this.client.get('/config/history', {
+      params: { limit, offset },
+    });
+    return response.data;
+  }
+
+  // Branch endpoints
+  async getBranches(params?: { limit?: number; offset?: number; search?: string }) {
+    const response = await this.client.get('/branches', { params });
+    return response.data;
+  }
+
+  async getBranch(id: string) {
+    const response = await this.client.get(`/branches/${id}`);
+    return response.data;
+  }
+
+  async createBranch(branch: any) {
+    const response = await this.client.post('/branches', branch);
+    return response.data;
+  }
+
+  async updateBranch(id: string, branch: any) {
+    const response = await this.client.put(`/branches/${id}`, branch);
+    return response.data;
+  }
+
+  async deleteBranch(id: string) {
+    const response = await this.client.delete(`/branches/${id}`);
+    return response.data;
+  }
+
+  async uploadBranches(file: File) {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await this.client.post('/branches/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    return response.data;
+  }
+
+  async getJobStatus(jobId: string) {
+    const response = await this.client.get(`/jobs/${jobId}`);
+    return response.data;
+  }
+
+  async listJobs(params?: { status?: string; type?: string; limit?: number }) {
+    const response = await this.client.get('/jobs', { params });
+    return response.data;
+  }
+
+  async retryJob(jobId: string) {
+    const response = await this.client.post(`/jobs/${jobId}/retry`);
+    return response.data;
+  }
+
+  async deleteJob(jobId: string) {
+    const response = await this.client.delete(`/jobs/${jobId}`);
+    return response.data;
+  }
+
+  async bulkDeleteJobs(params: { jobIds?: string[]; status?: string }) {
+    const response = await this.client.post('/jobs/bulk-delete', params);
+    return response.data;
+  }
+
+  async exportBranches() {
+    const response = await this.client.get('/branches/export', {
+      responseType: 'blob',
+    });
+    return response.data;
+  }
+
+  // Pocket ID endpoints
+  async encodePocketId(lat: number, lon: number) {
+    const response = await this.client.post('/pocket/encode', { lat, lon });
+    return response.data;
+  }
+
+  async decodePocketId(pocketId: string) {
+    const response = await this.client.post('/pocket/decode', { pocketId });
+    return response.data;
+  }
+
+  async validatePocketId(pocketId: string) {
+    const response = await this.client.post('/pocket/validate', { pocketId });
+    return response.data;
+  }
+
+  // Nearest branch endpoints
+  async findNearest(lat: number, lon: number, limit = 5, maxDistance?: number) {
+    const response = await this.client.post('/nearest', {
+      lat,
+      lon,
+      limit,
+      maxDistance,
+    });
+    return response.data;
+  }
+
+  async findNearestFallback(lat: number, lon: number, limit = 5, maxDistance?: number) {
+    const response = await this.client.post('/nearest/fallback', {
+      lat,
+      lon,
+      limit,
+      maxDistance,
+    });
+    return response.data;
+  }
+
+  async findWithinPocket(pocketId: string) {
+    const response = await this.client.get(`/nearest/within-pocket/${pocketId}`);
+    return response.data;
+  }
+
+  // Batch processing endpoints
+  async batchEncode(file: File) {
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    try {
+      // Try as JSON first (new non-blocking behavior)
+      const response = await this.client.post('/batch/encode', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+      return response.data;
+    } catch (error: any) {
+      // If it's a blob response (shouldn't happen anymore), handle it
+      if (error.response?.headers['content-type']?.includes('application/vnd.openxmlformats')) {
+        return error.response.data;
+      }
+      throw error;
+    }
+  }
+
+  async getBatchStatus(jobId: string) {
+    const response = await this.client.get(`/batch/status/${jobId}`);
+    return response.data;
+  }
+
+  async downloadBatchResult(jobId: string) {
+    const response = await this.client.get(`/batch/download/${jobId}`, {
+      responseType: 'blob',
+    });
+    return response.data;
+  }
+
+  // Template endpoints
+  async downloadBatchTemplate() {
+    const response = await this.client.get('/templates/batch-processing', {
+      responseType: 'blob',
+    });
+    return response.data;
+  }
+
+  async downloadBranchTemplate() {
+    const response = await this.client.get('/templates/branch-upload', {
+      responseType: 'blob',
+    });
+    return response.data;
+  }
+
+  // Health check
+  async healthCheck() {
+    const response = await axios.get(`${API_URL.replace('/api/v1', '')}/health`);
+    return response.data;
+  }
+}
+
+export default new ApiService();

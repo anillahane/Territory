@@ -1,0 +1,825 @@
+import { useState, useEffect } from 'react';
+import {
+  Box,
+  Typography,
+  Button,
+  Paper,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Alert,
+  CircularProgress,
+  LinearProgress,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Chip,
+  IconButton,
+  Tooltip,
+  Card,
+  CardContent,
+  Grid,
+} from '@mui/material';
+import {
+  Upload as UploadIcon,
+  Download as DownloadIcon,
+  Refresh as RefreshIcon,
+  History as HistoryIcon,
+  Replay as ReplayIcon,
+  Delete as DeleteIcon,
+  BarChart as BarChartIcon,
+} from '@mui/icons-material';
+import { useStore } from '../store/useStore';
+import api from '../services/api';
+
+interface Job {
+  jobId: string;
+  type: string;
+  status: string;
+  progress: number;
+  createdAt: string;
+  finishedAt?: string;
+  data?: {
+    fileName?: string;
+    pocketStats?: { [key: string]: number };
+    totalPockets?: number;
+    totalAccounts?: number;
+  };
+}
+
+export default function BatchProcessing() {
+  const { setError, setSuccess } = useStore();
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [loadingJobs, setLoadingJobs] = useState(false);
+  const [selectedJobStats, setSelectedJobStats] = useState<Job | null>(null);
+  const [statsDialogOpen, setStatsDialogOpen] = useState(false);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null); // Track currently processing job
+  const [pollingInterval, setPollingInterval] = useState<number | null>(null);
+
+  useEffect(() => {
+    console.log('BatchProcessing component mounted');
+    // Load job history on mount by default
+    setShowHistory(true);
+    loadJobHistory();
+  }, []);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollingInterval) {
+        clearInterval(pollingInterval);
+      }
+    };
+  }, [pollingInterval]);
+
+  // Start polling for active job updates
+  const startPolling = (jobId: string) => {
+    console.log('Starting polling for job:', jobId);
+    setActiveJobId(jobId);
+    
+    // Poll every 2 seconds
+    const interval = setInterval(() => {
+      loadJobHistory();
+    }, 2000);
+    
+    setPollingInterval(interval);
+  };
+
+  // Stop polling
+  const stopPolling = () => {
+    console.log('Stopping polling');
+    if (pollingInterval) {
+      clearInterval(pollingInterval);
+      setPollingInterval(null);
+    }
+    setActiveJobId(null);
+  };
+
+  // Check if we should stop polling (job completed or failed)
+  useEffect(() => {
+    if (activeJobId && jobs.length > 0) {
+      const activeJob = jobs.find(j => j.jobId === activeJobId);
+      if (activeJob && (activeJob.status === 'completed' || activeJob.status === 'failed')) {
+        console.log('Job finished, stopping polling:', activeJob.status);
+        stopPolling();
+        
+        if (activeJob.status === 'completed') {
+          setSuccess(`Processing complete! ${activeJob.data?.totalAccounts || 0} customers assigned to ${activeJob.data?.totalPockets || 0} pockets.`);
+        } else {
+          setError('Job failed. Please check the error details in job history.');
+        }
+      }
+    }
+  }, [jobs, activeJobId]);
+
+  const loadJobHistory = async () => {
+    console.log('loadJobHistory: Starting...');
+    setLoadingJobs(true);
+    try {
+      console.log('loadJobHistory: Calling API...');
+      const response = await api.listJobs({ limit: 20 });
+      console.log('loadJobHistory: API response:', response);
+      
+      // Handle both response formats (with/without jobs array)
+      const allJobs = response.jobs || response || [];
+      console.log('loadJobHistory: All jobs:', allJobs);
+      
+      // Filter for batch-related jobs
+      const batchJobs = allJobs.filter((job: Job) => 
+        job.type === 'batch-process' || job.type === 'batch-processing'
+      );
+      
+      console.log('loadJobHistory: Filtered batch jobs:', batchJobs);
+      setJobs(batchJobs);
+    } catch (error: any) {
+      console.error('loadJobHistory: Failed to load job history:', error);
+      console.error('loadJobHistory: Error details:', {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status
+      });
+      // Show error to user since they explicitly requested history
+      setError('Failed to load job history. Redis may not be running.');
+      setJobs([]);
+    } finally {
+      console.log('loadJobHistory: Complete, setting loadingJobs to false');
+      setLoadingJobs(false);
+    }
+  };
+
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) {
+        setError('Please select an Excel file (.xlsx or .xls)');
+        event.target.value = ''; // Reset input
+        return;
+      }
+      setSelectedFile(file);
+    }
+  };
+
+  const handleUpload = async () => {
+    if (!selectedFile) {
+      setError('Please select a file');
+      return;
+    }
+
+    console.log('Starting upload...', selectedFile.name);
+    setUploading(true);
+
+    // Store file reference before clearing
+    const fileToUpload = selectedFile;
+
+    try {
+      console.log('Calling API...');
+      // Upload file - backend parses and queues immediately
+      const response = await api.batchEncode(fileToUpload);
+      console.log('API response:', response);
+
+      // Backend always returns jobId immediately (non-blocking)
+      if (response && typeof response === 'object' && response.jobId) {
+        console.log('Upload successful, jobId:', response.jobId);
+        
+        // Close dialog and reset state immediately
+        setUploading(false);
+        setUploadDialogOpen(false);
+        setSelectedFile(null);
+        
+        // Reset file input
+        const fileInput = document.getElementById('batch-file-upload') as HTMLInputElement;
+        if (fileInput) fileInput.value = '';
+        
+        // Show success message
+        const totalText = typeof response.total === 'number' ? `${response.total} records` : 'file';
+        setSuccess(`File "${response.fileName || fileToUpload.name}" uploaded! Processing ${totalText} in background.`);
+        
+        // Show history and start polling for updates
+        setShowHistory(true);
+        loadJobHistory();
+        startPolling(response.jobId);
+      } else {
+        // Unexpected response format
+        console.error('Unexpected response:', response);
+        setUploading(false);
+        throw new Error('Unexpected response format from server');
+      }
+    } catch (error: any) {
+      setUploading(false);
+      console.error('Upload error:', error);
+      console.error('Error details:', {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status
+      });
+      setError(error.response?.data?.message || error.message || 'Failed to upload file');
+    }
+  };
+
+  const handleDownloadJob = async (jobId: string) => {
+    try {
+      const blob = await api.downloadBatchResult(jobId);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `pocket_ids_${jobId}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      setSuccess('Results downloaded successfully');
+    } catch (error: any) {
+      setError(error.message || 'Failed to download results');
+    }
+  };
+
+  const handleRetryJob = async (jobId: string) => {
+    try {
+      await api.retryJob(jobId);
+      setSuccess('Job queued for retry');
+      loadJobHistory();
+    } catch (error: any) {
+      setError(error.message || 'Failed to retry job');
+    }
+  };
+
+  const handleDownloadTemplate = async () => {
+    try {
+      const blob = await api.downloadBatchTemplate();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'batch_processing_template.xlsx';
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      setSuccess('Template downloaded successfully');
+    } catch (error: any) {
+      setError(error.message || 'Failed to download template');
+    }
+  };
+
+  const handleViewStats = (job: Job) => {
+    setSelectedJobStats(job);
+    setStatsDialogOpen(true);
+  };
+
+  const handleDeleteJob = async (jobId: string) => {
+    if (!window.confirm('Are you sure you want to delete this job?')) {
+      return;
+    }
+
+    try {
+      await api.deleteJob(jobId);
+      setSuccess('Job deleted successfully');
+      loadJobHistory();
+    } catch (error: any) {
+      setError(error.message || 'Failed to delete job');
+    }
+  };
+
+  const handleBulkDelete = async (status: string) => {
+    const statusLabel = status === 'completed' ? 'completed' : 'failed';
+    const count = jobs.filter(j => j.status === status).length;
+    
+    if (count === 0) {
+      setError(`No ${statusLabel} jobs to delete`);
+      return;
+    }
+
+    if (!window.confirm(`Are you sure you want to delete all ${count} ${statusLabel} job(s)?`)) {
+      return;
+    }
+
+    try {
+      const result = await api.bulkDeleteJobs({ status });
+      setSuccess(result.message || `${count} job(s) deleted successfully`);
+      loadJobHistory();
+    } catch (error: any) {
+      setError(error.message || 'Failed to delete jobs');
+    }
+  };
+
+  const formatDate = (dateString: string) => {
+    const date = new Date(dateString);
+    // Format in India timezone (IST = UTC+5:30)
+    // Add 5 hours and 30 minutes to UTC
+    const istDate = new Date(date.getTime() + (5.5 * 60 * 60 * 1000));
+    
+    const day = String(istDate.getUTCDate()).padStart(2, '0');
+    const month = String(istDate.getUTCMonth() + 1).padStart(2, '0');
+    const year = istDate.getUTCFullYear();
+    const hours = String(istDate.getUTCHours()).padStart(2, '0');
+    const minutes = String(istDate.getUTCMinutes()).padStart(2, '0');
+    const seconds = String(istDate.getUTCSeconds()).padStart(2, '0');
+    
+    return `${day}/${month}/${year}, ${hours}:${minutes}:${seconds}`;
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'completed':
+        return 'success';
+      case 'failed':
+        return 'error';
+      case 'active':
+        return 'info';
+      case 'waiting':
+        return 'warning';
+      default:
+        return 'default';
+    }
+  };
+
+  return (
+    <Box sx={{ width: '100%', height: '100%', p: 3 }}>
+      {loadingJobs && jobs.length === 0 && (
+        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px' }}>
+          <CircularProgress />
+          <Typography variant="body2" sx={{ ml: 2 }}>
+            Loading batch processing module...
+          </Typography>
+        </Box>
+      )}
+      
+      {!loadingJobs || jobs.length > 0 ? (
+        <>
+          <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
+            <Box>
+              <Typography variant="h4" gutterBottom>
+                Batch Processing
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Upload Excel files for bulk Pocket ID generation
+              </Typography>
+            </Box>
+            <Box display="flex" gap={1}>
+              <Tooltip title="Refresh History">
+                <IconButton onClick={loadJobHistory} disabled={loadingJobs}>
+                  <RefreshIcon />
+                </IconButton>
+              </Tooltip>
+              {jobs.length > 0 && (
+                <>
+                  <Button
+                    variant="outlined"
+                    color="error"
+                    size="small"
+                    onClick={() => handleBulkDelete('completed')}
+                  >
+                    Clear Completed
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    color="error"
+                    size="small"
+                    onClick={() => handleBulkDelete('failed')}
+                  >
+                    Clear Failed
+                  </Button>
+                </>
+              )}
+              <Button
+                variant="outlined"
+                startIcon={<DownloadIcon />}
+                onClick={handleDownloadTemplate}
+              >
+                Download Template
+              </Button>
+              <Button
+                variant="outlined"
+                startIcon={<HistoryIcon />}
+                onClick={() => {
+                  if (!showHistory) {
+                    loadJobHistory(); // Load jobs when showing history
+                  }
+                  setShowHistory(!showHistory);
+                }}
+              >
+                {showHistory ? 'Hide' : 'Show'} History
+              </Button>
+              <Button
+                variant="contained"
+                startIcon={<UploadIcon />}
+                onClick={() => setUploadDialogOpen(true)}
+              >
+                Upload File
+              </Button>
+            </Box>
+          </Box>
+
+      {/* Instructions Card */}
+      <Card sx={{ mb: 3 }}>
+        <CardContent>
+          <Typography variant="h6" gutterBottom>
+            How to Use
+          </Typography>
+          <Grid container spacing={2}>
+            <Grid item xs={12} md={4}>
+              <Typography variant="subtitle2" color="primary">
+                1. Prepare Excel File
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Include columns: <strong>lan</strong>, <strong>canon_lat</strong>, <strong>canon_long</strong>
+              </Typography>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Typography variant="subtitle2" color="primary">
+                2. Upload & Process
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Upload your file and watch the progress bar
+              </Typography>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <Typography variant="subtitle2" color="primary">
+                3. Download Results
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Get Excel file with Pocket IDs added
+              </Typography>
+            </Grid>
+          </Grid>
+        </CardContent>
+      </Card>
+
+      {/* Active Job Status Card */}
+      {activeJobId && jobs.length > 0 && (() => {
+        const activeJob = jobs.find(j => j.jobId === activeJobId);
+        if (activeJob && (activeJob.status === 'active' || activeJob.status === 'waiting')) {
+          return (
+            <Card sx={{ mb: 3, borderLeft: '4px solid #1976d2' }}>
+              <CardContent>
+                <Box display="flex" alignItems="center" gap={2}>
+                  <CircularProgress size={40} />
+                  <Box flex={1}>
+                    <Typography variant="h6" gutterBottom>
+                      Processing: {activeJob.data?.fileName || 'File'}
+                    </Typography>
+                    <Box display="flex" alignItems="center" gap={2} mb={1}>
+                      <LinearProgress
+                        variant="determinate"
+                        value={activeJob.progress}
+                        sx={{ flex: 1, height: 8, borderRadius: 4 }}
+                      />
+                      <Typography variant="body2" fontWeight={600}>
+                        {activeJob.progress}%
+                      </Typography>
+                    </Box>
+                    <Typography variant="body2" color="text.secondary">
+                      {activeJob.status === 'waiting' ? 'Waiting to start...' : `Processing ${activeJob.data?.totalAccounts || 0} records...`}
+                    </Typography>
+                  </Box>
+                  <Chip
+                    label={activeJob.status}
+                    color="info"
+                    size="small"
+                  />
+                </Box>
+              </CardContent>
+            </Card>
+          );
+        }
+        return null;
+      })()}
+
+      {/* Job History */}
+      {showHistory && (
+        <Paper sx={{ mb: 3 }}>
+          <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
+            <Typography variant="h6">Job History</Typography>
+          </Box>
+          <TableContainer>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell>File Name</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell>Progress</TableCell>
+                  <TableCell>Records</TableCell>
+                  <TableCell>Created</TableCell>
+                  <TableCell>Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {loadingJobs && jobs.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} align="center">
+                      <Box sx={{ py: 3, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 2 }}>
+                        <CircularProgress size={24} />
+                        <Typography variant="body2" color="text.secondary">
+                          Loading job history...
+                        </Typography>
+                      </Box>
+                    </TableCell>
+                  </TableRow>
+                ) : jobs.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} align="center">
+                      <Box sx={{ py: 3 }}>
+                        <Typography variant="body2" color="text.secondary" gutterBottom>
+                          No job history available
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Job history will appear here after you process files.
+                        </Typography>
+                      </Box>
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  jobs.map((job) => {
+                    const isActiveJob = job.jobId === activeJobId;
+                    return (
+                    <TableRow 
+                      key={job.jobId}
+                      sx={{
+                        backgroundColor: isActiveJob ? 'rgba(25, 118, 210, 0.08)' : 'transparent',
+                        '&:hover': {
+                          backgroundColor: isActiveJob ? 'rgba(25, 118, 210, 0.12)' : 'rgba(0, 0, 0, 0.04)',
+                        },
+                      }}
+                    >
+                      <TableCell>
+                        <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                          {job.data?.fileName || 'Unknown'}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace', fontSize: '0.7rem' }}>
+                          {job.jobId.substring(0, 8)}...
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Chip
+                          label={job.status}
+                          size="small"
+                          color={getStatusColor(job.status) as any}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <LinearProgress
+                            variant="determinate"
+                            value={job.progress}
+                            sx={{ width: 100 }}
+                          />
+                          <Typography variant="caption">{job.progress}%</Typography>
+                        </Box>
+                      </TableCell>
+                      <TableCell>
+                        {job.data?.totalAccounts !== undefined ? (
+                          <Box>
+                            <Typography variant="body2">{job.data.totalAccounts} accounts</Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              {job.data.totalPockets} pockets
+                            </Typography>
+                          </Box>
+                        ) : (
+                          <Typography variant="body2" color="text.secondary">—</Typography>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2">
+                          {formatDate(job.createdAt)}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Box display="flex" gap={1}>
+                          {job.status === 'completed' && job.data?.pocketStats && (
+                            <Tooltip title="View Statistics">
+                              <IconButton
+                                size="small"
+                                onClick={() => handleViewStats(job)}
+                                color="info"
+                              >
+                                <BarChartIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                          )}
+                          {job.status === 'completed' && (
+                            <>
+                              <Tooltip title="View Mappings">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => window.location.href = '/customer-mapping'}
+                                  color="secondary"
+                                >
+                                  <HistoryIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
+                              <Tooltip title="Download Results">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => handleDownloadJob(job.jobId)}
+                                  color="primary"
+                                >
+                                  <DownloadIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
+                            </>
+                          )}
+                          {job.status === 'failed' && (
+                            <Tooltip title="Retry">
+                              <IconButton
+                                size="small"
+                                onClick={() => handleRetryJob(job.jobId)}
+                                color="warning"
+                              >
+                                <ReplayIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                          )}
+                          <Tooltip title="Delete">
+                            <IconButton
+                              size="small"
+                              onClick={() => handleDeleteJob(job.jobId)}
+                              color="error"
+                            >
+                              <DeleteIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                        </Box>
+                      </TableCell>
+                    </TableRow>
+                  );
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Paper>
+      )}
+
+      {/* Upload Dialog */}
+      <Dialog
+        open={uploadDialogOpen}
+        onClose={() => !uploading && setUploadDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Upload File for Batch Processing</DialogTitle>
+        <DialogContent>
+          <Box sx={{ pt: 2 }}>
+            <Alert severity="info" sx={{ mb: 2 }}>
+              Excel file should contain columns: <strong>lan</strong> (Customer ID), <strong>canon_lat</strong> (Latitude), <strong>canon_long</strong> (Longitude)
+              <br />
+              (Column names are case-insensitive. Also accepts: Latitude/latitude/Lat/lat and Longitude/longitude/Lon/lon)
+              <br />
+              <br />
+              <strong>Note:</strong> File will be uploaded and processed in the background. You can continue working while processing completes.
+            </Alert>
+
+            {!uploading && (
+              <>
+                <input
+                  type="file"
+                  accept=".xlsx,.xls"
+                  onChange={handleFileSelect}
+                  style={{ display: 'none' }}
+                  id="batch-file-upload"
+                />
+                <label htmlFor="batch-file-upload">
+                  <Button variant="outlined" component="span" fullWidth>
+                    Select Excel File
+                  </Button>
+                </label>
+                {selectedFile && (
+                  <Typography variant="body2" sx={{ mt: 2 }}>
+                    Selected: {selectedFile.name}
+                  </Typography>
+                )}
+              </>
+            )}
+
+            {uploading && (
+              <Box sx={{ mt: 2, display: 'flex', alignItems: 'center', gap: 2 }}>
+                <CircularProgress size={24} />
+                <Typography variant="body2">
+                  Uploading and parsing file...
+                </Typography>
+              </Box>
+            )}
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setUploadDialogOpen(false)} disabled={uploading}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleUpload}
+            variant="contained"
+            disabled={!selectedFile || uploading}
+            startIcon={uploading ? <CircularProgress size={20} /> : <UploadIcon />}
+          >
+            {uploading ? 'Uploading...' : 'Upload & Process'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Statistics Dialog */}
+      <Dialog
+        open={statsDialogOpen}
+        onClose={() => setStatsDialogOpen(false)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>
+          Pocket Statistics
+          {selectedJobStats?.data?.fileName && (
+            <Typography variant="caption" display="block" color="text.secondary">
+              File: {selectedJobStats.data.fileName}
+            </Typography>
+          )}
+        </DialogTitle>
+        <DialogContent>
+          {selectedJobStats?.data?.pocketStats && (
+            <Box sx={{ pt: 2 }}>
+              <Grid container spacing={2} sx={{ mb: 3 }}>
+                <Grid item xs={6}>
+                  <Card variant="outlined">
+                    <CardContent>
+                      <Typography variant="h4" color="primary">
+                        {selectedJobStats.data.totalAccounts || 0}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Total Accounts
+                      </Typography>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                <Grid item xs={6}>
+                  <Card variant="outlined">
+                    <CardContent>
+                      <Typography variant="h4" color="secondary">
+                        {selectedJobStats.data.totalPockets || 0}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Unique Pockets
+                      </Typography>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              </Grid>
+
+              <Typography variant="h6" gutterBottom>
+                Accounts per Pocket
+              </Typography>
+              <TableContainer sx={{ maxHeight: 400 }}>
+                <Table stickyHeader size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Pocket ID</TableCell>
+                      <TableCell align="right">Account Count</TableCell>
+                      <TableCell align="right">Percentage</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {Object.entries(selectedJobStats.data.pocketStats)
+                      .sort(([, a], [, b]) => (b as number) - (a as number))
+                      .map(([pocketId, count]) => {
+                        const percentage = ((count as number) / (selectedJobStats.data?.totalAccounts || 1) * 100).toFixed(1);
+                        return (
+                          <TableRow key={pocketId}>
+                            <TableCell>
+                              <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 500 }}>
+                                {pocketId}
+                              </Typography>
+                            </TableCell>
+                            <TableCell align="right">
+                              <Typography variant="body2">{count as number}</Typography>
+                            </TableCell>
+                            <TableCell align="right">
+                              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 1 }}>
+                                <LinearProgress
+                                  variant="determinate"
+                                  value={parseFloat(percentage)}
+                                  sx={{ width: 60 }}
+                                />
+                                <Typography variant="caption">{percentage}%</Typography>
+                              </Box>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setStatsDialogOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+        </>
+      ) : null}
+    </Box>
+  );
+}
