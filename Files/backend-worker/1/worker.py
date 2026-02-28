@@ -16,7 +16,7 @@ from datetime import datetime
 
 # Configuration
 REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379')
-DB_URL = os.getenv('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5434/location_pockets')
+DB_URL = os.getenv('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5434/pockets')
 UPLOAD_DIR = os.getenv('UPLOAD_DIR', '../backend/uploads')
 
 # Grid configuration
@@ -264,10 +264,10 @@ def process_job(job_data):
         conn.commit()
     
     try:
-        # Read entire Excel file (pandas doesn't support chunksize for Excel)
-        print(f"📊 Reading Excel file...")
-        df = pd.read_excel(file_path, engine='openpyxl')
-        total_rows = len(df)
+        # Count total rows
+        print(f"📊 Counting rows...")
+        total_rows = pd.read_excel(file_path, engine='openpyxl', nrows=0).shape[0]
+        total_rows = len(pd.read_excel(file_path, engine='openpyxl'))
         
         with db_engine.connect() as conn:
             conn.execute(
@@ -289,25 +289,24 @@ def process_job(job_data):
         pocket_stats = {}
         pocket_centers = {}
         
-        # Process in chunks (split dataframe into chunks)
+        # Process in chunks
         chunk_size = 5000
+        excel_reader = pd.read_excel(file_path, engine='openpyxl', chunksize=chunk_size)
         job_db_id = get_job_db_id(job_id)
         
-        # Standardize column names
-        df.columns = [col.lower() for col in df.columns]
-        
-        # Find coordinate columns
-        lat_col = next((c for c in ['canon_lat', 'latitude', 'lat'] if c in df.columns), None)
-        lon_col = next((c for c in ['canon_long', 'longitude', 'lon'] if c in df.columns), None)
-        id_col = next((c for c in ['lan', 'customerid', 'customer_id', 'id'] if c in df.columns), None)
-        
-        if not lat_col or not lon_col:
-            raise ValueError("Could not find latitude/longitude columns")
-        
-        # Process dataframe in chunks
-        for chunk_num in range(0, len(df), chunk_size):
-            chunk = df.iloc[chunk_num:chunk_num + chunk_size]
-            print(f"  Processing chunk {chunk_num // chunk_size + 1} ({len(chunk)} rows)...")
+        for chunk_num, chunk in enumerate(excel_reader):
+            print(f"  Processing chunk {chunk_num + 1} ({len(chunk)} rows)...")
+            
+            # Standardize column names
+            chunk.columns = [col.lower() for col in chunk.columns]
+            
+            # Find coordinate columns
+            lat_col = next((c for c in ['canon_lat', 'latitude', 'lat'] if c in chunk.columns), None)
+            lon_col = next((c for c in ['canon_long', 'longitude', 'lon'] if c in chunk.columns), None)
+            id_col = next((c for c in ['lan', 'customerid', 'customer_id', 'id'] if c in chunk.columns), None)
+            
+            if not lat_col or not lon_col:
+                raise ValueError("Could not find latitude/longitude columns")
             
             for index, row in chunk.iterrows():
                 try:

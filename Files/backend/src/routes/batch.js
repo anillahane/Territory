@@ -19,10 +19,8 @@ const Redis = require('ioredis');
 const pythonRedisClient = new Redis({
   host: process.env.REDIS_HOST || 'localhost',
   port: parseInt(process.env.REDIS_PORT || '6379', 10),
-  retryStrategy: (times) => {
-    const delay = Math.min(times * 50, 2000);
-    return delay;
-  },
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
 });
 
 pythonRedisClient.on('error', (error) => {
@@ -31,10 +29,6 @@ pythonRedisClient.on('error', (error) => {
 
 pythonRedisClient.on('connect', () => {
   logger.info('Python Redis client connected');
-});
-
-pythonRedisClient.on('ready', () => {
-  logger.info('Python Redis client ready');
 });
 
 // Create uploads directory for disk storage
@@ -360,19 +354,6 @@ router.post(
         fileName,
         config
       };
-      
-      // Ensure Redis client is ready
-      if (pythonRedisClient.status !== 'ready') {
-        logger.warn('Python Redis client not ready, waiting...', { status: pythonRedisClient.status, jobId });
-        await new Promise((resolve) => {
-          if (pythonRedisClient.status === 'ready') {
-            resolve();
-          } else {
-            pythonRedisClient.once('ready', resolve);
-          }
-        });
-        logger.info('Python Redis client now ready', { jobId });
-      }
       
       // Use the dedicated Python Redis client (not Bull's client)
       try {
