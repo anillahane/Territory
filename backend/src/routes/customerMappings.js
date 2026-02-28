@@ -15,9 +15,15 @@ router.get(
     // Parse and validate query parameters
     let page = parseInt(req.query.page, 10);
     let pageSize = parseInt(req.query.pageSize, 10);
-    const jobId = req.query.jobId ? parseInt(req.query.jobId, 10) : null;
+    const jobId =
+      typeof req.query.jobId === 'string' && req.query.jobId.trim() !== ''
+        ? req.query.jobId.trim()
+        : null;
     const customerId = req.query.customerId || '';
-    const pocketId = req.query.pocketId ? parseInt(req.query.pocketId, 10) : null;
+    const pocketId =
+      typeof req.query.pocketId === 'string' && req.query.pocketId.trim() !== ''
+        ? req.query.pocketId.trim()
+        : null;
 
     // Validate and set defaults for page
     if (isNaN(page) || page < 1) {
@@ -29,14 +35,6 @@ router.get(
       pageSize = 100;
     } else if (pageSize > 1000) {
       throw new AppError('Page size must be between 1 and 1000', 400, 'INVALID_PAGE_SIZE');
-    }
-
-    if (jobId !== null && (isNaN(jobId) || jobId < 1)) {
-      throw new AppError('Invalid job ID', 400, 'INVALID_JOB_ID');
-    }
-
-    if (pocketId !== null && (isNaN(pocketId) || pocketId < 1)) {
-      throw new AppError('Invalid pocket ID', 400, 'INVALID_POCKET_ID');
     }
 
     // Build filters object

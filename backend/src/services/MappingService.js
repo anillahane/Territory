@@ -143,6 +143,19 @@ class MappingService {
     const totalRecords = parseInt(countResult.rows[0].total, 10);
     const totalPages = Math.ceil(totalRecords / pageSize);
 
+    const statsQuery = `
+      SELECT
+        COUNT(DISTINCT cpm.customer_id) AS unique_customers,
+        COUNT(DISTINCT cpm.pocket_id) AS unique_pockets,
+        COUNT(DISTINCT cpm.nearest_branch_id) AS unique_branches,
+        COALESCE(AVG(cpm.distance_customer_to_pocket), 0) AS avg_distance
+      FROM customer_pocket_mappings cpm
+      ${whereClause}
+    `;
+
+    const statsResult = await query(statsQuery, queryParams);
+    const statsRow = statsResult.rows[0] || {};
+
     // Fetch paginated data with branch name
     const dataQuery = `
       SELECT 
@@ -194,6 +207,12 @@ class MappingService {
         pageSize,
         totalRecords,
         totalPages,
+      },
+      stats: {
+        uniqueCustomers: parseInt(statsRow.unique_customers || '0', 10),
+        uniquePockets: parseInt(statsRow.unique_pockets || '0', 10),
+        uniqueBranches: parseInt(statsRow.unique_branches || '0', 10),
+        avgDistance: parseFloat(statsRow.avg_distance || '0'),
       },
     };
   }

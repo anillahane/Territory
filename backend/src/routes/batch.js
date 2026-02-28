@@ -14,6 +14,21 @@ const branchFinderService = require('../services/BranchFinderService');
 
 const router = express.Router();
 
+const withTimeout = async (promise, timeoutMs, errorMessage) => {
+  let timeoutHandle;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(errorMessage));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+};
+
 // Create uploads directory for disk storage
 const uploadDir = path.join(__dirname, '../../uploads');
 if (!fs.existsSync(uploadDir)) {
@@ -40,8 +55,25 @@ const batchQueue = batchProcessQueue;
 // Process jobs (Node.js worker for small files)
 batchQueue.process(async (job) => {
   const { jobId, data, config, fileName, filePath } = job.data;
+  let rows = data;
 
-  logger.info('Processing batch job (Node.js worker)', { jobId, rows: data.length });
+  if (!rows) {
+    if (!filePath || !fs.existsSync(filePath)) {
+      throw new Error('Uploaded file not found for processing');
+    }
+
+    // Parse Excel inside the background worker so upload endpoint can return immediately.
+    const workbook = xlsx.read(fs.readFileSync(filePath), { type: 'buffer' });
+    rows = xlsx.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+
+    if (rows.length === 0) {
+      throw new Error('Excel file is empty');
+    }
+
+    await query('UPDATE jobs SET total = $1 WHERE job_id = $2', [rows.length, jobId]);
+  }
+
+  logger.info('Processing batch job (Node.js worker)', { jobId, rows: rows.length });
 
   const results = [];
   const errors = [];
@@ -50,12 +82,12 @@ batchQueue.process(async (job) => {
   const pocketCenters = new Map(); // Cache pocket centers to avoid recalculation
 
   try {
-    for (let i = 0; i < data.length; i++) {
-      const row = data[i];
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
       
       try {
         // Update progress
-        job.progress(Math.floor((i / data.length) * 100));
+        job.progress(Math.floor((i / rows.length) * 100));
 
         const lat = parseFloat(row.Latitude || row.latitude || row.Lat || row.lat || row.canon_lat || row.CANON_LAT);
         const lon = parseFloat(row.Longitude || row.longitude || row.Lon || row.lon || row.canon_long || row.CANON_LONG);
@@ -171,15 +203,8 @@ batchQueue.process(async (job) => {
           };
         });
         
-        // Get job database ID from job_id (UUID)
-        const jobResult = await query('SELECT id FROM jobs WHERE job_id = $1', [jobId]);
-        if (jobResult.rows.length === 0) {
-          throw new Error(`Job not found in database: ${jobId}`);
-        }
-        const jobDatabaseId = jobResult.rows[0].id;
-        
-        // Save mappings
-        const saveResult = await mappingService.saveMappings(jobDatabaseId, enrichedMappings);
+        // Save mappings using UUID job_id (matches FK customer_pocket_mappings.job_id -> jobs.job_id)
+        const saveResult = await mappingService.saveMappings(jobId, enrichedMappings);
         mappingsPersisted = saveResult.insertedCount;
         
         if (!saveResult.success) {
@@ -222,7 +247,7 @@ batchQueue.process(async (job) => {
           fileName: job.data.fileName,
           pocketStats, 
           totalPockets: Object.keys(pocketStats).length,
-          totalAccounts: data.length - errors.length,
+          totalAccounts: rows.length - errors.length,
           mappingsPersisted,
           worker: 'nodejs'
         }),
@@ -232,7 +257,7 @@ batchQueue.process(async (job) => {
 
     logger.info('Batch job completed (Node.js worker)', { 
       jobId, 
-      total: data.length, 
+      total: rows.length, 
       errors: errors.length,
       uniquePockets: Object.keys(pocketStats).length,
       mappingsPersisted,
@@ -250,7 +275,7 @@ batchQueue.process(async (job) => {
 
     return {
       jobId,
-      total: data.length,
+      total: rows.length,
       errors: errors.length,
       pocketStats,
       mappingsPersisted,
@@ -341,7 +366,11 @@ router.post(
       // CRITICAL FIX: Use Bull's existing Redis client instead of separate pythonRedisClient
       // This avoids the "ready" status issue that was causing uploads to hang
       try {
-        await batchQueue.client.lpush('python_batch_jobs', JSON.stringify(jobPayload));
+        await withTimeout(
+          batchQueue.client.lpush('python_batch_jobs', JSON.stringify(jobPayload)),
+          10000,
+          'Timed out while queueing Python job'
+        );
         console.log("4. Raw Redis push finished using Bull's client.");
         logger.info('Python job queued successfully', { jobId });
       } catch (err) {
@@ -376,31 +405,46 @@ router.post(
     } else {
       logger.info('Routing to Node.js worker (small file)', { jobId, fileSizeMB, fileName });
 
-      // Only parse the file in Node if we know it's small!
-      const workbook = xlsx.read(fs.readFileSync(filePath), { type: 'buffer' });
-      const data = xlsx.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+      // Queue file path for background parsing/processing to return response immediately.
+      try {
+        await withTimeout(
+          batchQueue.add({
+            jobId,
+            config,
+            fileName,
+            filePath,
+          }),
+          10000,
+          'Timed out while queueing Node.js job'
+        );
+      } catch (err) {
+        logger.error('Failed to queue Node.js job', {
+          error: err.message,
+          stack: err.stack,
+          jobId,
+        });
 
-      if (data.length === 0) {
-        // Clean up file
-        fs.unlinkSync(filePath);
-        throw new AppError('Excel file is empty', 400, 'EMPTY_FILE');
+        if (fs.existsSync(filePath)) {
+          try {
+            fs.unlinkSync(filePath);
+            logger.info('Cleaned up uploaded file after queue error', { jobId, filePath });
+          } catch (cleanupErr) {
+            logger.warn('Failed to clean up file after queue error', { jobId, filePath });
+          }
+        }
+
+        await query(
+          `UPDATE jobs SET status = 'failed', error = $1 WHERE job_id = $2`,
+          ['Failed to queue job to Node.js worker: ' + err.message, jobId]
+        );
+
+        throw new AppError('Failed to queue job to Node.js worker', 500, 'QUEUE_PUSH_ERROR');
       }
 
-      await query('UPDATE jobs SET total = $1 WHERE job_id = $2', [data.length, jobId]);
-
-      await batchQueue.add({
-        jobId,
-        data,
-        config,
-        fileName,
-        filePath, 
-      });
-
-      res.json({
+      res.status(202).json({
         message: 'File uploaded successfully. Processing in background.',
         jobId,
         fileName,
-        total: data.length,
         worker: 'nodejs',
         statusUrl: `/api/v1/batch/status/${jobId}`,
       });

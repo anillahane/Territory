@@ -606,11 +606,11 @@ export default function BatchProcessing() {
                           {job.status === 'completed' && (
                             <>
                               <Tooltip title="View Mappings">
-                                <IconButton
-                                  size="small"
-                                  onClick={() => window.location.href = '/customer-mapping'}
-                                  color="secondary"
-                                >
+                              <IconButton
+                                size="small"
+                                onClick={() => window.location.href = '/mappings'}
+                                color="secondary"
+                              >
                                   <HistoryIcon fontSize="small" />
                                 </IconButton>
                               </Tooltip>

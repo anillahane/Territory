@@ -320,7 +320,9 @@ export default function Layout() {
           flexGrow: 1,
           display: 'flex',
           flexDirection: 'column',
-          overflow: 'hidden',
+          overflowX: 'hidden',
+          overflowY: 'scroll',
+          minHeight: 0,
           minWidth: 0,
         }}
       >

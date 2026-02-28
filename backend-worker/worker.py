@@ -205,16 +205,6 @@ def find_nearest_pocket(customer_lat, customer_lon, config, search_radius=1000):
         'centerLon': nearest_center[1]
     }
 
-def get_job_db_id(job_uuid):
-    """Map UUID to PostgreSQL internal ID"""
-    with db_engine.connect() as conn:
-        result = conn.execute(
-            text("SELECT id FROM jobs WHERE job_id = :job_id"),
-            {"job_id": job_uuid}
-        )
-        row = result.fetchone()
-        return row[0] if row else None
-
 def get_branches():
     """Load all branches from database"""
     with db_engine.connect() as conn:
@@ -294,8 +284,6 @@ def process_job(job_data):
         
         # Process in chunks (split dataframe into chunks)
         chunk_size = 5000
-        job_db_id = get_job_db_id(job_id)
-        
         # Standardize column names
         df.columns = [col.lower() for col in df.columns]
         
@@ -366,7 +354,8 @@ def process_job(job_data):
                         
                         # Store mapping
                         all_mappings.append({
-                            'job_id': job_db_id,
+                            # Must store UUID job_id (FK references jobs.job_id, not jobs.id)
+                            'job_id': job_id,
                             'customer_id': cust_id,
                             'customer_lat': lat,
                             'customer_lon': lon,
