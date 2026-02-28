@@ -22,7 +22,6 @@ import {
   TableChart as TableChartIcon,
   Menu as MenuIcon,
   ChevronLeft as ChevronLeftIcon,
-  AdminPanelSettings as AdminIcon,
 } from '@mui/icons-material';
 
 const drawerWidth = 240;

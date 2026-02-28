@@ -25,7 +25,7 @@ import {
   Refresh as RefreshIcon,
   Business,
 } from '@mui/icons-material';
-import { DataGrid, GridColDef, GridRowsProp } from '@mui/x-data-grid';
+import { DataGrid, GridColDef } from '@mui/x-data-grid';
 import { useStore } from '../store/useStore';
 import api from '../services/api';
 
@@ -54,7 +54,6 @@ export default function Branches() {
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [uploadJobId, setUploadJobId] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
 
   useEffect(() => {
@@ -209,7 +208,6 @@ export default function Branches() {
         throw new Error('No job ID returned from server');
       }
       
-      setUploadJobId(jobId);
       setSuccess(`Upload started. Job ID: ${jobId}`);
 
       // Poll for job status
@@ -222,7 +220,6 @@ export default function Branches() {
         if (pollCount > maxPolls) {
           clearInterval(pollInterval);
           setUploading(false);
-          setUploadJobId(null);
           setUploadProgress(0);
           setError('Upload timeout - please check job status manually');
           return;
@@ -242,7 +239,6 @@ export default function Branches() {
             setUploading(false);
             setUploadDialogOpen(false);
             setSelectedFile(null);
-            setUploadJobId(null);
             setUploadProgress(0);
             
             // Reset file input
@@ -255,7 +251,6 @@ export default function Branches() {
           } else if (status.status === 'failed') {
             clearInterval(pollInterval);
             setUploading(false);
-            setUploadJobId(null);
             setUploadProgress(0);
             setError(status.error || 'Upload failed');
           } else if (status.status === 'active') {
@@ -267,7 +262,6 @@ export default function Branches() {
           console.error('Poll error:', pollError);
           clearInterval(pollInterval);
           setUploading(false);
-          setUploadJobId(null);
           setUploadProgress(0);
           setError(`Failed to check upload status: ${pollError.message}`);
         }
@@ -276,7 +270,6 @@ export default function Branches() {
     } catch (error: any) {
       console.error('Upload error:', error);
       setUploading(false);
-      setUploadJobId(null);
       setUploadProgress(0);
       setError(error.message || 'Failed to start upload');
     }
@@ -323,13 +316,13 @@ export default function Branches() {
       field: 'lat',
       headerName: 'Latitude',
       width: 120,
-      valueFormatter: (params) => params.toFixed(6),
+      valueFormatter: (value) => Number(value).toFixed(6),
     },
     {
       field: 'lon',
       headerName: 'Longitude',
       width: 120,
-      valueFormatter: (params) => params.toFixed(6),
+      valueFormatter: (value) => Number(value).toFixed(6),
     },
     {
       field: 'pocket_id',

@@ -6,7 +6,7 @@ A production-ready full-stack web application for converting geographic coordina
 
 **Overall Progress**: 45% Complete  
 **Current Phase**: Phase 2 - Frontend Foundation  
-**Last Updated**: 2025-03-02
+**Last Updated**: 2026-02-28
 
 ### ✅ Completed
 - Backend API (90%) - All endpoints implemented
@@ -164,9 +164,9 @@ See [SETUP_GUIDE.md](SETUP_GUIDE.md) for detailed instructions.
 ### Backend Tests
 ```bash
 cd backend
-npm test                    # Run all tests
+npm run lint                # Lint backend source
+npm test                    # Run all tests (with coverage)
 npm run test:watch          # Watch mode
-npm run test:coverage       # Coverage report
 npm run test:integration    # Integration tests
 ```
 
@@ -175,10 +175,15 @@ npm run test:integration    # Integration tests
 ### Frontend Tests
 ```bash
 cd frontend
+npm run lint                # Lint frontend source
+npm run build               # Type-check and production build
 npm test                    # Run all tests
 npm run test:ui             # UI mode
 npm run test:coverage       # Coverage report
 ```
+
+### Known Issues
+- Full backend integration tests require PostgreSQL/PostGIS and Redis services to be running locally.
 
 ## 📁 Project Structure
 
@@ -345,4 +350,4 @@ Development Team - [contact information]
 
 **Built with ❤️ using modern web technologies**
 
-*Last Updated: 2025-03-02*
+*Last Updated: 2026-02-28*
