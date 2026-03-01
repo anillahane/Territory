@@ -222,6 +222,14 @@ class ApiService {
     const response = await axios.get(`${API_URL.replace('/api/v1', '')}/health`);
     return response.data;
   }
+
+  // Grid endpoints
+  async getGridCells(levelKm: 500 | 100) {
+    const response = await this.client.get('/grids', {
+      params: { levelKm },
+    });
+    return response.data;
+  }
 }
 
 export default new ApiService();

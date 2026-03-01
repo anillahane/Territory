@@ -17,7 +17,7 @@ function App() {
   };
 
   return (
-    <Box sx={{ width: '100%', height: '100vh', overflow: 'hidden' }}>
+    <Box sx={{ width: '100%', minHeight: '100vh' }}>
       <Routes>
         <Route path="/" element={<Layout />}>
           <Route index element={<Dashboard />} />

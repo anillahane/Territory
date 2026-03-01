@@ -34,6 +34,22 @@ export default function CustomerMappingTable({
   onPageChange,
   onPageSizeChange,
 }: CustomerMappingTableProps) {
+  const stickyHeaderCellSx = {
+    color: 'white',
+    fontWeight: 600,
+    bgcolor: 'primary.main',
+    position: 'sticky',
+    top: 0,
+    zIndex: 3,
+  };
+  const tableContainerSx = {
+    maxHeight: {
+      xs: '50vh',
+      md: 'calc(100vh - 380px)',
+    },
+    overflowY: 'auto',
+  };
+
   const handleChangePage = (_event: unknown, newPage: number) => {
     onPageChange(newPage + 1); // Material-UI uses 0-based, API uses 1-based
   };
@@ -52,18 +68,18 @@ export default function CustomerMappingTable({
   // Loading skeleton
   if (loading && mappings.length === 0) {
     return (
-      <TableContainer component={Paper} sx={{ boxShadow: 2 }}>
-        <Table>
+      <TableContainer component={Paper} sx={tableContainerSx}>
+        <Table stickyHeader>
           <TableHead>
             <TableRow sx={{ bgcolor: 'primary.main' }}>
-              <TableCell sx={{ color: 'white', fontWeight: 600 }}>Customer ID</TableCell>
-              <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>Customer Lat</TableCell>
-              <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>Customer Lon</TableCell>
-              <TableCell sx={{ color: 'white', fontWeight: 600 }}>Pocket ID</TableCell>
-              <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>Distance to Pocket</TableCell>
-              <TableCell sx={{ color: 'white', fontWeight: 600 }}>Branch</TableCell>
-              <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>Pocket to Branch</TableCell>
-              <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>Customer to Branch</TableCell>
+              <TableCell sx={stickyHeaderCellSx}>Customer ID</TableCell>
+              <TableCell align="right" sx={stickyHeaderCellSx}>Customer Lat</TableCell>
+              <TableCell align="right" sx={stickyHeaderCellSx}>Customer Lon</TableCell>
+              <TableCell sx={stickyHeaderCellSx}>Pocket ID</TableCell>
+              <TableCell align="right" sx={stickyHeaderCellSx}>Distance to Pocket</TableCell>
+              <TableCell sx={stickyHeaderCellSx}>Branch</TableCell>
+              <TableCell align="right" sx={stickyHeaderCellSx}>Pocket to Branch</TableCell>
+              <TableCell align="right" sx={stickyHeaderCellSx}>Customer to Branch</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -111,41 +127,41 @@ export default function CustomerMappingTable({
 
   return (
     <Paper sx={{ boxShadow: 2 }}>
-      <TableContainer>
-        <Table>
+      <TableContainer sx={tableContainerSx}>
+        <Table stickyHeader>
           <TableHead>
             <TableRow sx={{ bgcolor: 'primary.main' }}>
-              <TableCell sx={{ color: 'white', fontWeight: 600 }}>
+              <TableCell sx={stickyHeaderCellSx}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                   <Place fontSize="small" />
                   Customer ID
                 </Box>
               </TableCell>
-              <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>Latitude</TableCell>
-              <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>Longitude</TableCell>
-              <TableCell sx={{ color: 'white', fontWeight: 600 }}>
+              <TableCell align="right" sx={stickyHeaderCellSx}>Latitude</TableCell>
+              <TableCell align="right" sx={stickyHeaderCellSx}>Longitude</TableCell>
+              <TableCell sx={stickyHeaderCellSx}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                   <Timeline fontSize="small" />
                   Pocket ID
                 </Box>
               </TableCell>
-              <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>
+              <TableCell align="right" sx={stickyHeaderCellSx}>
                 <Tooltip title="Distance from customer to pocket center">
                   <span>To Pocket</span>
                 </Tooltip>
               </TableCell>
-              <TableCell sx={{ color: 'white', fontWeight: 600 }}>
+              <TableCell sx={stickyHeaderCellSx}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                   <Business fontSize="small" />
                   Branch
                 </Box>
               </TableCell>
-              <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>
+              <TableCell align="right" sx={stickyHeaderCellSx}>
                 <Tooltip title="Distance from pocket center to nearest branch">
                   <span>Pocket → Branch</span>
                 </Tooltip>
               </TableCell>
-              <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>
+              <TableCell align="right" sx={stickyHeaderCellSx}>
                 <Tooltip title="Distance from customer to nearest branch">
                   <span>Customer → Branch</span>
                 </Tooltip>

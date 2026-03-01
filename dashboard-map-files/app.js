@@ -52,7 +52,6 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
-app.use(`/api/${API_VERSION}/grids`, gridsRoutes);
 app.use(`/api/${API_VERSION}/`, limiter);
 
 // Body parsing middleware
@@ -77,6 +76,7 @@ app.use(`/api/${API_VERSION}/batch`, batchRoutes);
 app.use(`/api/${API_VERSION}/jobs`, jobsRoutes);
 app.use(`/api/${API_VERSION}/templates`, templatesRoutes);
 app.use(`/api/${API_VERSION}/customer-mappings`, customerMappingsRoutes);
+app.use(`/api/${API_VERSION}/grids`, gridsRoutes);
 app.use('/health', healthRoutes);
 
 // Root endpoint

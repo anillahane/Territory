@@ -1,0 +1,362 @@
+﻿[
+    {
+        "name":  "Andaman and Nicobar Islands",
+        "slug":  "andaman-and-nicobar-islands",
+        "bounds":  [
+                       92.20386,
+                       6.754368,
+                       93.94287,
+                       13.671077
+                   ]
+    },
+    {
+        "name":  "Andhra Pradesh",
+        "slug":  "andhra-pradesh",
+        "bounds":  [
+                       76.761131,
+                       12.622723,
+                       84.764741,
+                       19.16633
+                   ]
+    },
+    {
+        "name":  "Arunachal Pradesh",
+        "slug":  "arunachal-pradesh",
+        "bounds":  [
+                       91.546459,
+                       26.650844,
+                       97.411498,
+                       29.459965
+                   ]
+    },
+    {
+        "name":  "Assam",
+        "slug":  "assam",
+        "bounds":  [
+                       89.698602,
+                       24.136603,
+                       96.015202,
+                       27.971297
+                   ]
+    },
+    {
+        "name":  "Bihar",
+        "slug":  "bihar",
+        "bounds":  [
+                       83.320238,
+                       24.286327,
+                       88.299546,
+                       27.521347
+                   ]
+    },
+    {
+        "name":  "Chandigarh",
+        "slug":  "chandigarh",
+        "bounds":  [
+                       76.705152,
+                       30.667443,
+                       76.848082,
+                       30.794975
+                   ]
+    },
+    {
+        "name":  "Chhattisgarh",
+        "slug":  "chhattisgarh",
+        "bounds":  [
+                       80.246472,
+                       17.787692,
+                       84.39637,
+                       24.106034
+                   ]
+    },
+    {
+        "name":  "Delhi",
+        "slug":  "delhi",
+        "bounds":  [
+                       76.839559,
+                       28.404713,
+                       77.347361,
+                       28.883615
+                   ]
+    },
+    {
+        "name":  "Dadra and Nagar Haveli and Daman and Diu",
+        "slug":  "dnh-and-dd",
+        "bounds":  [
+                       70.876053,
+                       19.459169,
+                       73.217971,
+                       20.763372
+                   ]
+    },
+    {
+        "name":  "Goa",
+        "slug":  "goa",
+        "bounds":  [
+                       73.676874,
+                       14.900642,
+                       74.336246,
+                       15.799898
+                   ]
+    },
+    {
+        "name":  "Gujarat",
+        "slug":  "gujarat",
+        "bounds":  [
+                       68.094952,
+                       20.120452,
+                       74.47613,
+                       24.712428
+                   ]
+    },
+    {
+        "name":  "Haryana",
+        "slug":  "haryana",
+        "bounds":  [
+                       74.474853,
+                       27.654137,
+                       77.604021,
+                       30.928599
+                   ]
+    },
+    {
+        "name":  "Himachal Pradesh",
+        "slug":  "himachal-pradesh",
+        "bounds":  [
+                       75.594723,
+                       30.377701,
+                       79.008915,
+                       33.256636
+                   ]
+    },
+    {
+        "name":  "Jammu and Kashmir",
+        "slug":  "jammu-and-kashmir",
+        "bounds":  [
+                       73.390075,
+                       32.276216,
+                       76.779264,
+                       35.115694
+                   ]
+    },
+    {
+        "name":  "Jharkhand",
+        "slug":  "jharkhand",
+        "bounds":  [
+                       83.330132,
+                       21.974666,
+                       87.96049,
+                       25.349115
+                   ]
+    },
+    {
+        "name":  "Karnataka",
+        "slug":  "karnataka",
+        "bounds":  [
+                       74.085688,
+                       11.594585,
+                       78.585809,
+                       18.454265
+                   ]
+    },
+    {
+        "name":  "Kerala",
+        "slug":  "kerala",
+        "bounds":  [
+                       74.867656,
+                       8.292489,
+                       77.41232,
+                       12.795156
+                   ]
+    },
+    {
+        "name":  "Ladakh",
+        "slug":  "ladakh",
+        "bounds":  [
+                       72.530394,
+                       32.337631,
+                       80.326347,
+                       37.076958
+                   ]
+    },
+    {
+        "name":  "Lakshadweep",
+        "slug":  "lakshadweep",
+        "bounds":  [
+                       72.164852,
+                       8.264004,
+                       73.701814,
+                       11.703948
+                   ]
+    },
+    {
+        "name":  "Madhya Pradesh",
+        "slug":  "madhya-pradesh",
+        "bounds":  [
+                       74.034689,
+                       21.069907,
+                       82.812181,
+                       26.869184
+                   ]
+    },
+    {
+        "name":  "Maharashtra",
+        "slug":  "maharashtra",
+        "bounds":  [
+                       72.654608,
+                       15.606125,
+                       80.898357,
+                       22.033719
+                   ]
+    },
+    {
+        "name":  "Manipur",
+        "slug":  "manipur",
+        "bounds":  [
+                       92.972845,
+                       23.833016,
+                       94.744081,
+                       25.691562
+                   ]
+    },
+    {
+        "name":  "Meghalaya",
+        "slug":  "meghalaya",
+        "bounds":  [
+                       89.815752,
+                       25.030005,
+                       92.801512,
+                       26.119497
+                   ]
+    },
+    {
+        "name":  "Mizoram",
+        "slug":  "mizoram",
+        "bounds":  [
+                       92.256724,
+                       21.94419,
+                       93.442633,
+                       24.518164
+                   ]
+    },
+    {
+        "name":  "Nagaland",
+        "slug":  "nagaland",
+        "bounds":  [
+                       93.328991,
+                       25.199075,
+                       95.242487,
+                       27.035839
+                   ]
+    },
+    {
+        "name":  "Odisha",
+        "slug":  "odisha",
+        "bounds":  [
+                       81.389054,
+                       17.812726,
+                       87.484854,
+                       22.566726
+                   ]
+    },
+    {
+        "name":  "Puducherry",
+        "slug":  "puducherry",
+        "bounds":  [
+                       75.526636,
+                       10.827445,
+                       82.310389,
+                       16.757439
+                   ]
+    },
+    {
+        "name":  "Punjab",
+        "slug":  "punjab",
+        "bounds":  [
+                       73.879848,
+                       29.54208,
+                       76.937994,
+                       32.510758
+                   ]
+    },
+    {
+        "name":  "Rajasthan",
+        "slug":  "rajasthan",
+        "bounds":  [
+                       69.484227,
+                       23.059221,
+                       78.270926,
+                       30.197954
+                   ]
+    },
+    {
+        "name":  "Sikkim",
+        "slug":  "sikkim",
+        "bounds":  [
+                       88.014119,
+                       27.071389,
+                       88.919103,
+                       28.128233
+                   ]
+    },
+    {
+        "name":  "Tamil Nadu",
+        "slug":  "tamil-nadu",
+        "bounds":  [
+                       76.233405,
+                       8.076333,
+                       80.346426,
+                       13.562661
+                   ]
+    },
+    {
+        "name":  "Telangana",
+        "slug":  "telangana",
+        "bounds":  [
+                       77.235913,
+                       15.836283,
+                       81.321098,
+                       19.914691
+                   ]
+    },
+    {
+        "name":  "Tripura",
+        "slug":  "tripura",
+        "bounds":  [
+                       91.153541,
+                       22.939184,
+                       92.331958,
+                       24.527494
+                   ]
+    },
+    {
+        "name":  "Uttar Pradesh",
+        "slug":  "uttar-pradesh",
+        "bounds":  [
+                       77.087326,
+                       23.871438,
+                       84.634691,
+                       30.406323
+                   ]
+    },
+    {
+        "name":  "Uttarakhand",
+        "slug":  "uttarakhand",
+        "bounds":  [
+                       77.573108,
+                       28.722897,
+                       81.045287,
+                       31.4561
+                   ]
+    },
+    {
+        "name":  "West Bengal",
+        "slug":  "west-bengal",
+        "bounds":  [
+                       85.819663,
+                       21.4839,
+                       89.874198,
+                       27.220617
+                   ]
+    }
+]
