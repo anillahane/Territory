@@ -13,13 +13,12 @@ import {
   Typography,
 } from '@mui/material';
 import maplibregl, { LngLatBoundsLike, Map as MapLibreMap, StyleSpecification } from 'maplibre-gl';
-import type { GeoJSON } from 'geojson';
 import indiaStateBounds from '../data/indiaStateBounds.json';
-import indiaBoundary from '../data/indiaBoundary.json';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api/v1';
 const ALL_STATES = '__all__';
+const LOCAL_INDIA_TOPO_SVG_URL = '/maps/india-topo-basemap.svg';
 const FIT_PADDING = 0;
 
 type GridBounds = [number, number, number, number];
@@ -47,7 +46,6 @@ type StateBoundsEntry = {
 
 const DEFAULT_BOUNDS: GridBounds = [68.0, 6.5, 97.5, 37.5];
 const DEFAULT_CENTER: [number, number] = [79.0, 22.5];
-const OFFICIAL_INDIA_GEOJSON = indiaBoundary as GeoJSON;
 const STATE_BOUNDS = indiaStateBounds as StateBoundsEntry[];
 const SORTED_STATES = [...STATE_BOUNDS].sort((a, b) => a.name.localeCompare(b.name));
 
@@ -161,9 +159,15 @@ export default function Dashboard() {
       version: 8,
       glyphs: '/glyphs/{fontstack}/{range}.pbf',
       sources: {
-        officialIndia: {
-          type: 'geojson',
-          data: OFFICIAL_INDIA_GEOJSON,
+        indiaTopoSvg: {
+          type: 'image',
+          url: LOCAL_INDIA_TOPO_SVG_URL,
+          coordinates: [
+            [DEFAULT_BOUNDS[0], DEFAULT_BOUNDS[3]], // Top-Left
+            [DEFAULT_BOUNDS[2], DEFAULT_BOUNDS[3]], // Top-Right
+            [DEFAULT_BOUNDS[2], DEFAULT_BOUNDS[1]], // Bottom-Right
+            [DEFAULT_BOUNDS[0], DEFAULT_BOUNDS[1]], // Bottom-Left
+          ],
         },
         grid500: {
           type: 'vector',
@@ -205,20 +209,12 @@ export default function Dashboard() {
           },
         },
         {
-          id: 'india-bg',
-          type: 'fill',
-          source: 'officialIndia',
+          id: 'india-topo-svg',
+          type: 'raster',
+          source: 'indiaTopoSvg',
           paint: {
-            'fill-color': '#FFFFFF',
-          },
-        },
-        {
-          id: 'india-borders',
-          type: 'line',
-          source: 'officialIndia',
-          paint: {
-            'line-color': '#94A3B8',
-            'line-width': 1,
+            'raster-opacity': 1,
+            'raster-fade-duration': 0,
           },
         },
         {
