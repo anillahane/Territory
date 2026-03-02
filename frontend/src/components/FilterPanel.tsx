@@ -1,7 +1,7 @@
 // Filter Panel Component
 // Requirements: 4.1, 4.2, 4.3, 4.6
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Box,
   TextField,

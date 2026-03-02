@@ -22,7 +22,6 @@ import {
   TableChart as TableChartIcon,
   Menu as MenuIcon,
   ChevronLeft as ChevronLeftIcon,
-  AdminPanelSettings as AdminIcon,
 } from '@mui/icons-material';
 
 const drawerWidth = 240;
@@ -321,7 +320,9 @@ export default function Layout() {
           flexGrow: 1,
           display: 'flex',
           flexDirection: 'column',
-          overflow: 'hidden',
+          overflowX: 'hidden',
+          overflowY: 'scroll',
+          minHeight: 0,
           minWidth: 0,
         }}
       >

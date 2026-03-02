@@ -45,6 +45,12 @@ export interface MappingsApiResponse {
     totalRecords: number;
     totalPages: number;
   };
+  stats?: {
+    uniqueCustomers: number;
+    uniquePockets: number;
+    uniqueBranches: number;
+    avgDistance: number;
+  };
 }
 
 export interface ApiError {

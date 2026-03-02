@@ -47,7 +47,7 @@ export default function CustomerMappingView() {
       try {
         const response = await api.listJobs({ limit: 100 });
         const jobList = response.jobs.map((job: any) => ({
-          id: job.id,
+          id: job.jobId,
           name: `${job.type} - ${new Date(job.createdAt).toLocaleDateString()}`,
         }));
         setJobs(jobList);
@@ -57,31 +57,6 @@ export default function CustomerMappingView() {
     };
     fetchJobs();
   }, []);
-
-  // Calculate statistics from current mappings
-  useEffect(() => {
-    if (mappings.length > 0) {
-      const uniqueCustomers = new Set(mappings.map((m) => m.customer_id)).size;
-      const uniquePockets = new Set(mappings.map((m) => m.pocket_id)).size;
-      const uniqueBranches = new Set(mappings.map((m) => m.nearest_branch_id)).size;
-      const avgDistance =
-        mappings.reduce((sum, m) => sum + m.distance_customer_to_pocket, 0) / mappings.length;
-
-      setStats({
-        uniqueCustomers,
-        uniquePockets,
-        uniqueBranches,
-        avgDistance,
-      });
-    } else {
-      setStats({
-        uniqueCustomers: 0,
-        uniquePockets: 0,
-        uniqueBranches: 0,
-        avgDistance: 0,
-      });
-    }
-  }, [mappings]);
 
   // Fetch mappings when filters or pagination change
   const fetchMappings = useCallback(async () => {
@@ -105,6 +80,13 @@ export default function CustomerMappingView() {
         pageSize: response.pagination.pageSize,
         totalRecords: response.pagination.totalRecords,
         totalPages: response.pagination.totalPages,
+      });
+
+      setStats({
+        uniqueCustomers: response.stats?.uniqueCustomers || 0,
+        uniquePockets: response.stats?.uniquePockets || 0,
+        uniqueBranches: response.stats?.uniqueBranches || 0,
+        avgDistance: response.stats?.avgDistance || 0,
       });
     } catch (error) {
       const apiError = error as ApiError;
@@ -148,7 +130,7 @@ export default function CustomerMappingView() {
   };
 
   return (
-    <Box sx={{ width: '100%', height: '100%', p: 3, overflow: 'auto', bgcolor: '#F8FAFC' }}>
+    <Box sx={{ width: '100%', minHeight: '100%', p: 3, bgcolor: '#F8FAFC' }}>
       <Box sx={{ mb: 3 }}>
         <Typography variant="h4" gutterBottom sx={{ fontWeight: 700, color: '#0F172A' }}>
           Customer Pocket Mappings

@@ -311,7 +311,7 @@ function validateAlphabet(alphabet) {
  */
 function findNearestPocket(customerLat, customerLon, config, options = {}) {
   const { originLat, originLon, alphabet } = config;
-  const searchRadius = options.searchRadius || 50000; // Default 50km search radius
+  const searchRadius = options.searchRadius || 1000; // CRITICAL FIX: Changed from 50000 to 1000 (1 grid cell)
   
   // Convert customer location to meters
   const customerMeters = latLonToMeters(customerLat, customerLon, originLat, originLon);
@@ -339,8 +339,9 @@ function findNearestPocket(customerLat, customerLon, config, options = {}) {
   // Get finest level size
   const finestLevelSize = GRID_LEVELS[GRID_LEVELS.length - 1];
   
-  // Calculate how many pockets to check in each direction
-  const pocketsToCheck = Math.ceil(searchRadius / finestLevelSize);
+  // CRITICAL FIX: Only check immediate 8 neighboring pockets (1 cell radius)
+  // This changes from checking 10,201 pockets to just 9 pockets per customer
+  const pocketsToCheck = 1; // Check only surrounding pockets
   
   // Check surrounding pockets
   for (let rowOffset = -pocketsToCheck; rowOffset <= pocketsToCheck; rowOffset++) {

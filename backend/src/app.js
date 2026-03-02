@@ -20,8 +20,13 @@ const customerMappingsRoutes = require('./routes/customerMappings');
 // Import middleware
 const { errorHandler } = require('./middleware/errorHandler');
 
-// Initialize workers
-require('./workers/branchUploadWorker');
+const isTestEnv = process.env.NODE_ENV === 'test';
+const queuesDisabled = process.env.DISABLE_QUEUES === 'true' || isTestEnv;
+
+// Initialize workers only when queues are enabled
+if (!queuesDisabled) {
+  require('./workers/branchUploadWorker');
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -100,18 +105,35 @@ app.use((req, res) => {
 // Error handling middleware (must be last)
 app.use(errorHandler);
 
-// Start server
-app.listen(PORT, () => {
-  logger.info(`Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
-  logger.info(`API version: ${API_VERSION}`);
-});
+let server = null;
+
+const startServer = () =>
+  app.listen(PORT, () => {
+    logger.info(`Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
+    logger.info(`API version: ${API_VERSION}`);
+  });
+
+if (require.main === module) {
+  server = startServer();
+}
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
-  logger.info('SIGTERM signal received: closing HTTP server');
-  app.close(() => {
+const shutdown = (signal) => {
+  logger.info(`${signal} signal received: closing HTTP server`);
+
+  if (!server) {
+    logger.info('No active HTTP server instance to close');
+    process.exit(0);
+    return;
+  }
+
+  server.close(() => {
     logger.info('HTTP server closed');
+    process.exit(0);
   });
-});
+};
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 module.exports = app;

@@ -153,7 +153,7 @@ export default function CustomerMappingTable({
             </TableRow>
           </TableHead>
           <TableBody>
-            {mappings.map((mapping, index) => (
+            {mappings.map((mapping) => (
               <TableRow 
                 key={mapping.id} 
                 hover

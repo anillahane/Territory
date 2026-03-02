@@ -1,32 +1,31 @@
 @echo off
+setlocal
+
 echo ============================================
-echo   STOPPING ALL SERVICES
+echo   STOPPING SERVICES
 echo ============================================
 echo.
 
-echo 1. Stopping Python Worker...
-taskkill /F /IM python.exe 2>nul
-if %errorlevel% equ 0 (
-    echo    [OK] Python worker stopped
-) else (
-    echo    [-] No Python worker running
+where docker >nul 2>&1
+if %errorlevel% neq 0 (
+  echo [ERROR] Docker CLI not found.
+  exit /b 1
 )
 
-echo 2. Stopping Backend (Node.js)...
-taskkill /F /IM node.exe 2>nul
-if %errorlevel% equ 0 (
-    echo    [OK] Backend stopped
-) else (
-    echo    [-] No backend running
+docker compose stop
+if %errorlevel% neq 0 (
+  echo [ERROR] Failed to stop one or more services.
+  exit /b 1
 )
 
-echo 3. Stopping Docker Containers...
-docker-compose down
-echo    [OK] Docker containers stopped
+echo [INFO] Stopping frontend process on port 5173...
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":5173" ^| findstr "LISTENING"') do (
+  taskkill /PID %%p /F >nul 2>&1
+)
 
 echo.
-echo ============================================
-echo   ALL SERVICES STOPPED
-echo ============================================
+echo [OK] Services stopped.
 echo.
-pause
+docker compose ps
+echo.
+endlocal

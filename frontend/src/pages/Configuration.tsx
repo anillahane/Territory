@@ -311,31 +311,34 @@ export default function Configuration() {
                 Configuration History
               </Typography>
               <Box sx={{ mt: 2 }}>
-                {history.map((item) => (
-                  <Box
-                    key={item.id}
-                    sx={{
-                      p: 2,
-                      mb: 2,
-                      border: '1px solid',
-                      borderColor: 'divider',
-                      borderRadius: 1,
-                    }}
-                  >
-                    <Typography variant="caption" color="text.secondary">
-                      {new Date(item.changedAt || item.changed_at).toLocaleString()}
-                    </Typography>
-                    <Typography variant="body2" sx={{ mt: 1 }}>
-                      Origin: ({item.originLat || item.origin_lat}, {item.originLon || item.origin_lon})
-                    </Typography>
-                    <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
-                      Alphabet: {item.alphabet}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      Version: {item.version}
-                    </Typography>
-                  </Box>
-                ))}
+                {history.map((item) => {
+                  const changedAt = item.changedAt ?? item.changed_at;
+                  return (
+                    <Box
+                      key={item.id}
+                      sx={{
+                        p: 2,
+                        mb: 2,
+                        border: '1px solid',
+                        borderColor: 'divider',
+                        borderRadius: 1,
+                      }}
+                    >
+                      <Typography variant="caption" color="text.secondary">
+                        {changedAt ? new Date(changedAt).toLocaleString() : 'Unknown timestamp'}
+                      </Typography>
+                      <Typography variant="body2" sx={{ mt: 1 }}>
+                        Origin: ({item.originLat || item.origin_lat}, {item.originLon || item.origin_lon})
+                      </Typography>
+                      <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                        Alphabet: {item.alphabet}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Version: {item.version}
+                      </Typography>
+                    </Box>
+                  );
+                })}
               </Box>
             </Paper>
           </Grid>

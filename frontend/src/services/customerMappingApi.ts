@@ -61,8 +61,32 @@ class CustomerMappingApiService {
       if (!response.data || !response.data.data || !response.data.pagination) {
         throw new Error('Invalid API response structure');
       }
+      const normalizedData = response.data.data.map((item: any) => ({
+        id: item.id,
+        job_id: item.job_id ?? item.jobId ?? params.jobId ?? '',
+        customer_id: item.customer_id ?? item.customerId ?? '',
+        customer_lat: Number(item.customer_lat ?? item.customerLat ?? 0),
+        customer_lon: Number(item.customer_lon ?? item.customerLon ?? 0),
+        pocket_id: item.pocket_id ?? item.pocketId ?? '',
+        distance_customer_to_pocket: Number(
+          item.distance_customer_to_pocket ?? item.distanceCustomerToPocket ?? 0
+        ),
+        nearest_branch_id: item.nearest_branch_id ?? item.nearestBranchId ?? '',
+        branch_name: item.branch_name ?? item.branchName ?? undefined,
+        distance_pocket_to_branch: Number(
+          item.distance_pocket_to_branch ?? item.distancePocketToBranch ?? 0
+        ),
+        distance_customer_to_branch: Number(
+          item.distance_customer_to_branch ?? item.distanceCustomerToBranch ?? 0
+        ),
+        created_at: item.created_at ?? item.createdAt ?? '',
+      }));
 
-      return response.data;
+      return {
+        data: normalizedData,
+        pagination: response.data.pagination,
+        stats: response.data.stats,
+      };
     });
   }
 
