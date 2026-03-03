@@ -73,6 +73,26 @@ class CustomerMappingApiService {
         ),
         nearest_branch_id: item.nearest_branch_id ?? item.nearestBranchId ?? '',
         branch_name: item.branch_name ?? item.branchName ?? undefined,
+        uploaded_branch_code: item.uploaded_branch_code ?? item.uploadedBranchCode ?? null,
+        existing_branch_id: item.existing_branch_id ?? item.existingBranchId ?? null,
+        existing_branch_name: item.existing_branch_name ?? item.existingBranchName ?? null,
+        distance_customer_to_existing_branch:
+          item.distance_customer_to_existing_branch !== undefined &&
+          item.distance_customer_to_existing_branch !== null
+            ? Number(item.distance_customer_to_existing_branch)
+            : (
+              item.distanceCustomerToExistingBranch !== undefined &&
+              item.distanceCustomerToExistingBranch !== null
+                ? Number(item.distanceCustomerToExistingBranch)
+                : null
+            ),
+        branch_change_type: item.branch_change_type ?? item.branchChangeType ?? 'not_comparable',
+        distance_reduction:
+          item.distance_reduction !== undefined && item.distance_reduction !== null
+            ? Number(item.distance_reduction)
+            : (item.distanceReduction !== undefined && item.distanceReduction !== null
+              ? Number(item.distanceReduction)
+              : null),
         distance_pocket_to_branch: Number(
           item.distance_pocket_to_branch ?? item.distancePocketToBranch ?? 0
         ),
@@ -82,10 +102,72 @@ class CustomerMappingApiService {
         created_at: item.created_at ?? item.createdAt ?? '',
       }));
 
+      const rawStats = response.data.stats as any | undefined;
+      const rawImpact = rawStats?.impact;
+      const normalizedImpact = rawImpact
+        ? {
+            comparableAccounts: Number(rawImpact.comparableAccounts ?? rawImpact.comparable_accounts ?? 0),
+            sameBranchAccounts: Number(rawImpact.sameBranchAccounts ?? rawImpact.same_branch_accounts ?? 0),
+            differentBranchAccounts: Number(rawImpact.differentBranchAccounts ?? rawImpact.different_branch_accounts ?? 0),
+            sameBranchCount: Number(rawImpact.sameBranchCount ?? rawImpact.same_branch_count ?? 0),
+            differentBranchCount: Number(rawImpact.differentBranchCount ?? rawImpact.different_branch_count ?? 0),
+            totalBranchCount: Number(rawImpact.totalBranchCount ?? rawImpact.total_branch_count ?? 0),
+            avgExistingBranchDistance: Number(rawImpact.avgExistingBranchDistance ?? rawImpact.avg_existing_branch_distance ?? 0),
+            avgRevisedBranchDistance: Number(rawImpact.avgRevisedBranchDistance ?? rawImpact.avg_revised_branch_distance ?? 0),
+            avgDistanceReduction: Number(rawImpact.avgDistanceReduction ?? rawImpact.avg_distance_reduction ?? 0),
+            totalDistanceReduction: Number(rawImpact.totalDistanceReduction ?? rawImpact.total_distance_reduction ?? 0),
+            improvedAccounts: Number(rawImpact.improvedAccounts ?? rawImpact.improved_accounts ?? 0),
+            unchangedDistanceAccounts: Number(rawImpact.unchangedDistanceAccounts ?? rawImpact.unchanged_distance_accounts ?? 0),
+            worsenedAccounts: Number(rawImpact.worsenedAccounts ?? rawImpact.worsened_accounts ?? 0),
+            sameBranchAvgOriginalDistance: Number(
+              rawImpact.sameBranchAvgOriginalDistance ?? rawImpact.same_branch_avg_original_distance ?? 0
+            ),
+            sameBranchAvgChangedDistance: Number(
+              rawImpact.sameBranchAvgChangedDistance ?? rawImpact.same_branch_avg_changed_distance ?? 0
+            ),
+            differentBranchAvgOriginalDistance: Number(
+              rawImpact.differentBranchAvgOriginalDistance ?? rawImpact.different_branch_avg_original_distance ?? 0
+            ),
+            differentBranchAvgChangedDistance: Number(
+              rawImpact.differentBranchAvgChangedDistance ?? rawImpact.different_branch_avg_changed_distance ?? 0
+            ),
+            sameBranchAvgImpact: Number(
+              rawImpact.sameBranchAvgImpact ?? rawImpact.same_branch_avg_impact ?? 0
+            ),
+            differentBranchAvgImpact: Number(
+              rawImpact.differentBranchAvgImpact ?? rawImpact.different_branch_avg_impact ?? 0
+            ),
+          }
+        : undefined;
+
+      const rawByExistingBranch = rawStats?.byExistingBranch ?? rawStats?.by_existing_branch;
+      const normalizedByExistingBranch = Array.isArray(rawByExistingBranch)
+        ? rawByExistingBranch.map((row: any) => ({
+            existingBranchId: row.existingBranchId ?? row.existing_branch_id ?? '',
+            existingBranchName: row.existingBranchName ?? row.existing_branch_name ?? null,
+            comparableAccounts: Number(row.comparableAccounts ?? row.comparable_accounts ?? 0),
+            sameBranchAccounts: Number(row.sameBranchAccounts ?? row.same_branch_accounts ?? 0),
+            differentBranchAccounts: Number(row.differentBranchAccounts ?? row.different_branch_accounts ?? 0),
+            avgExistingBranchDistance: Number(row.avgExistingBranchDistance ?? row.avg_existing_branch_distance ?? 0),
+            avgRevisedBranchDistance: Number(row.avgRevisedBranchDistance ?? row.avg_revised_branch_distance ?? 0),
+            avgDistanceReduction: Number(row.avgDistanceReduction ?? row.avg_distance_reduction ?? 0),
+            totalDistanceReduction: Number(row.totalDistanceReduction ?? row.total_distance_reduction ?? 0),
+          }))
+        : [];
+
       return {
         data: normalizedData,
         pagination: response.data.pagination,
-        stats: response.data.stats,
+        stats: rawStats
+          ? {
+              uniqueCustomers: Number(rawStats.uniqueCustomers ?? rawStats.unique_customers ?? 0),
+              uniquePockets: Number(rawStats.uniquePockets ?? rawStats.unique_pockets ?? 0),
+              uniqueBranches: Number(rawStats.uniqueBranches ?? rawStats.unique_branches ?? 0),
+              avgDistance: Number(rawStats.avgDistance ?? rawStats.avg_distance ?? 0),
+              impact: normalizedImpact,
+              byExistingBranch: normalizedByExistingBranch,
+            }
+          : undefined,
       };
     });
   }

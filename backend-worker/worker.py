@@ -30,6 +30,20 @@ redis_client = redis.from_url(REDIS_URL)
 print(f"🔌 Connecting to PostgreSQL: {DB_URL.split('@')[1]}")  # Hide password
 db_engine = create_engine(DB_URL, pool_pre_ping=True)
 
+def parse_bool_flag(value, default=False):
+    """Parse booleans from mixed string/bool payload values."""
+    if value is None:
+        return default
+
+    if isinstance(value, bool):
+        return value
+
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return default
+
+    return normalized in ('1', 'true', 'yes', 'y', 'on')
+
 def meters_per_degree_lon(latitude):
     """Calculate meters per degree longitude at given latitude"""
     lat_rad = math.radians(latitude)
@@ -144,65 +158,28 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     
     return R * c
 
-def find_nearest_pocket(customer_lat, customer_lon, config, search_radius=1000):
-    """Find nearest pocket to customer coordinates"""
+def find_nearest_pocket(customer_lat, customer_lon, config, pocket_level_size=5000):
+    """Assign customer to the containing pocket cell at the configured pocket level."""
     x, y = lat_lon_to_meters(
         customer_lat, customer_lon,
         config['originLat'], config['originLon']
     )
-    
-    # Calculate starting pocket
-    start_indices = calculate_indices(x, y)
-    start_pocket_id = encode_indices(start_indices, config['alphabet'])
-    
-    # Get center of starting pocket
-    center_lat, center_lon = decode_pocket_id(start_pocket_id, config)
-    
-    nearest_pocket_id = start_pocket_id
+
+    if pocket_level_size not in GRID_LEVELS:
+        raise ValueError(f"Unsupported pocket level size: {pocket_level_size}")
+
+    pocket_level_index = GRID_LEVELS.index(pocket_level_size)
+    full_indices = calculate_indices(x, y)
+    pocket_indices = full_indices[:pocket_level_index + 1]
+    nearest_pocket_id = encode_indices(pocket_indices, config['alphabet'])
+    center_lat, center_lon = decode_pocket_id(nearest_pocket_id, config)
     nearest_distance = haversine_distance(customer_lat, customer_lon, center_lat, center_lon)
-    nearest_center = (center_lat, center_lon)
-    
-    # Get finest level size
-    finest_level_size = GRID_LEVELS[-1]
-    
-    # CRITICAL FIX: Only check immediate 8 neighboring pockets (1 cell radius)
-    # This changes from checking 10,201 pockets to just 9 pockets per customer
-    pockets_to_check = 1  # Check only surrounding pockets
-    
-    for row_offset in range(-pockets_to_check, pockets_to_check + 1):
-        for col_offset in range(-pockets_to_check, pockets_to_check + 1):
-            offset_distance = math.sqrt(row_offset**2 + col_offset**2) * finest_level_size
-            if offset_distance > search_radius:
-                continue
-            
-            test_indices = start_indices.copy()
-            test_indices[-1] = {
-                **test_indices[-1],
-                'row': test_indices[-1]['row'] + row_offset,
-                'col': test_indices[-1]['col'] + col_offset
-            }
-            
-            try:
-                test_pocket_id = encode_indices(test_indices, config['alphabet'])
-                test_center_lat, test_center_lon = decode_pocket_id(test_pocket_id, config)
-                
-                distance = haversine_distance(
-                    customer_lat, customer_lon,
-                    test_center_lat, test_center_lon
-                )
-                
-                if distance < nearest_distance:
-                    nearest_distance = distance
-                    nearest_pocket_id = test_pocket_id
-                    nearest_center = (test_center_lat, test_center_lon)
-            except:
-                continue
-    
+
     return {
         'pocketId': nearest_pocket_id,
         'distance': nearest_distance,
-        'centerLat': nearest_center[0],
-        'centerLon': nearest_center[1]
+        'centerLat': center_lat,
+        'centerLon': center_lon
     }
 
 def get_branches():
@@ -245,6 +222,7 @@ def process_job(job_data):
     job_id = job_data['jobId']
     file_path = job_data['filePath']
     config = job_data['config']
+    replace_existing = parse_bool_flag(job_data.get('replaceExisting', False), False)
     
     # Normalize file path to avoid cwd-dependent failures from manually requeued jobs.
     if not os.path.isabs(file_path):
@@ -282,6 +260,8 @@ def process_job(job_data):
         branches = get_branches()
         if not branches:
             raise Exception("No branches found in database")
+
+        branch_lookup = {str(branch['id']).upper(): branch for branch in branches}
         
         processed_count = 0
         all_results = []
@@ -298,6 +278,7 @@ def process_job(job_data):
         lat_col = next((c for c in ['canon_lat', 'latitude', 'lat'] if c in df.columns), None)
         lon_col = next((c for c in ['canon_long', 'longitude', 'lon'] if c in df.columns), None)
         id_col = next((c for c in ['lan', 'customerid', 'customer_id', 'id'] if c in df.columns), None)
+        branch_col = next((c for c in ['branch_code', 'branchcode', 'branch code'] if c in df.columns), None)
         
         if not lat_col or not lon_col:
             raise ValueError("Could not find latitude/longitude columns")
@@ -316,8 +297,23 @@ def process_job(job_data):
                         raise ValueError("Invalid coordinates")
                     
                     cust_id = str(row[id_col]) if id_col and pd.notna(row[id_col]) else f"CUST_{processed_count + 1}"
+                    uploaded_branch_code = None
+                    existing_branch_id = None
+                    distance_customer_to_existing_branch = None
+
+                    if branch_col and pd.notna(row[branch_col]):
+                        branch_code = str(row[branch_col]).strip()
+                        if branch_code:
+                            uploaded_branch_code = branch_code
+                            existing_branch = branch_lookup.get(branch_code.upper())
+                            if existing_branch:
+                                existing_branch_id = existing_branch['id']
+                                distance_customer_to_existing_branch = haversine_distance(
+                                    lat, lon,
+                                    existing_branch['lat'], existing_branch['lon']
+                                )
                     
-                    # Find nearest pocket
+                    # Identify containing pocket at 5km level.
                     nearest_pocket = find_nearest_pocket(lat, lon, config)
                     pocket_id = nearest_pocket['pocketId']
                     
@@ -341,23 +337,20 @@ def process_job(job_data):
                             'lon': nearest_pocket['centerLon']
                         }
                     
-                    # Find nearest branch for this pocket
-                    if pocket_id not in pocket_centers or 'branch' not in pocket_centers[pocket_id]:
+                    # Cache nearest branch for this pocket (fallback assignment).
+                    if pocket_id not in pocket_centers or 'nearestBranch' not in pocket_centers[pocket_id]:
                         branch_info = find_nearest_branch_for_pocket(
                             nearest_pocket['centerLat'],
                             nearest_pocket['centerLon'],
                             branches
                         )
                         if branch_info:
-                            pocket_centers[pocket_id]['branch'] = branch_info
-                    
-                    # Calculate customer to branch distance
-                    branch_info = pocket_centers[pocket_id].get('branch')
-                    if branch_info:
-                        distance_customer_to_branch = haversine_distance(
-                            lat, lon,
-                            branch_info['branchLat'], branch_info['branchLon']
-                        )
+                            pocket_centers[pocket_id]['nearestBranch'] = branch_info
+
+                    selected_branch_info = pocket_centers[pocket_id].get('nearestBranch')
+                    # Revised mapping distance is pocket-center to branch distance.
+                    if selected_branch_info:
+                        distance_customer_to_branch = selected_branch_info['distance']
                         
                         # Store mapping
                         all_mappings.append({
@@ -368,9 +361,12 @@ def process_job(job_data):
                             'customer_lon': lon,
                             'pocket_id': pocket_id,
                             'distance_customer_to_pocket': nearest_pocket['distance'],
-                            'nearest_branch_id': branch_info['branchId'],
-                            'distance_pocket_to_branch': branch_info['distance'],
-                            'distance_customer_to_branch': distance_customer_to_branch
+                            'nearest_branch_id': selected_branch_info['branchId'],
+                            'distance_pocket_to_branch': selected_branch_info['distance'],
+                            'distance_customer_to_branch': distance_customer_to_branch,
+                            'uploaded_branch_code': uploaded_branch_code,
+                            'existing_branch_id': existing_branch_id,
+                            'distance_customer_to_existing_branch': distance_customer_to_existing_branch
                         })
                 
                 except Exception as e:
@@ -418,7 +414,13 @@ def process_job(job_data):
         print(f"💾 Saving {len(all_mappings)} mappings to database...")
         
         # Bulk insert mappings in small batches to avoid PostgreSQL parameter limit
+        replaced_mappings_count = 0
         if all_mappings:
+            if replace_existing:
+                with db_engine.connect() as conn:
+                    delete_result = conn.execute(text("DELETE FROM customer_pocket_mappings"))
+                    conn.commit()
+                    replaced_mappings_count = delete_result.rowcount if delete_result.rowcount is not None else 0
             batch_size = 100
             for i in range(0, len(all_mappings), batch_size):
                 batch = all_mappings[i:i + batch_size]
@@ -438,7 +440,11 @@ def process_job(job_data):
             "pocketStats": pocket_stats,
             "totalPockets": len(pocket_stats),
             "totalAccounts": processed_count,
-            "mappingsPersisted": len(all_mappings)
+            "mappingsPersisted": len(all_mappings),
+            "replaceExisting": bool(replace_existing),
+            "replacedMappingsCount": int(replaced_mappings_count),
+            "territoryUrl": f"/api/v1/batch/territories/{job_id}",
+            "worker": "python"
         }
         
         with db_engine.connect() as conn:
@@ -470,6 +476,7 @@ def process_job(job_data):
             'total': processed_count,
             'pocketStats': pocket_stats,
             'mappingsPersisted': len(all_mappings),
+            'replacedMappingsCount': int(replaced_mappings_count),
             'buffer': None  # File saved to disk
         }
     

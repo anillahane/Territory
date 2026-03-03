@@ -99,9 +99,10 @@ class ApiService {
     return response.data;
   }
 
-  async uploadBranches(file: File) {
+  async uploadBranches(file: File, uploadMode: 'overwrite' | 'add' = 'overwrite') {
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('uploadMode', uploadMode);
     // Let the browser set multipart boundary automatically.
     const response = await this.client.post('/branches/upload', formData);
     return response.data;
@@ -182,9 +183,10 @@ class ApiService {
   }
 
   // Batch processing endpoints
-  async batchEncode(file: File) {
+  async batchEncode(file: File, replaceExisting = false) {
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('replaceExisting', String(replaceExisting));
     
     try {
       // Try as JSON first (new non-blocking behavior)
@@ -208,6 +210,30 @@ class ApiService {
   async downloadBatchResult(jobId: string) {
     const response = await this.client.get(`/batch/download/${jobId}`, {
       responseType: 'blob',
+    });
+    return response.data;
+  }
+
+  async getBatchTerritories(jobId: string) {
+    const response = await this.client.get(`/batch/territories/${jobId}`);
+    return response.data;
+  }
+
+  async getTerritoryVisualization(params?: {
+    mode?: string;
+    branchIds?: string[];
+    jobId?: string;
+    customerView?: string;
+  }) {
+    const response = await this.client.get('/batch/territories/visualization', {
+      params: {
+        mode: params?.mode,
+        jobId: params?.jobId,
+        customerView: params?.customerView,
+        branchIds: params?.branchIds && params.branchIds.length > 0
+          ? params.branchIds.join(',')
+          : undefined
+      }
     });
     return response.data;
   }

@@ -99,6 +99,8 @@ router.get(
           fileName: jobData.fileName || 'Unknown',
           totalAccounts: job.total || 0,
           totalPockets: jobData.totalPockets || 0,
+          territoryUrl: jobData.territoryUrl || null,
+          mappingsPersisted: jobData.mappingsPersisted || 0,
         },
       };
     });

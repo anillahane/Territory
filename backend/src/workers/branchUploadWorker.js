@@ -41,6 +41,23 @@ function getFieldValue(row, aliases) {
   return undefined;
 }
 
+function toNumber(value) {
+  if (typeof value === 'number') {
+    return value;
+  }
+
+  if (value === null || value === undefined) {
+    return Number.NaN;
+  }
+
+  const normalized = String(value).replace(/,/g, '').trim();
+  if (!normalized) {
+    return Number.NaN;
+  }
+
+  return Number.parseFloat(normalized);
+}
+
 /**
  * Process branch upload job
  * @param {Object} job - Bull job object
@@ -48,23 +65,35 @@ function getFieldValue(row, aliases) {
  * @param {string} job.data.fileName - Original file name
  */
 async function processBranchUpload(job) {
-  const { fileBuffer, fileName } = job.data;
+  const { fileBuffer, fileName, uploadMode: requestedUploadMode } = job.data;
+  const uploadMode = requestedUploadMode === 'add' ? 'add' : 'overwrite';
 
   logger.info('Starting branch upload processing', {
     jobId: job.id,
     fileName,
+    uploadMode,
   });
 
   try {
     const normalizedBuffer = ensureBuffer(fileBuffer);
 
-    // Parse Excel file
+    // Parse Excel file (all sheets)
     const workbook = xlsx.read(normalizedBuffer, { type: 'buffer' });
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    const data = xlsx.utils.sheet_to_json(sheet, { defval: '' });
+    const rowsWithSheet = [];
 
-    if (data.length === 0) {
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      const sheetRows = xlsx.utils.sheet_to_json(sheet, { defval: '' });
+      for (let i = 0; i < sheetRows.length; i++) {
+        rowsWithSheet.push({
+          sheetName,
+          rowNum: i + 2, // Header is row 1
+          row: sheetRows[i],
+        });
+      }
+    }
+
+    if (rowsWithSheet.length === 0) {
       throw new Error('Excel file is empty');
     }
 
@@ -80,38 +109,40 @@ async function processBranchUpload(job) {
     };
 
     // Validate and process branches
-    const branches = [];
+    const branchesById = new Map();
     const errors = [];
-    const totalRows = data.length;
+    const totalRows = rowsWithSheet.length;
 
-    for (let i = 0; i < data.length; i++) {
-      const row = data[i];
-      const rowNum = i + 2; // Excel row number (1-indexed + header)
+    for (let i = 0; i < rowsWithSheet.length; i++) {
+      const { sheetName, rowNum, row } = rowsWithSheet[i];
+      const rowRef = `${sheetName}!${rowNum}`;
 
       // Map column names (case-insensitive)
       const id = getFieldValue(row, ['ID', 'Branch ID', 'BranchID']);
       const city = getFieldValue(row, ['City']) || '';
-      const lat = parseFloat(getFieldValue(row, ['Latitude', 'Lat']));
-      const lon = parseFloat(getFieldValue(row, ['Longitude', 'Lon', 'Lng', 'Long']));
+      const lat = toNumber(getFieldValue(row, ['Latitude', 'Lat']));
+      const lon = toNumber(getFieldValue(row, ['Longitude', 'Lon', 'Lng', 'Long']));
+      const normalizedId = String(id || '').trim();
 
       // Validate
-      if (!id) {
-        errors.push({ row: rowNum, error: 'Missing Branch ID' });
+      if (!normalizedId) {
+        errors.push({ row: rowRef, error: 'Missing Branch ID' });
         continue;
       }
       if (isNaN(lat) || lat < -90 || lat > 90) {
-        errors.push({ row: rowNum, error: 'Invalid latitude' });
+        errors.push({ row: rowRef, error: 'Invalid latitude' });
         continue;
       }
       if (isNaN(lon) || lon < -180 || lon > 180) {
-        errors.push({ row: rowNum, error: 'Invalid longitude' });
+        errors.push({ row: rowRef, error: 'Invalid longitude' });
         continue;
       }
 
       // Calculate Pocket ID
       const { pocketId } = encodePocketId(lat, lon, config);
 
-      branches.push({ id, city, lat, lon, pocketId });
+      // Last occurrence wins for duplicate IDs in file
+      branchesById.set(normalizedId, { id: normalizedId, city, lat, lon, pocketId });
 
       // Update progress every 10 rows
       if (i % 10 === 0) {
@@ -120,6 +151,9 @@ async function processBranchUpload(job) {
       }
     }
 
+    const branches = Array.from(branchesById.values());
+    const duplicateRows = totalRows - errors.length - branches.length;
+
     if (errors.length > 0 && branches.length === 0) {
       throw new Error(`All rows have errors: ${JSON.stringify(errors)}`);
     }
@@ -127,26 +161,56 @@ async function processBranchUpload(job) {
     // Update progress: validation complete
     await job.progress(80);
 
-    // Insert branches in transaction
+    // Apply insert mode in one transaction.
     const result = await transaction(async (client) => {
       const inserted = [];
-      const skipped = [];
+      let existingBranchCount = 0;
+      let clearedMappings = 0;
+      let skippedExisting = 0;
+
+      if (uploadMode === 'overwrite') {
+        const existingBranchCountResult = await client.query('SELECT COUNT(*)::int AS count FROM branches');
+        existingBranchCount = existingBranchCountResult.rows[0].count;
+
+        try {
+          const deleteMappingsResult = await client.query('DELETE FROM customer_pocket_mappings');
+          clearedMappings = deleteMappingsResult.rowCount || 0;
+        } catch (err) {
+          // Some environments may not have this table migrated yet.
+          if (err.code !== '42P01') {
+            throw err;
+          }
+        }
+
+        await client.query('DELETE FROM branches');
+      }
+
       const totalBranches = branches.length;
 
       for (let i = 0; i < branches.length; i++) {
         const branch = branches[i];
-        try {
+        if (uploadMode === 'overwrite') {
           const res = await client.query(
             `INSERT INTO branches (id, city, lat, lon, pocket_id)
              VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (id) DO UPDATE
-             SET city = $2, lat = $3, lon = $4, pocket_id = $5
              RETURNING id`,
             [branch.id, branch.city, branch.lat, branch.lon, branch.pocketId]
           );
           inserted.push(res.rows[0].id);
-        } catch (err) {
-          skipped.push({ id: branch.id, error: err.message });
+        } else {
+          const res = await client.query(
+            `INSERT INTO branches (id, city, lat, lon, pocket_id)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (id) DO NOTHING
+             RETURNING id`,
+            [branch.id, branch.city, branch.lat, branch.lon, branch.pocketId]
+          );
+
+          if (res.rows.length > 0) {
+            inserted.push(res.rows[0].id);
+          } else {
+            skippedExisting += 1;
+          }
         }
 
         // Update progress every 10 inserts
@@ -156,16 +220,25 @@ async function processBranchUpload(job) {
         }
       }
 
-      return { inserted, skipped };
+      return {
+        inserted,
+        replaced: existingBranchCount,
+        clearedMappings,
+        skippedExisting,
+      };
     });
 
     // Final progress
     await job.progress(100);
 
     const summary = {
-      total: data.length,
+      mode: uploadMode,
+      total: totalRows,
       inserted: result.inserted.length,
-      skipped: result.skipped.length,
+      replaced: result.replaced,
+      clearedMappings: result.clearedMappings,
+      skippedExisting: result.skippedExisting,
+      duplicatesInFile: duplicateRows,
       errors: errors.length,
     };
 
@@ -179,7 +252,6 @@ async function processBranchUpload(job) {
       success: true,
       summary,
       errors: errors.length > 0 ? errors : undefined,
-      skipped: result.skipped.length > 0 ? result.skipped : undefined,
     };
   } catch (error) {
     logger.error('Branch upload failed', {

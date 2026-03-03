@@ -1,5 +1,4 @@
 // Customer Mapping Table Component
-// Requirements: 3.1, 3.2, 3.3, 3.5
 
 import {
   Table,
@@ -14,7 +13,7 @@ import {
   Typography,
   Skeleton,
   Chip,
-  Tooltip,
+  Tooltip
 } from '@mui/material';
 import { Place, Business, Timeline } from '@mui/icons-material';
 import { CustomerMapping, PaginationState } from '../types/customerMapping';
@@ -26,6 +25,8 @@ interface CustomerMappingTableProps {
   onPageChange: (page: number) => void;
   onPageSizeChange: (pageSize: number) => void;
 }
+
+const COLUMN_COUNT = 11;
 
 export default function CustomerMappingTable({
   mappings,
@@ -49,6 +50,56 @@ export default function CustomerMappingTable({
     return `${(distance / 1000).toFixed(2)} km`;
   };
 
+  const formatDistanceReduction = (distanceReduction: number | null | undefined) => {
+    if (distanceReduction === null || distanceReduction === undefined) {
+      return '--';
+    }
+
+    const prefix = distanceReduction > 0 ? '+' : '';
+    if (Math.abs(distanceReduction) < 1000) {
+      return `${prefix}${distanceReduction.toFixed(0)} m`;
+    }
+    return `${prefix}${(distanceReduction / 1000).toFixed(2)} km`;
+  };
+
+  const getBranchChangeChip = (mapping: CustomerMapping) => {
+    if (mapping.branch_change_type === 'same') {
+      return <Chip label="Same" size="small" color="success" />;
+    }
+    if (mapping.branch_change_type === 'different') {
+      return <Chip label="Different" size="small" color="warning" />;
+    }
+    return <Chip label="Not Comparable" size="small" variant="outlined" />;
+  };
+
+  const getExistingBranchChip = (mapping: CustomerMapping) => {
+    if (mapping.existing_branch_id) {
+      return (
+        <Tooltip title={mapping.existing_branch_name || mapping.existing_branch_id}>
+          <Chip
+            label={mapping.existing_branch_name || mapping.existing_branch_id}
+            size="small"
+            variant="outlined"
+            icon={<Business />}
+          />
+        </Tooltip>
+      );
+    }
+
+    if (mapping.uploaded_branch_code) {
+      return (
+        <Chip
+          label={`${mapping.uploaded_branch_code} (invalid)`}
+          size="small"
+          color="error"
+          variant="outlined"
+        />
+      );
+    }
+
+    return <Chip label="N/A" size="small" variant="outlined" />;
+  };
+
   // Loading skeleton
   if (loading && mappings.length === 0) {
     return (
@@ -61,15 +112,18 @@ export default function CustomerMappingTable({
               <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>Customer Lon</TableCell>
               <TableCell sx={{ color: 'white', fontWeight: 600 }}>Pocket ID</TableCell>
               <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>Distance to Pocket</TableCell>
-              <TableCell sx={{ color: 'white', fontWeight: 600 }}>Branch</TableCell>
-              <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>Pocket to Branch</TableCell>
-              <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>Customer to Branch</TableCell>
+              <TableCell sx={{ color: 'white', fontWeight: 600 }}>Existing Branch</TableCell>
+              <TableCell sx={{ color: 'white', fontWeight: 600 }}>Revised Branch</TableCell>
+              <TableCell sx={{ color: 'white', fontWeight: 600 }}>Branch Change</TableCell>
+              <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>Original Distance</TableCell>
+              <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>Changed Distance</TableCell>
+              <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>Distance Reduction</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {[...Array(5)].map((_, index) => (
               <TableRow key={index}>
-                {[...Array(8)].map((_, cellIndex) => (
+                {[...Array(COLUMN_COUNT)].map((_, cellIndex) => (
                   <TableCell key={cellIndex}>
                     <Skeleton animation="wave" />
                   </TableCell>
@@ -134,39 +188,46 @@ export default function CustomerMappingTable({
                   <span>To Pocket</span>
                 </Tooltip>
               </TableCell>
+              <TableCell sx={{ color: 'white', fontWeight: 600 }}>Existing Branch</TableCell>
               <TableCell sx={{ color: 'white', fontWeight: 600 }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                   <Business fontSize="small" />
-                  Branch
+                  Revised Branch
                 </Box>
               </TableCell>
+              <TableCell sx={{ color: 'white', fontWeight: 600 }}>Branch Change</TableCell>
               <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>
-                <Tooltip title="Distance from pocket center to nearest branch">
-                  <span>Pocket → Branch</span>
+                <Tooltip title="Original distance from customer to uploaded branch">
+                  <span>Original Distance</span>
                 </Tooltip>
               </TableCell>
               <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>
-                <Tooltip title="Distance from customer to nearest branch">
-                  <span>Customer → Branch</span>
+                <Tooltip title="Changed distance from mapped pocket center to revised branch">
+                  <span>Changed Distance</span>
+                </Tooltip>
+              </TableCell>
+              <TableCell align="right" sx={{ color: 'white', fontWeight: 600 }}>
+                <Tooltip title="Existing distance minus revised distance">
+                  <span>Distance Reduction</span>
                 </Tooltip>
               </TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {mappings.map((mapping) => (
-              <TableRow 
-                key={mapping.id} 
+              <TableRow
+                key={mapping.id}
                 hover
-                sx={{ 
+                sx={{
                   '&:nth-of-type(odd)': { bgcolor: 'action.hover' },
                   transition: 'background-color 0.2s',
                 }}
               >
                 <TableCell>
-                  <Chip 
-                    label={mapping.customer_id} 
-                    size="small" 
-                    color="primary" 
+                  <Chip
+                    label={mapping.customer_id}
+                    size="small"
+                    color="primary"
                     variant="outlined"
                   />
                 </TableCell>
@@ -177,23 +238,26 @@ export default function CustomerMappingTable({
                   {mapping.customer_lon.toFixed(6)}
                 </TableCell>
                 <TableCell>
-                  <Chip 
-                    label={mapping.pocket_id} 
-                    size="small" 
-                    color="secondary" 
+                  <Chip
+                    label={mapping.pocket_id}
+                    size="small"
+                    color="secondary"
                     variant="outlined"
                   />
                 </TableCell>
                 <TableCell align="right">
-                  <Chip 
+                  <Chip
                     label={formatDistance(mapping.distance_customer_to_pocket)}
                     size="small"
                     sx={{ bgcolor: 'success.light', color: 'success.dark', fontWeight: 600 }}
                   />
                 </TableCell>
                 <TableCell>
+                  {getExistingBranchChip(mapping)}
+                </TableCell>
+                <TableCell>
                   <Tooltip title={mapping.branch_name || mapping.nearest_branch_id}>
-                    <Chip 
+                    <Chip
                       label={mapping.branch_name || mapping.nearest_branch_id}
                       size="small"
                       color="info"
@@ -202,14 +266,36 @@ export default function CustomerMappingTable({
                     />
                   </Tooltip>
                 </TableCell>
+                <TableCell>
+                  {getBranchChangeChip(mapping)}
+                </TableCell>
                 <TableCell align="right">
                   <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                    {formatDistance(mapping.distance_pocket_to_branch)}
+                    {mapping.distance_customer_to_existing_branch === null ||
+                    mapping.distance_customer_to_existing_branch === undefined
+                      ? '--'
+                      : formatDistance(mapping.distance_customer_to_existing_branch)}
                   </Typography>
                 </TableCell>
                 <TableCell align="right">
                   <Typography variant="body2" sx={{ fontWeight: 500 }}>
                     {formatDistance(mapping.distance_customer_to_branch)}
+                  </Typography>
+                </TableCell>
+                <TableCell align="right">
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      fontWeight: 700,
+                      color:
+                        mapping.distance_reduction === null || mapping.distance_reduction === undefined
+                          ? 'text.secondary'
+                          : mapping.distance_reduction >= 0
+                            ? 'success.dark'
+                            : 'error.dark'
+                    }}
+                  >
+                    {formatDistanceReduction(mapping.distance_reduction)}
                   </Typography>
                 </TableCell>
               </TableRow>
@@ -221,14 +307,14 @@ export default function CustomerMappingTable({
         <TablePagination
           component="div"
           count={pagination.totalRecords}
-          page={pagination.page - 1} // Material-UI uses 0-based
+          page={pagination.page - 1}
           onPageChange={handleChangePage}
           rowsPerPage={pagination.pageSize}
           onRowsPerPageChange={handleChangeRowsPerPage}
           rowsPerPageOptions={[25, 50, 100, 250, 500]}
           labelDisplayedRows={({ from, to, count }) => (
             <Typography variant="body2" sx={{ fontWeight: 500 }}>
-              {`${from}–${to} of ${count !== -1 ? count.toLocaleString() : `more than ${to}`}`}
+              {`${from}-${to} of ${count !== -1 ? count.toLocaleString() : `more than ${to}`}`}
             </Typography>
           )}
         />

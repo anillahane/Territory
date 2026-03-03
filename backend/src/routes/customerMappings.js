@@ -166,6 +166,21 @@ router.post(
         );
       }
 
+      if (
+        mapping.distanceCustomerToExistingBranch !== undefined &&
+        mapping.distanceCustomerToExistingBranch !== null &&
+        (
+          typeof mapping.distanceCustomerToExistingBranch !== 'number' ||
+          !Number.isFinite(mapping.distanceCustomerToExistingBranch)
+        )
+      ) {
+        throw new AppError(
+          `Invalid distanceCustomerToExistingBranch at index ${i}`,
+          400,
+          'INVALID_TYPE'
+        );
+      }
+
       normalizedMappings.push({
         customerId: mapping.customerId.trim(),
         customerLat: mapping.customerLat,
@@ -184,6 +199,23 @@ router.post(
         ),
         distancePocketToBranch: mapping.distancePocketToBranch,
         distanceCustomerToBranch: mapping.distanceCustomerToBranch,
+        uploadedBranchCode: normalizeOptionalId(
+          mapping.uploadedBranchCode,
+          `Invalid uploadedBranchCode at index ${i}`,
+          'INVALID_TYPE',
+          50
+        ),
+        existingBranchId: normalizeOptionalId(
+          mapping.existingBranchId,
+          `Invalid existingBranchId at index ${i}`,
+          'INVALID_TYPE',
+          20
+        ),
+        distanceCustomerToExistingBranch:
+          mapping.distanceCustomerToExistingBranch === undefined ||
+          mapping.distanceCustomerToExistingBranch === null
+            ? null
+            : mapping.distanceCustomerToExistingBranch,
       });
     }
 

@@ -51,6 +51,18 @@ router.post(
       throw new AppError('No file uploaded', 400, 'NO_FILE');
     }
 
+    const uploadModeRaw = String(req.body?.uploadMode || 'overwrite')
+      .trim()
+      .toLowerCase();
+    if (!['overwrite', 'add'].includes(uploadModeRaw)) {
+      throw new AppError(
+        'Invalid upload mode. Use "overwrite" or "add".',
+        400,
+        'INVALID_UPLOAD_MODE'
+      );
+    }
+    const uploadMode = uploadModeRaw;
+
     // Generate unique job ID
     const jobId = uuidv4();
 
@@ -61,6 +73,7 @@ router.post(
         {
           fileBuffer: req.file.buffer,
           fileName: req.file.originalname,
+          uploadMode,
         },
         {
           jobId,
@@ -82,6 +95,7 @@ router.post(
       jobId: job.id,
       fileName: req.file.originalname,
       fileSize: req.file.size,
+      uploadMode,
     });
 
     // Return immediately with job ID
@@ -89,6 +103,7 @@ router.post(
       message: 'Upload queued for processing',
       jobId: job.id,
       status: 'queued',
+      uploadMode,
       statusUrl: `/api/v1/jobs/${job.id}`,
     });
   })

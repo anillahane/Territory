@@ -32,6 +32,7 @@ async function setupTestDatabase() {
       '001_initial_schema.sql',
       '002_add_jobs_data_column.sql',
       '003_create_customer_pocket_mappings.sql',
+      '004_add_branch_impact_fields.sql',
     ];
 
     for (const migrationFile of migrations) {

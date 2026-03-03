@@ -123,9 +123,9 @@ function decodeIndices(pocketId, alphabet = DEFAULT_ALPHABET) {
   
   const parts = pocketId.split('-');
   
-  // Validate that we have exactly 5 parts (one for each grid level)
-  if (parts.length !== GRID_LEVELS.length) {
-    throw new Error(`Invalid Pocket ID format: expected ${GRID_LEVELS.length} parts, got ${parts.length}`);
+  // Allow truncated Pocket IDs (e.g., up to 5km level) as long as they map to leading grid levels.
+  if (parts.length < 1 || parts.length > GRID_LEVELS.length) {
+    throw new Error(`Invalid Pocket ID format: expected 1 to ${GRID_LEVELS.length} parts, got ${parts.length}`);
   }
   
   const indices = [];
@@ -311,92 +311,32 @@ function validateAlphabet(alphabet) {
  */
 function findNearestPocket(customerLat, customerLon, config, options = {}) {
   const { originLat, originLon, alphabet } = config;
-  const searchRadius = options.searchRadius || 1000; // CRITICAL FIX: Changed from 50000 to 1000 (1 grid cell)
-  
-  // Convert customer location to meters
+  const pocketLevelMeters = Number.isFinite(Number(options.pocketLevelMeters))
+    ? Number(options.pocketLevelMeters)
+    : GRID_LEVELS[GRID_LEVELS.length - 1];
+  const pocketLevelIndex = GRID_LEVELS.indexOf(pocketLevelMeters);
+  if (pocketLevelIndex === -1) {
+    throw new Error(`Unsupported pocket level: ${pocketLevelMeters}`);
+  }
+
+  // Convert customer location to meters, then place customer into the containing pocket cell.
   const customerMeters = latLonToMeters(customerLat, customerLon, originLat, originLon);
-  
-  // Calculate approximate pocket at customer location (starting point)
-  const startIndices = calculateIndices(customerMeters.x, customerMeters.y);
-  const startPocketId = encodeIndices(startIndices, alphabet);
-  
-  // Decode to get center
-  const startPocket = decodePocketId(startPocketId, config);
-  
-  // Calculate distance to starting pocket
-  let nearestPocketId = startPocketId;
-  let nearestDistance = haversineDistance(
+  const fullIndices = calculateIndices(customerMeters.x, customerMeters.y);
+  const pocketIndices = fullIndices.slice(0, pocketLevelIndex + 1);
+  const pocketId = encodeIndices(pocketIndices, alphabet);
+  const pocket = decodePocketId(pocketId, config);
+  const distance = haversineDistance(
     customerLat,
     customerLon,
-    startPocket.centerLat,
-    startPocket.centerLon
+    pocket.centerLat,
+    pocket.centerLon
   );
-  let nearestCenter = {
-    lat: startPocket.centerLat,
-    lon: startPocket.centerLon,
-  };
-  
-  // Get finest level size
-  const finestLevelSize = GRID_LEVELS[GRID_LEVELS.length - 1];
-  
-  // CRITICAL FIX: Only check immediate 8 neighboring pockets (1 cell radius)
-  // This changes from checking 10,201 pockets to just 9 pockets per customer
-  const pocketsToCheck = 1; // Check only surrounding pockets
-  
-  // Check surrounding pockets
-  for (let rowOffset = -pocketsToCheck; rowOffset <= pocketsToCheck; rowOffset++) {
-    for (let colOffset = -pocketsToCheck; colOffset <= pocketsToCheck; colOffset++) {
-      // Skip if outside search radius (rough check)
-      const offsetDistance = Math.sqrt(rowOffset * rowOffset + colOffset * colOffset) * finestLevelSize;
-      if (offsetDistance > searchRadius) continue;
-      
-      // Calculate indices for this pocket
-      const testIndices = startIndices.map((idx, level) => {
-        if (level === startIndices.length - 1) {
-          // Only offset the finest level
-          return {
-            ...idx,
-            row: idx.row + rowOffset,
-            col: idx.col + colOffset,
-          };
-        }
-        return idx;
-      });
-      
-      try {
-        // Encode and decode to get center
-        const testPocketId = encodeIndices(testIndices, alphabet);
-        const testPocket = decodePocketId(testPocketId, config);
-        
-        // Calculate distance
-        const distance = haversineDistance(
-          customerLat,
-          customerLon,
-          testPocket.centerLat,
-          testPocket.centerLon
-        );
-        
-        // Update if closer
-        if (distance < nearestDistance) {
-          nearestDistance = distance;
-          nearestPocketId = testPocketId;
-          nearestCenter = {
-            lat: testPocket.centerLat,
-            lon: testPocket.centerLon,
-          };
-        }
-      } catch (error) {
-        // Skip invalid pockets (negative indices, etc.)
-        continue;
-      }
-    }
-  }
-  
+
   return {
-    pocketId: nearestPocketId,
-    distance: nearestDistance,
-    centerLat: nearestCenter.lat,
-    centerLon: nearestCenter.lon,
+    pocketId,
+    distance,
+    centerLat: pocket.centerLat,
+    centerLon: pocket.centerLon,
   };
 }
 

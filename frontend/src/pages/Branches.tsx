@@ -15,6 +15,10 @@ import {
   CircularProgress,
   Chip,
   LinearProgress,
+  FormControl,
+  FormControlLabel,
+  Radio,
+  RadioGroup,
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -53,6 +57,7 @@ export default function Branches() {
   });
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadMode, setUploadMode] = useState<'overwrite' | 'add'>('overwrite');
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
 
@@ -199,7 +204,7 @@ export default function Branches() {
       console.log('Starting upload for file:', selectedFile.name);
       
       // Start upload - returns immediately with job ID
-      const response = await api.uploadBranches(selectedFile);
+      const response = await api.uploadBranches(selectedFile, uploadMode);
       console.log('Upload response:', response);
       
       const jobId = response.jobId;
@@ -245,8 +250,25 @@ export default function Branches() {
             const fileInput = document.getElementById('file-upload') as HTMLInputElement;
             if (fileInput) fileInput.value = '';
             
-            const result = status.result;
-            setSuccess(`Successfully uploaded ${result.summary.inserted} branches`);
+            const summary = status.result?.summary || {};
+            const inserted = summary.inserted ?? 0;
+            const replaced = summary.replaced ?? 0;
+            const skippedExisting = summary.skippedExisting ?? 0;
+            const errors = summary.errors ?? 0;
+            const completedMode = summary.mode ?? uploadMode;
+
+            if (completedMode === 'add') {
+              setSuccess(
+                `Upload complete: ${inserted} new branches added (${skippedExisting} existing branch IDs skipped).`
+              );
+            } else {
+              setSuccess(
+                `Upload complete: ${inserted} branches loaded (replaced ${replaced} existing branches).`
+              );
+            }
+            if (errors > 0) {
+              setError(`${errors} row(s) were skipped due validation errors.`);
+            }
             loadBranches();
           } else if (status.status === 'failed') {
             clearInterval(pollInterval);
@@ -549,6 +571,29 @@ export default function Branches() {
               <br />
               (Column names are case-insensitive)
             </Alert>
+
+            {!uploading && (
+              <FormControl sx={{ mb: 2 }}>
+                <Typography variant="body2" sx={{ mb: 0.5, fontWeight: 600 }}>
+                  Upload Mode
+                </Typography>
+                <RadioGroup
+                  value={uploadMode}
+                  onChange={(event) => setUploadMode(event.target.value as 'overwrite' | 'add')}
+                >
+                  <FormControlLabel
+                    value="overwrite"
+                    control={<Radio />}
+                    label="Overwrite existing branches"
+                  />
+                  <FormControlLabel
+                    value="add"
+                    control={<Radio />}
+                    label="Add new branches only (skip existing Branch IDs)"
+                  />
+                </RadioGroup>
+              </FormControl>
+            )}
             
             {!uploading && (
               <>

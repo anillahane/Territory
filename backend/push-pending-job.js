@@ -37,6 +37,7 @@ async function pushPendingJob() {
     const jobId = job.job_id;
     const jobData = typeof job.data === 'string' ? JSON.parse(job.data) : job.data;
     const fileName = jobData.fileName;
+    const replaceExisting = String(jobData?.replaceExisting || '').toLowerCase() === 'true' || jobData?.replaceExisting === true;
     
     console.log(`📋 Found pending job: ${jobId}`);
     console.log(`📄 File name: ${fileName}`);
@@ -78,7 +79,8 @@ async function pushPendingJob() {
       jobId,
       filePath,
       fileName,
-      config
+      config,
+      replaceExisting
     };
     
     console.log('📤 Pushing job to Redis queue...');

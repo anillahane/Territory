@@ -13,6 +13,7 @@ import {
   IconButton,
   Checkbox,
   Tooltip,
+  Collapse,
 } from '@mui/material';
 import {
   Dashboard as DashboardIcon,
@@ -23,6 +24,8 @@ import {
   TableChart as TableChartIcon,
   Menu as MenuIcon,
   ChevronLeft as ChevronLeftIcon,
+  ExpandLess as ExpandLessIcon,
+  ExpandMore as ExpandMoreIcon,
 } from '@mui/icons-material';
 import { DASHBOARD_GRID_LEVELS, useStore } from '../store/useStore';
 
@@ -32,16 +35,19 @@ const drawerWidthCollapsed = 64;
 export default function Layout() {
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [mapLegendExpanded, setMapLegendExpanded] = useState(true);
   const dashboardMapPanel = useStore((state) => state.dashboardMapPanel);
   const selectedGridLevels = useStore((state) => state.dashboardSelectedGridLevels);
   const toggleDashboardGridLevel = useStore((state) => state.toggleDashboardGridLevel);
+  const showBranches = useStore((state) => state.showBranches);
+  const setShowBranches = useStore((state) => state.setShowBranches);
   const isDashboardRoute = location.pathname === '/';
 
   const navItems = [
     { path: '/', label: 'Dashboard', icon: <DashboardIcon /> },
     { path: '/branches', label: 'Branches', icon: <BusinessIcon /> },
     { path: '/batch', label: 'Batch Processing', icon: <CloudUploadIcon /> },
-    { path: '/mappings', label: 'Customer Mappings', icon: <TableChartIcon /> },
+    { path: '/mappings', label: 'Customer Pocket Mappings', icon: <TableChartIcon /> },
   ];
 
   const adminItems = [
@@ -62,7 +68,7 @@ export default function Layout() {
     : (dashboardMapPanel.mapLoaded ? '#059669' : '#D97706');
 
   return (
-    <Box sx={{ display: 'flex', minHeight: '100vh', background: '#F8FAFC' }}>
+    <Box sx={{ display: 'flex', height: '100vh', overflow: 'hidden', background: '#F8FAFC' }}>
       {/* Sidebar */}
       <Drawer
         variant="permanent"
@@ -212,9 +218,24 @@ export default function Layout() {
                 background: '#F8FAFC',
               }}
             >
-              <Typography sx={{ fontSize: '11px', fontWeight: 700, color: '#0F172A', mb: 0.75 }}>
-                Map Legend
-              </Typography>
+              <Box
+                onClick={() => setMapLegendExpanded((prev) => !prev)}
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  cursor: 'pointer',
+                  mb: mapLegendExpanded ? 0.75 : 0
+                }}
+              >
+                <Typography sx={{ fontSize: '11px', fontWeight: 700, color: '#0F172A' }}>
+                  Map Legend
+                </Typography>
+                <IconButton size="small" sx={{ p: 0.2, color: '#64748B' }}>
+                  {mapLegendExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+                </IconButton>
+              </Box>
+              <Collapse in={mapLegendExpanded} timeout="auto" unmountOnExit>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.6 }}>
                 <Box
                   sx={{
@@ -283,6 +304,26 @@ export default function Layout() {
                   );
                 })}
               </Box>
+              <Typography sx={{ fontSize: '10px', color: '#64748B', mb: 0.2 }}>Overlays</Typography>
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  mb: 0.7,
+                  mr: -0.25
+                }}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+                  <Checkbox
+                    size="small"
+                    checked={showBranches}
+                    onChange={(event) => setShowBranches(event.target.checked)}
+                    sx={{ p: 0.3, mr: 0.4 }}
+                  />
+                  <Typography sx={{ fontSize: '10px', color: '#334155' }}>Branches (red dots)</Typography>
+                </Box>
+              </Box>
               <Typography sx={{ fontSize: '10px', color: '#64748B', mb: 0.25 }}>Map Status</Typography>
               <Typography
                 sx={{
@@ -297,6 +338,7 @@ export default function Layout() {
               >
                 {mapStatusLabel}
               </Typography>
+              </Collapse>
             </Box>
           )}
 
@@ -437,6 +479,18 @@ export default function Layout() {
           flexDirection: 'column',
           overflowX: 'hidden',
           overflowY: isDashboardRoute ? 'hidden' : 'scroll',
+          scrollbarGutter: isDashboardRoute ? 'auto' : 'stable',
+          scrollbarWidth: 'thin',
+          '&::-webkit-scrollbar': {
+            width: '10px'
+          },
+          '&::-webkit-scrollbar-thumb': {
+            backgroundColor: '#94A3B8',
+            borderRadius: '8px'
+          },
+          '&::-webkit-scrollbar-track': {
+            backgroundColor: '#E2E8F0'
+          },
           minHeight: 0,
           minWidth: 0,
         }}

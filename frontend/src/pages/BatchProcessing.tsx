@@ -9,7 +9,9 @@ import {
   DialogContent,
   DialogActions,
   Alert,
+  Checkbox,
   CircularProgress,
+  FormControlLabel,
   LinearProgress,
   Table,
   TableBody,
@@ -32,6 +34,7 @@ import {
   Replay as ReplayIcon,
   Delete as DeleteIcon,
   BarChart as BarChartIcon,
+  Map as MapIcon,
 } from '@mui/icons-material';
 import { useStore } from '../store/useStore';
 import api from '../services/api';
@@ -48,6 +51,7 @@ interface Job {
     pocketStats?: { [key: string]: number };
     totalPockets?: number;
     totalAccounts?: number;
+    territoryUrl?: string;
   };
 }
 
@@ -56,6 +60,7 @@ export default function BatchProcessing() {
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [replaceExisting, setReplaceExisting] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [loadingJobs, setLoadingJobs] = useState(false);
@@ -172,6 +177,7 @@ export default function BatchProcessing() {
       setError('Please select a file');
       return;
     }
+    const shouldReplaceExisting = replaceExisting;
 
     console.log('Starting upload...', selectedFile.name);
     setUploading(true);
@@ -182,7 +188,7 @@ export default function BatchProcessing() {
     try {
       console.log('Calling API...');
       // Upload file - backend parses and queues immediately
-      const response = await api.batchEncode(fileToUpload);
+      const response = await api.batchEncode(fileToUpload, shouldReplaceExisting);
       console.log('API response:', response);
 
       // Backend always returns jobId immediately (non-blocking)
@@ -193,6 +199,7 @@ export default function BatchProcessing() {
         setUploading(false);
         setUploadDialogOpen(false);
         setSelectedFile(null);
+        setReplaceExisting(false);
         
         // Reset file input
         const fileInput = document.getElementById('batch-file-upload') as HTMLInputElement;
@@ -200,7 +207,8 @@ export default function BatchProcessing() {
         
         // Show success message
         const totalText = typeof response.total === 'number' ? `${response.total} records` : 'file';
-        setSuccess(`File "${response.fileName || fileToUpload.name}" uploaded! Processing ${totalText} in background.`);
+        const replaceText = shouldReplaceExisting ? ' Existing customer mappings will be replaced.' : '';
+        setSuccess(`File "${response.fileName || fileToUpload.name}" uploaded! Processing ${totalText} in background.${replaceText}`);
         
         // Show history and start polling for updates
         setShowHistory(true);
@@ -238,6 +246,26 @@ export default function BatchProcessing() {
       setSuccess('Results downloaded successfully');
     } catch (error: any) {
       setError(error.message || 'Failed to download results');
+    }
+  };
+
+  const handleDownloadTerritories = async (jobId: string) => {
+    try {
+      const payload = await api.getBatchTerritories(jobId);
+      const blob = new Blob([JSON.stringify(payload, null, 2)], {
+        type: 'application/json'
+      });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `territories_${jobId}.json`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      setSuccess('Territory polygons downloaded successfully');
+    } catch (error: any) {
+      setError(error.message || 'Failed to download territory polygons');
     }
   };
 
@@ -410,7 +438,10 @@ export default function BatchProcessing() {
               <Button
                 variant="contained"
                 startIcon={<UploadIcon />}
-                onClick={() => setUploadDialogOpen(true)}
+                onClick={() => {
+                  setReplaceExisting(false);
+                  setUploadDialogOpen(true);
+                }}
               >
                 Upload File
               </Button>
@@ -429,7 +460,7 @@ export default function BatchProcessing() {
                 1. Prepare Excel File
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                Include columns: <strong>lan</strong>, <strong>canon_lat</strong>, <strong>canon_long</strong>
+                Include columns: <strong>lan</strong>, <strong>canon_lat</strong>, <strong>canon_long</strong>, <strong>branch_code</strong>
               </Typography>
             </Grid>
             <Grid item xs={12} md={4}>
@@ -445,7 +476,7 @@ export default function BatchProcessing() {
                 3. Download Results
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                Get Excel file with Pocket IDs added
+                Get Excel file with Pocket IDs and download Voronoi territories
               </Typography>
             </Grid>
           </Grid>
@@ -623,6 +654,15 @@ export default function BatchProcessing() {
                                   <DownloadIcon fontSize="small" />
                                 </IconButton>
                               </Tooltip>
+                              <Tooltip title="Download Territories (Voronoi)">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => handleDownloadTerritories(job.jobId)}
+                                  color="success"
+                                >
+                                  <MapIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
                             </>
                           )}
                           {job.status === 'failed' && (
@@ -660,7 +700,13 @@ export default function BatchProcessing() {
       {/* Upload Dialog */}
       <Dialog
         open={uploadDialogOpen}
-        onClose={() => !uploading && setUploadDialogOpen(false)}
+        onClose={() => {
+          if (uploading) {
+            return;
+          }
+          setReplaceExisting(false);
+          setUploadDialogOpen(false);
+        }}
         maxWidth="sm"
         fullWidth
       >
@@ -668,9 +714,11 @@ export default function BatchProcessing() {
         <DialogContent>
           <Box sx={{ pt: 2 }}>
             <Alert severity="info" sx={{ mb: 2 }}>
-              Excel file should contain columns: <strong>lan</strong> (Customer ID), <strong>canon_lat</strong> (Latitude), <strong>canon_long</strong> (Longitude)
+              Excel file should contain columns: <strong>lan</strong> (Customer ID), <strong>canon_lat</strong> (Latitude), <strong>canon_long</strong> (Longitude), <strong>branch_code</strong>
               <br />
               (Column names are case-insensitive. Also accepts: Latitude/latitude/Lat/lat and Longitude/longitude/Lon/lon)
+              <br />
+              <strong>branch_code</strong> should match an existing branch ID when provided.
               <br />
               <br />
               <strong>Note:</strong> File will be uploaded and processed in the background. You can continue working while processing completes.
@@ -695,6 +743,21 @@ export default function BatchProcessing() {
                     Selected: {selectedFile.name}
                   </Typography>
                 )}
+                <FormControlLabel
+                  sx={{ mt: 1 }}
+                  control={
+                    <Checkbox
+                      checked={replaceExisting}
+                      onChange={(event) => setReplaceExisting(event.target.checked)}
+                    />
+                  }
+                  label="Replace existing customer data"
+                />
+                {replaceExisting && (
+                  <Alert severity="warning" sx={{ mt: 1 }}>
+                    Existing rows in Customer Pocket Mappings will be deleted before saving this upload.
+                  </Alert>
+                )}
               </>
             )}
 
@@ -709,7 +772,13 @@ export default function BatchProcessing() {
           </Box>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setUploadDialogOpen(false)} disabled={uploading}>
+          <Button
+            onClick={() => {
+              setReplaceExisting(false);
+              setUploadDialogOpen(false);
+            }}
+            disabled={uploading}
+          >
             Cancel
           </Button>
           <Button

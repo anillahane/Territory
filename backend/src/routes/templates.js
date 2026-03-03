@@ -17,26 +17,31 @@ router.get(
         'lan': 'Customer001',
         'canon_lat': 19.0760,
         'canon_long': 72.8777,
+        'branch_code': 'BR001',
       },
       {
         'lan': 'Customer002',
         'canon_lat': 28.7041,
         'canon_long': 77.1025,
+        'branch_code': 'BR002',
       },
       {
         'lan': 'Customer003',
         'canon_lat': 12.9716,
         'canon_long': 77.5946,
+        'branch_code': 'BR003',
       },
       {
         'lan': 'Customer004',
         'canon_lat': 13.0827,
         'canon_long': 80.2707,
+        'branch_code': 'BR004',
       },
       {
         'lan': 'Customer005',
         'canon_lat': 22.5726,
         'canon_long': 88.3639,
+        'branch_code': 'BR005',
       },
     ];
 
@@ -48,6 +53,7 @@ router.get(
       { wch: 20 }, // lan
       { wch: 12 }, // canon_lat
       { wch: 12 }, // canon_long
+      { wch: 14 }, // branch_code
     ];
 
     // Create workbook
@@ -62,7 +68,7 @@ router.get(
       },
       {
         'Step': '2',
-        'Instruction': 'Required columns: lan (customer ID), canon_lat (latitude), canon_long (longitude)',
+        'Instruction': 'Required columns: lan (customer ID), canon_lat (latitude), canon_long (longitude), branch_code',
       },
       {
         'Step': '3',
@@ -82,10 +88,14 @@ router.get(
       },
       {
         'Step': '7',
-        'Instruction': 'Upload the file to get Pocket IDs for each customer',
+        'Instruction': 'branch_code should match an existing branch ID when provided',
       },
       {
         'Step': '8',
+        'Instruction': 'Upload the file to get Pocket IDs for each customer',
+      },
+      {
+        'Step': '9',
         'Instruction': 'Result will include: PocketID, Distance to Pocket Center, and Pocket Center coordinates',
       },
     ];

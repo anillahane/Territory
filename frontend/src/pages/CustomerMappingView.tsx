@@ -2,7 +2,22 @@
 // Requirements: 2.1, 3.1, 4.4, 4.5
 
 import { useState, useEffect, useCallback } from 'react';
-import { Box, Typography, Alert, Card, CardContent, Grid, CircularProgress } from '@mui/material';
+import {
+  Box,
+  Typography,
+  Alert,
+  Card,
+  CardContent,
+  Grid,
+  CircularProgress,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Paper
+} from '@mui/material';
 import { Assessment, People, LocationOn, Business } from '@mui/icons-material';
 import CustomerMappingTable from '../components/CustomerMappingTable';
 import FilterPanel from '../components/FilterPanel';
@@ -12,6 +27,7 @@ import {
   FilterState,
   PaginationState,
   ApiError,
+  MappingImpactStats
 } from '../types/customerMapping';
 import { useStore } from '../store/useStore';
 import api from '../services/api';
@@ -39,6 +55,27 @@ export default function CustomerMappingView() {
     uniquePockets: 0,
     uniqueBranches: 0,
     avgDistance: 0,
+  });
+  const [impactStats, setImpactStats] = useState<MappingImpactStats>({
+    comparableAccounts: 0,
+    sameBranchAccounts: 0,
+    differentBranchAccounts: 0,
+    sameBranchCount: 0,
+    differentBranchCount: 0,
+    totalBranchCount: 0,
+    avgExistingBranchDistance: 0,
+    avgRevisedBranchDistance: 0,
+    avgDistanceReduction: 0,
+    totalDistanceReduction: 0,
+    improvedAccounts: 0,
+    unchangedDistanceAccounts: 0,
+    worsenedAccounts: 0,
+    sameBranchAvgOriginalDistance: 0,
+    sameBranchAvgChangedDistance: 0,
+    differentBranchAvgOriginalDistance: 0,
+    differentBranchAvgChangedDistance: 0,
+    sameBranchAvgImpact: 0,
+    differentBranchAvgImpact: 0,
   });
 
   // Fetch available jobs for filter dropdown
@@ -88,6 +125,27 @@ export default function CustomerMappingView() {
         uniqueBranches: response.stats?.uniqueBranches || 0,
         avgDistance: response.stats?.avgDistance || 0,
       });
+      setImpactStats(response.stats?.impact || {
+        comparableAccounts: 0,
+        sameBranchAccounts: 0,
+        differentBranchAccounts: 0,
+        sameBranchCount: 0,
+        differentBranchCount: 0,
+        totalBranchCount: 0,
+        avgExistingBranchDistance: 0,
+        avgRevisedBranchDistance: 0,
+        avgDistanceReduction: 0,
+        totalDistanceReduction: 0,
+        improvedAccounts: 0,
+        unchangedDistanceAccounts: 0,
+        worsenedAccounts: 0,
+        sameBranchAvgOriginalDistance: 0,
+        sameBranchAvgChangedDistance: 0,
+        differentBranchAvgOriginalDistance: 0,
+        differentBranchAvgChangedDistance: 0,
+        sameBranchAvgImpact: 0,
+        differentBranchAvgImpact: 0,
+      });
     } catch (error) {
       const apiError = error as ApiError;
       const errorMessage = apiError.message || 'Failed to fetch customer mappings';
@@ -127,6 +185,14 @@ export default function CustomerMappingView() {
       return `${distance.toFixed(0)} m`;
     }
     return `${(distance / 1000).toFixed(2)} km`;
+  };
+
+  const formatReduction = (distance: number) => {
+    const prefix = distance > 0 ? '+' : '';
+    if (Math.abs(distance) < 1000) {
+      return `${prefix}${distance.toFixed(0)} m`;
+    }
+    return `${prefix}${(distance / 1000).toFixed(2)} km`;
   };
 
   return (
@@ -190,7 +256,7 @@ export default function CustomerMappingView() {
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <Box>
                   <Typography variant="body2" color="text.secondary" gutterBottom>
-                    Unique Pockets
+                    Unique Pockets (5km)
                   </Typography>
                   <Typography variant="h5" sx={{ fontWeight: 700 }}>
                     {stats.uniquePockets.toLocaleString()}
@@ -220,6 +286,134 @@ export default function CustomerMappingView() {
           </Card>
         </Grid>
       </Grid>
+
+      <Typography variant="h6" sx={{ mb: 1.2, fontWeight: 700, color: '#0F172A' }}>
+        Branch Impact Summary (Existing vs Revised)
+      </Typography>
+      <Paper sx={{ boxShadow: 2, borderRadius: 2, mb: 3 }}>
+        <Box sx={{ px: 2, py: 1.5, borderBottom: '1px solid #E2E8F0' }}>
+          <Typography sx={{ fontSize: 14, fontWeight: 700, color: '#0F172A' }}>
+            All Branches Summary Grid
+          </Typography>
+          <Typography sx={{ fontSize: 12, color: '#64748B' }}>
+            Summary is across all matching accounts, not just current page. Missing original branch is treated as unchanged for aggregate totals.
+          </Typography>
+        </Box>
+        <TableContainer>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Type of Branch Customer Mapping</TableCell>
+                <TableCell align="right">Number of Branches</TableCell>
+                <TableCell align="right">Number of Customers</TableCell>
+                <TableCell align="right">Average Original Distance</TableCell>
+                <TableCell align="right">Average Changed Distance</TableCell>
+                <TableCell align="right">Impact</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              <TableRow>
+                <TableCell>
+                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                    Same Branch
+                  </Typography>
+                </TableCell>
+                <TableCell align="right">
+                  {impactStats.sameBranchCount.toLocaleString()}
+                </TableCell>
+                <TableCell align="right">
+                  {impactStats.sameBranchAccounts.toLocaleString()}
+                </TableCell>
+                <TableCell align="right">
+                  {formatDistance(impactStats.sameBranchAvgOriginalDistance)}
+                </TableCell>
+                <TableCell align="right">
+                  {formatDistance(impactStats.sameBranchAvgChangedDistance)}
+                </TableCell>
+                <TableCell align="right">
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      fontWeight: 600,
+                      color: impactStats.sameBranchAvgImpact >= 0 ? 'success.dark' : 'error.dark'
+                    }}
+                  >
+                    {formatReduction(impactStats.sameBranchAvgImpact)}
+                  </Typography>
+                </TableCell>
+              </TableRow>
+              <TableRow>
+                <TableCell>
+                  <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                    Different Branch
+                  </Typography>
+                </TableCell>
+                <TableCell align="right">
+                  {impactStats.differentBranchCount.toLocaleString()}
+                </TableCell>
+                <TableCell align="right">
+                  {impactStats.differentBranchAccounts.toLocaleString()}
+                </TableCell>
+                <TableCell align="right">
+                  {formatDistance(impactStats.differentBranchAvgOriginalDistance)}
+                </TableCell>
+                <TableCell align="right">
+                  {formatDistance(impactStats.differentBranchAvgChangedDistance)}
+                </TableCell>
+                <TableCell align="right">
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      fontWeight: 600,
+                      color: impactStats.differentBranchAvgImpact >= 0 ? 'success.dark' : 'error.dark'
+                    }}
+                  >
+                    {formatReduction(impactStats.differentBranchAvgImpact)}
+                  </Typography>
+                </TableCell>
+              </TableRow>
+              <TableRow>
+                <TableCell>
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                    Total
+                  </Typography>
+                </TableCell>
+                <TableCell align="right">
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                    {impactStats.totalBranchCount.toLocaleString()}
+                  </Typography>
+                </TableCell>
+                <TableCell align="right">
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                    {impactStats.comparableAccounts.toLocaleString()}
+                  </Typography>
+                </TableCell>
+                <TableCell align="right">
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                    {formatDistance(impactStats.avgExistingBranchDistance)}
+                  </Typography>
+                </TableCell>
+                <TableCell align="right">
+                  <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                    {formatDistance(impactStats.avgRevisedBranchDistance)}
+                  </Typography>
+                </TableCell>
+                <TableCell align="right">
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      fontWeight: 700,
+                      color: impactStats.avgDistanceReduction >= 0 ? 'success.dark' : 'error.dark'
+                    }}
+                  >
+                    {formatReduction(impactStats.avgDistanceReduction)}
+                  </Typography>
+                </TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Paper>
 
       <FilterPanel
         filters={filters}

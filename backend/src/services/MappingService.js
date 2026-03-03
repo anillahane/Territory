@@ -19,6 +19,9 @@ class MappingService {
    * @param {string} mappings[].nearestBranchId - Nearest branch identifier
    * @param {number} mappings[].distancePocketToBranch - Distance from pocket to branch (meters)
    * @param {number} mappings[].distanceCustomerToBranch - Distance from customer to branch (meters)
+   * @param {string|null} [mappings[].uploadedBranchCode] - Raw branch_code from uploaded file
+   * @param {string|null} [mappings[].existingBranchId] - Existing mapped branch resolved from branch_code
+   * @param {number|null} [mappings[].distanceCustomerToExistingBranch] - Distance from customer to existing branch (meters)
    * @returns {Promise<{success: boolean, insertedCount: number, errors: Array<string>}>}
    */
   async saveMappings(jobId, mappings) {
@@ -144,34 +147,136 @@ class MappingService {
     const totalPages = Math.ceil(totalRecords / pageSize);
 
     const statsQuery = `
+      WITH base_data AS (
+        SELECT
+          cpm.customer_id,
+          cpm.pocket_id,
+          CASE
+            WHEN cpm.pocket_id IS NULL OR btrim(cpm.pocket_id) = '' THEN NULL
+            ELSE array_to_string((string_to_array(cpm.pocket_id, '-'))[1:4], '-')
+          END AS pocket_id_5km,
+          cpm.nearest_branch_id,
+          COALESCE(cpm.existing_branch_id, cpm.nearest_branch_id) AS effective_existing_branch_id,
+          cpm.distance_customer_to_pocket,
+          COALESCE(cpm.distance_customer_to_existing_branch, cpm.distance_customer_to_branch) AS effective_original_distance,
+          cpm.distance_customer_to_branch AS changed_distance
+        FROM customer_pocket_mappings cpm
+        ${whereClause}
+      )
       SELECT
-        COUNT(DISTINCT cpm.customer_id) AS unique_customers,
-        COUNT(DISTINCT cpm.pocket_id) AS unique_pockets,
-        COUNT(DISTINCT cpm.nearest_branch_id) AS unique_branches,
-        COALESCE(AVG(cpm.distance_customer_to_pocket), 0) AS avg_distance
-      FROM customer_pocket_mappings cpm
-      ${whereClause}
+        COUNT(DISTINCT base_data.customer_id) AS unique_customers,
+        COUNT(DISTINCT base_data.pocket_id_5km) AS unique_pockets,
+        COUNT(DISTINCT base_data.nearest_branch_id) AS unique_branches,
+        COALESCE(AVG(base_data.distance_customer_to_pocket), 0) AS avg_distance,
+        COUNT(*) AS comparable_accounts,
+        COUNT(*) FILTER (
+          WHERE base_data.effective_existing_branch_id = base_data.nearest_branch_id
+        ) AS same_branch_accounts,
+        COUNT(*) FILTER (
+          WHERE base_data.effective_existing_branch_id <> base_data.nearest_branch_id
+        ) AS different_branch_accounts,
+        COUNT(DISTINCT base_data.nearest_branch_id) FILTER (
+          WHERE base_data.effective_existing_branch_id = base_data.nearest_branch_id
+        ) AS same_branch_count,
+        COUNT(DISTINCT base_data.nearest_branch_id) FILTER (
+          WHERE base_data.effective_existing_branch_id <> base_data.nearest_branch_id
+        ) AS different_branch_count,
+        COUNT(DISTINCT base_data.nearest_branch_id) AS total_branch_count,
+        COALESCE(AVG(base_data.effective_original_distance), 0) AS avg_existing_branch_distance,
+        COALESCE(AVG(base_data.changed_distance), 0) AS avg_revised_branch_distance,
+        COALESCE(AVG(base_data.effective_original_distance - base_data.changed_distance), 0) AS avg_distance_reduction,
+        COALESCE(SUM(base_data.effective_original_distance - base_data.changed_distance), 0) AS total_distance_reduction,
+        COUNT(*) FILTER (
+          WHERE (base_data.effective_original_distance - base_data.changed_distance) > 0
+        ) AS improved_accounts,
+        COUNT(*) FILTER (
+          WHERE ABS(base_data.effective_original_distance - base_data.changed_distance) <= 0.01
+        ) AS unchanged_distance_accounts,
+        COUNT(*) FILTER (
+          WHERE (base_data.effective_original_distance - base_data.changed_distance) < 0
+        ) AS worsened_accounts,
+        COALESCE(AVG(base_data.effective_original_distance) FILTER (
+          WHERE base_data.effective_existing_branch_id = base_data.nearest_branch_id
+        ), 0) AS same_branch_avg_original_distance,
+        COALESCE(AVG(base_data.changed_distance) FILTER (
+          WHERE base_data.effective_existing_branch_id = base_data.nearest_branch_id
+        ), 0) AS same_branch_avg_changed_distance,
+        COALESCE(AVG(base_data.effective_original_distance) FILTER (
+          WHERE base_data.effective_existing_branch_id <> base_data.nearest_branch_id
+        ), 0) AS different_branch_avg_original_distance,
+        COALESCE(AVG(base_data.changed_distance) FILTER (
+          WHERE base_data.effective_existing_branch_id <> base_data.nearest_branch_id
+        ), 0) AS different_branch_avg_changed_distance,
+        COALESCE(AVG(base_data.effective_original_distance - base_data.changed_distance) FILTER (
+          WHERE base_data.effective_existing_branch_id = base_data.nearest_branch_id
+        ), 0) AS same_branch_avg_impact,
+        COALESCE(AVG(base_data.effective_original_distance - base_data.changed_distance) FILTER (
+          WHERE base_data.effective_existing_branch_id <> base_data.nearest_branch_id
+        ), 0) AS different_branch_avg_impact
+      FROM base_data
     `;
 
     const statsResult = await query(statsQuery, queryParams);
     const statsRow = statsResult.rows[0] || {};
 
+    const branchImpactQuery = `
+      SELECT
+        cpm.existing_branch_id,
+        existing_branch.city AS existing_branch_name,
+        COUNT(*)::int AS comparable_accounts,
+        COUNT(*) FILTER (
+          WHERE cpm.existing_branch_id = cpm.nearest_branch_id
+        )::int AS same_branch_accounts,
+        COUNT(*) FILTER (
+          WHERE cpm.existing_branch_id <> cpm.nearest_branch_id
+        )::int AS different_branch_accounts,
+        COALESCE(AVG(cpm.distance_customer_to_existing_branch), 0) AS avg_existing_branch_distance,
+        COALESCE(AVG(cpm.distance_customer_to_branch), 0) AS avg_revised_branch_distance,
+        COALESCE(AVG(cpm.distance_customer_to_existing_branch - cpm.distance_customer_to_branch), 0) AS avg_distance_reduction,
+        COALESCE(SUM(cpm.distance_customer_to_existing_branch - cpm.distance_customer_to_branch), 0) AS total_distance_reduction
+      FROM customer_pocket_mappings cpm
+      LEFT JOIN branches existing_branch
+        ON cpm.existing_branch_id = existing_branch.id
+      ${whereClause ? `${whereClause} AND cpm.existing_branch_id IS NOT NULL` : 'WHERE cpm.existing_branch_id IS NOT NULL'}
+      GROUP BY cpm.existing_branch_id, existing_branch.city
+      ORDER BY comparable_accounts DESC, cpm.existing_branch_id ASC
+      LIMIT 500
+    `;
+    const branchImpactResult = await query(branchImpactQuery, queryParams);
+
     // Fetch paginated data with branch name
     const dataQuery = `
       SELECT 
         cpm.id,
+        cpm.job_id,
         cpm.customer_id,
         cpm.customer_lat,
         cpm.customer_lon,
         cpm.pocket_id,
         cpm.distance_customer_to_pocket,
         cpm.nearest_branch_id,
-        b.city as branch_name,
+        revised_branch.city AS branch_name,
+        cpm.uploaded_branch_code,
+        cpm.existing_branch_id,
+        existing_branch.city AS existing_branch_name,
+        cpm.distance_customer_to_existing_branch,
+        CASE
+          WHEN cpm.existing_branch_id IS NULL THEN 'not_comparable'
+          WHEN cpm.existing_branch_id = cpm.nearest_branch_id THEN 'same'
+          ELSE 'different'
+        END AS branch_change_type,
+        CASE
+          WHEN cpm.existing_branch_id IS NULL THEN NULL
+          ELSE cpm.distance_customer_to_existing_branch - cpm.distance_customer_to_branch
+        END AS distance_reduction,
         cpm.distance_pocket_to_branch,
         cpm.distance_customer_to_branch,
         cpm.created_at
       FROM customer_pocket_mappings cpm
-      LEFT JOIN branches b ON cpm.nearest_branch_id = b.id
+      LEFT JOIN branches revised_branch
+        ON cpm.nearest_branch_id = revised_branch.id
+      LEFT JOIN branches existing_branch
+        ON cpm.existing_branch_id = existing_branch.id
       ${whereClause}
       ORDER BY cpm.id ASC
       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
@@ -191,6 +296,7 @@ class MappingService {
     return {
       data: dataResult.rows.map(row => ({
         id: row.id,
+        jobId: row.job_id,
         customerId: row.customer_id,
         customerLat: parseFloat(row.customer_lat),
         customerLon: parseFloat(row.customer_lon),
@@ -198,6 +304,18 @@ class MappingService {
         distanceCustomerToPocket: parseFloat(row.distance_customer_to_pocket),
         nearestBranchId: row.nearest_branch_id,
         branchName: row.branch_name,
+        uploadedBranchCode: row.uploaded_branch_code,
+        existingBranchId: row.existing_branch_id,
+        existingBranchName: row.existing_branch_name,
+        distanceCustomerToExistingBranch:
+          row.distance_customer_to_existing_branch === null
+            ? null
+            : parseFloat(row.distance_customer_to_existing_branch),
+        branchChangeType: row.branch_change_type,
+        distanceReduction:
+          row.distance_reduction === null
+            ? null
+            : parseFloat(row.distance_reduction),
         distancePocketToBranch: parseFloat(row.distance_pocket_to_branch),
         distanceCustomerToBranch: parseFloat(row.distance_customer_to_branch),
         createdAt: row.created_at,
@@ -213,6 +331,38 @@ class MappingService {
         uniquePockets: parseInt(statsRow.unique_pockets || '0', 10),
         uniqueBranches: parseInt(statsRow.unique_branches || '0', 10),
         avgDistance: parseFloat(statsRow.avg_distance || '0'),
+        impact: {
+          comparableAccounts: parseInt(statsRow.comparable_accounts || '0', 10),
+          sameBranchAccounts: parseInt(statsRow.same_branch_accounts || '0', 10),
+          differentBranchAccounts: parseInt(statsRow.different_branch_accounts || '0', 10),
+          sameBranchCount: parseInt(statsRow.same_branch_count || '0', 10),
+          differentBranchCount: parseInt(statsRow.different_branch_count || '0', 10),
+          totalBranchCount: parseInt(statsRow.total_branch_count || '0', 10),
+          avgExistingBranchDistance: parseFloat(statsRow.avg_existing_branch_distance || '0'),
+          avgRevisedBranchDistance: parseFloat(statsRow.avg_revised_branch_distance || '0'),
+          avgDistanceReduction: parseFloat(statsRow.avg_distance_reduction || '0'),
+          totalDistanceReduction: parseFloat(statsRow.total_distance_reduction || '0'),
+          improvedAccounts: parseInt(statsRow.improved_accounts || '0', 10),
+          unchangedDistanceAccounts: parseInt(statsRow.unchanged_distance_accounts || '0', 10),
+          worsenedAccounts: parseInt(statsRow.worsened_accounts || '0', 10),
+          sameBranchAvgOriginalDistance: parseFloat(statsRow.same_branch_avg_original_distance || '0'),
+          sameBranchAvgChangedDistance: parseFloat(statsRow.same_branch_avg_changed_distance || '0'),
+          differentBranchAvgOriginalDistance: parseFloat(statsRow.different_branch_avg_original_distance || '0'),
+          differentBranchAvgChangedDistance: parseFloat(statsRow.different_branch_avg_changed_distance || '0'),
+          sameBranchAvgImpact: parseFloat(statsRow.same_branch_avg_impact || '0'),
+          differentBranchAvgImpact: parseFloat(statsRow.different_branch_avg_impact || '0'),
+        },
+        byExistingBranch: branchImpactResult.rows.map((row) => ({
+          existingBranchId: row.existing_branch_id,
+          existingBranchName: row.existing_branch_name,
+          comparableAccounts: parseInt(row.comparable_accounts || '0', 10),
+          sameBranchAccounts: parseInt(row.same_branch_accounts || '0', 10),
+          differentBranchAccounts: parseInt(row.different_branch_accounts || '0', 10),
+          avgExistingBranchDistance: parseFloat(row.avg_existing_branch_distance || '0'),
+          avgRevisedBranchDistance: parseFloat(row.avg_revised_branch_distance || '0'),
+          avgDistanceReduction: parseFloat(row.avg_distance_reduction || '0'),
+          totalDistanceReduction: parseFloat(row.total_distance_reduction || '0'),
+        })),
       },
     };
   }
@@ -291,7 +441,7 @@ class MappingService {
     const placeholders = [];
     
     batch.forEach((mapping, index) => {
-      const baseIndex = index * 9; // 9 columns per row
+      const baseIndex = index * 12; // 12 columns per row
       
       // Add values for this row
       values.push(
@@ -303,10 +453,13 @@ class MappingService {
         mapping.distanceCustomerToPocket,
         mapping.nearestBranchId,
         mapping.distancePocketToBranch,
-        mapping.distanceCustomerToBranch
+        mapping.distanceCustomerToBranch,
+        mapping.uploadedBranchCode || null,
+        mapping.existingBranchId || null,
+        mapping.distanceCustomerToExistingBranch ?? null
       );
       
-      // Create placeholder string for this row: ($1, $2, $3, ..., $9)
+      // Create placeholder string for this row: ($1, $2, ..., $12)
       const rowPlaceholders = [
         `$${baseIndex + 1}`,
         `$${baseIndex + 2}`,
@@ -317,6 +470,9 @@ class MappingService {
         `$${baseIndex + 7}`,
         `$${baseIndex + 8}`,
         `$${baseIndex + 9}`,
+        `$${baseIndex + 10}`,
+        `$${baseIndex + 11}`,
+        `$${baseIndex + 12}`,
       ];
       
       placeholders.push(`(${rowPlaceholders.join(', ')})`);
@@ -332,7 +488,10 @@ class MappingService {
         distance_customer_to_pocket,
         nearest_branch_id,
         distance_pocket_to_branch,
-        distance_customer_to_branch
+        distance_customer_to_branch,
+        uploaded_branch_code,
+        existing_branch_id,
+        distance_customer_to_existing_branch
       )
       VALUES ${placeholders.join(', ')}
     `;
