@@ -4,28 +4,42 @@ const logger = require('../config/logger');
  * Global error handling middleware
  */
 function errorHandler(err, req, res, next) {
+  let normalizedError = err;
+
+  if (err?.name === 'MulterError') {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      normalizedError = new AppError(
+        `File size exceeds ${process.env.MAX_FILE_SIZE_MB || '10'} MB limit`,
+        413,
+        'FILE_TOO_LARGE'
+      );
+    } else {
+      normalizedError = new AppError(err.message, 400, err.code || 'UPLOAD_ERROR');
+    }
+  }
+
   // Log error
   logger.error('Error occurred:', {
-    message: err.message,
-    stack: err.stack,
+    message: normalizedError.message,
+    stack: normalizedError.stack,
     url: req.url,
     method: req.method,
     ip: req.ip,
   });
 
   // Determine status code
-  const statusCode = err.statusCode || err.status || 500;
+  const statusCode = normalizedError.statusCode || normalizedError.status || 500;
 
   // Prepare error response
   const errorResponse = {
-    error: err.message || 'Internal Server Error',
-    code: err.code || 'INTERNAL_ERROR',
+    error: normalizedError.message || 'Internal Server Error',
+    code: normalizedError.code || 'INTERNAL_ERROR',
   };
 
   // Include details in development mode
   if (process.env.NODE_ENV === 'development') {
-    errorResponse.stack = err.stack;
-    errorResponse.details = err.details;
+    errorResponse.stack = normalizedError.stack;
+    errorResponse.details = normalizedError.details;
   }
 
   // Send response

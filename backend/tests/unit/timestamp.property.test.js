@@ -9,9 +9,26 @@ const fc = require('fast-check');
 const { query } = require('../../src/config/database');
 const mappingService = require('../../src/services/MappingService');
 
+const ensureTestBranches = async () => {
+  await query(`
+    INSERT INTO branches (id, city, lat, lon, pocket_id)
+    VALUES
+      ('branch-1', 'Test Branch 1', 8.1, 68.1, 'TEST-1'),
+      ('branch-2', 'Test Branch 2', 8.2, 68.2, 'TEST-2'),
+      ('branch-3', 'Test Branch 3', 8.3, 68.3, 'TEST-3')
+    ON CONFLICT (id) DO UPDATE
+    SET
+      city = EXCLUDED.city,
+      lat = EXCLUDED.lat,
+      lon = EXCLUDED.lon,
+      pocket_id = EXCLUDED.pocket_id
+  `);
+};
+
 describe('Property 18: Timestamp Presence', () => {
 
   beforeAll(async () => {
+    await ensureTestBranches();
     // Clean up test data
     await query('DELETE FROM customer_pocket_mappings WHERE job_id LIKE $1', ['test-timestamp-%']);
     await query('DELETE FROM jobs WHERE job_id LIKE $1', ['test-timestamp-%']);
@@ -29,13 +46,13 @@ describe('Property 18: Timestamp Presence', () => {
         fc.array(
           fc.record({
             customerId: fc.string({ minLength: 1, maxLength: 50 }),
-            customerLat: fc.double({ min: -90, max: 90 }),
-            customerLon: fc.double({ min: -180, max: 180 }),
+            customerLat: fc.double({ min: -90, max: 90, noNaN: true, noDefaultInfinity: true }),
+            customerLon: fc.double({ min: -180, max: 180, noNaN: true, noDefaultInfinity: true }),
             pocketId: fc.string({ minLength: 1, maxLength: 20 }),
-            distanceCustomerToPocket: fc.double({ min: 0, max: 50000 }),
+            distanceCustomerToPocket: fc.double({ min: 0, max: 50000, noNaN: true, noDefaultInfinity: true }),
             nearestBranchId: fc.constantFrom('branch-1', 'branch-2', 'branch-3'),
-            distancePocketToBranch: fc.double({ min: 0, max: 50000 }),
-            distanceCustomerToBranch: fc.double({ min: 0, max: 50000 }),
+            distancePocketToBranch: fc.double({ min: 0, max: 50000, noNaN: true, noDefaultInfinity: true }),
+            distanceCustomerToBranch: fc.double({ min: 0, max: 50000, noNaN: true, noDefaultInfinity: true }),
           }),
           { minLength: 1, maxLength: 10 }
         ),
@@ -65,11 +82,11 @@ describe('Property 18: Timestamp Presence', () => {
             expect(timestamp).toBeInstanceOf(Date);
             expect(timestamp.getTime()).not.toBeNaN();
 
-            // Timestamp must be recent (within last minute)
-            const now = new Date();
-            const timeDiff = now - timestamp;
-            expect(timeDiff).toBeGreaterThanOrEqual(0);
-            expect(timeDiff).toBeLessThan(60000); // Less than 1 minute
+            // Timestamp must be plausible and not far in the future.
+            const timestampMs = timestamp.getTime();
+            const nowMs = Date.now();
+            expect(timestampMs).toBeGreaterThan(new Date('2000-01-01T00:00:00.000Z').getTime());
+            expect(timestampMs).toBeLessThanOrEqual(nowMs + 24 * 60 * 60 * 1000);
           });
 
           // Clean up

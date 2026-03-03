@@ -38,6 +38,7 @@ build/
 tmp/
 temp/
 *.tmp
+temp_job*.json
 
 # Uploads
 uploads/

@@ -8,9 +8,32 @@ const router = express.Router();
 
 // Validation schemas
 const encodeSchema = Joi.object({
-  lat: Joi.number().min(-90).max(90).required(),
-  lon: Joi.number().min(-180).max(180).required(),
-});
+  lat: Joi.number().min(-90).max(90),
+  lon: Joi.number().min(-180).max(180),
+  latitude: Joi.number().min(-90).max(90),
+  longitude: Joi.number().min(-180).max(180),
+}).custom((value, helpers) => {
+  const hasShortPair = value.lat !== undefined || value.lon !== undefined;
+  const hasLongPair =
+    value.latitude !== undefined || value.longitude !== undefined;
+
+  if (!hasShortPair && !hasLongPair) {
+    return helpers.error('any.required');
+  }
+
+  if (hasShortPair && (value.lat === undefined || value.lon === undefined)) {
+    return helpers.error('any.invalid');
+  }
+
+  if (
+    hasLongPair &&
+    (value.latitude === undefined || value.longitude === undefined)
+  ) {
+    return helpers.error('any.invalid');
+  }
+
+  return value;
+}, 'coordinate pair validation');
 
 const decodeSchema = Joi.object({
   pocketId: Joi.string().required(),
@@ -34,7 +57,8 @@ router.post(
       );
     }
 
-    const { lat, lon } = value;
+    const lat = value.lat ?? value.latitude;
+    const lon = value.lon ?? value.longitude;
 
     // Get current configuration
     const configResult = await query('SELECT * FROM config WHERE id = 1');
@@ -108,11 +132,17 @@ router.post(
 
       res.json({
         pocketId,
+        centerLat: result.centerLat,
+        centerLon: result.centerLon,
         center: {
           lat: result.centerLat,
           lon: result.centerLon,
         },
         corners: {
+          sw: result.corners.sw,
+          ne: result.corners.ne,
+          nw: result.corners.nw,
+          se: result.corners.se,
           southwest: {
             lat: result.corners.sw.lat,
             lon: result.corners.sw.lon,
@@ -164,35 +194,18 @@ router.post(
     // Get current configuration
     const configResult = await query('SELECT * FROM config WHERE id = 1');
     const config = {
+      originLat: configResult.rows[0].origin_lat,
+      originLon: configResult.rows[0].origin_lon,
       alphabet: configResult.rows[0].alphabet,
     };
 
     try {
-      // Try to decode
-      const parts = pocketId.split('-');
-      
-      if (parts.length !== 6) {
-        throw new Error('Pocket ID must have 6 levels');
-      }
-
-      for (let i = 0; i < parts.length; i++) {
-        const part = parts[i];
-        if (part.length !== 2) {
-          throw new Error(`Level ${i} must have 2 characters`);
-        }
-
-        const rowChar = part[0];
-        const colChar = part[1];
-
-        if (!config.alphabet.includes(rowChar) || !config.alphabet.includes(colChar)) {
-          throw new Error(`Level ${i} contains invalid characters`);
-        }
-      }
+      const decoded = decodePocketId(pocketId, config);
 
       res.json({
         valid: true,
         pocketId,
-        levels: parts.length,
+        levels: decoded.indices.length,
       });
     } catch (err) {
       res.json({

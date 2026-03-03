@@ -112,12 +112,19 @@ describe('Batch Processing Integration Property-Based Tests', () => {
             const mappings = [];
             const pocketCenters = new Map();
 
-            for (const customer of customers) {
+            for (let i = 0; i < customers.length; i++) {
+              const customer = customers[i];
               const nearestPocket = findNearestPocket(customer.lat, customer.lon, config);
+              const rawCustomerId =
+                customer.customerId === undefined || customer.customerId === null
+                  ? ''
+                  : String(customer.customerId).trim();
+              const customerId =
+                rawCustomerId !== '' ? rawCustomerId : `CUST_${i + 1}`;
               
               // Excel export data
               results.push({
-                customerId: customer.customerId,
+                customerId,
                 PocketID: nearestPocket.pocketId,
                 'Distance to Pocket Center (m)': Math.round(nearestPocket.distance),
                 'Pocket Center Lat': nearestPocket.centerLat.toFixed(6),
@@ -133,7 +140,7 @@ describe('Batch Processing Integration Property-Based Tests', () => {
               }
 
               mappings.push({
-                customerId: customer.customerId,
+                customerId,
                 customerLat: customer.lat,
                 customerLon: customer.lon,
                 pocketId: nearestPocket.pocketId,
@@ -189,8 +196,9 @@ describe('Batch Processing Integration Property-Based Tests', () => {
 
             // Property 4: Both outputs should have the same pocket assignments
             results.forEach((result, index) => {
-              const persistedMapping = persistedMappings.find(m => m.customerId === result.customerId);
+              const persistedMapping = persistedMappings[index];
               expect(persistedMapping).toBeDefined();
+              expect(persistedMapping.customerId).toBe(result.customerId);
               expect(persistedMapping.pocketId).toBe(result.PocketID);
             });
 
@@ -307,9 +315,16 @@ describe('Batch Processing Integration Property-Based Tests', () => {
             const pocketCenters = new Map();
             let processedSuccessfully = 0;
 
-            for (const customer of customers) {
+            for (let i = 0; i < customers.length; i++) {
+              const customer = customers[i];
               try {
                 const nearestPocket = findNearestPocket(customer.lat, customer.lon, config);
+                const rawCustomerId =
+                  customer.customerId === undefined || customer.customerId === null
+                    ? ''
+                    : String(customer.customerId).trim();
+                const customerId =
+                  rawCustomerId !== '' ? rawCustomerId : `CUST_${i + 1}`;
                 
                 if (!pocketCenters.has(nearestPocket.pocketId)) {
                   pocketCenters.set(nearestPocket.pocketId, {
@@ -319,7 +334,7 @@ describe('Batch Processing Integration Property-Based Tests', () => {
                 }
 
                 mappings.push({
-                  customerId: customer.customerId,
+                  customerId,
                   customerLat: customer.lat,
                   customerLon: customer.lon,
                   pocketId: nearestPocket.pocketId,

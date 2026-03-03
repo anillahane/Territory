@@ -9,7 +9,7 @@ const logger = require('../config/logger');
 class MappingService {
   /**
    * Save customer-to-pocket mappings in bulk
-   * @param {number} jobId - The batch job ID
+   * @param {string} jobId - The batch job UUID
    * @param {Array<Object>} mappings - Array of mapping objects
    * @param {string} mappings[].customerId - Customer identifier
    * @param {number} mappings[].customerLat - Customer latitude
@@ -94,9 +94,9 @@ class MappingService {
   /**
    * Retrieve customer-to-pocket mappings with filtering and pagination
    * @param {Object} filters - Filter options
-   * @param {number} [filters.jobId] - Filter by batch job ID
+   * @param {string} [filters.jobId] - Filter by batch job UUID
    * @param {string} [filters.customerId] - Filter by customer ID (partial match)
-   * @param {number} [filters.pocketId] - Filter by pocket ID
+   * @param {string} [filters.pocketId] - Filter by pocket ID
    * @param {Object} pagination - Pagination options
    * @param {number} [pagination.page=1] - Page number (1-indexed)
    * @param {number} [pagination.pageSize=100] - Number of records per page
@@ -220,7 +220,7 @@ class MappingService {
   /**
    * Delete customer-to-pocket mappings based on retention policy
    * @param {Date|string} olderThan - Delete mappings created before this date
-   * @param {number} [jobId] - Optional: Delete mappings for specific job only
+   * @param {string} [jobId] - Optional: Delete mappings for specific job only
    * @returns {Promise<number>} Number of records deleted
    */
   async deleteMappings(olderThan, jobId = null) {
@@ -281,7 +281,7 @@ class MappingService {
   /**
    * Insert a single batch of mappings using parameterized query
    * @private
-   * @param {number} jobId - The batch job ID
+   * @param {string} jobId - The batch job UUID
    * @param {Array<Object>} batch - Batch of mapping objects
    * @returns {Promise<number>} Number of records inserted
    */

@@ -9,9 +9,6 @@ class ApiService {
     this.client = axios.create({
       baseURL: API_URL,
       timeout: 120000, // 2 minutes for large file uploads
-      headers: {
-        'Content-Type': 'application/json',
-      },
     });
 
     // Request interceptor
@@ -27,14 +24,33 @@ class ApiService {
     this.client.interceptors.response.use(
       (response) => response,
       (error: AxiosError) => {
+        const responseData = error.response?.data as Record<string, any> | undefined;
+        const errorMessage =
+          responseData?.error ||
+          responseData?.message ||
+          error.message ||
+          'Request failed';
+
         if (error.response) {
           // Server responded with error
-          console.error('API Error:', error.response.data);
+          console.error('API Error:', responseData);
         } else if (error.request) {
           // Request made but no response
           console.error('Network Error:', error.message);
         }
-        return Promise.reject(error);
+
+        const normalizedError = new Error(errorMessage) as Error & {
+          status?: number;
+          code?: string;
+          details?: unknown;
+          originalError?: AxiosError;
+        };
+        normalizedError.status = error.response?.status;
+        normalizedError.code = (responseData?.code as string | undefined) || error.code;
+        normalizedError.details = responseData?.details;
+        normalizedError.originalError = error;
+
+        return Promise.reject(normalizedError);
       }
     );
   }
@@ -86,11 +102,8 @@ class ApiService {
   async uploadBranches(file: File) {
     const formData = new FormData();
     formData.append('file', file);
-    const response = await this.client.post('/branches/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
+    // Let the browser set multipart boundary automatically.
+    const response = await this.client.post('/branches/upload', formData);
     return response.data;
   }
 
@@ -175,16 +188,13 @@ class ApiService {
     
     try {
       // Try as JSON first (new non-blocking behavior)
-      const response = await this.client.post('/batch/encode', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      });
+      const response = await this.client.post('/batch/encode', formData);
       return response.data;
     } catch (error: any) {
+      const axiosError = error?.originalError || error;
       // If it's a blob response (shouldn't happen anymore), handle it
-      if (error.response?.headers['content-type']?.includes('application/vnd.openxmlformats')) {
-        return error.response.data;
+      if (axiosError.response?.headers['content-type']?.includes('application/vnd.openxmlformats')) {
+        return axiosError.response.data;
       }
       throw error;
     }

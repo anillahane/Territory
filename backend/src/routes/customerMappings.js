@@ -5,6 +5,44 @@ const logger = require('../config/logger');
 
 const router = express.Router();
 
+const normalizeOptionalId = (value, errorMessage, errorCode, maxLength = 50) => {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    throw new AppError(errorMessage, 400, errorCode);
+  }
+
+  const normalized = String(value).trim();
+  if (normalized === '') {
+    return null;
+  }
+
+  if (normalized.length > maxLength) {
+    throw new AppError(errorMessage, 400, errorCode);
+  }
+
+  return normalized;
+};
+
+const normalizeRequiredId = (value, errorMessage, errorCode, maxLength = 50) => {
+  if (value === undefined || value === null) {
+    throw new AppError(errorMessage, 400, errorCode);
+  }
+
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    throw new AppError(errorMessage, 400, errorCode);
+  }
+
+  const normalized = String(value).trim();
+  if (normalized === '' || normalized.length > maxLength) {
+    throw new AppError(errorMessage, 400, errorCode);
+  }
+
+  return normalized;
+};
+
 /**
  * GET /api/v1/customer-mappings
  * Retrieve customer-to-pocket mappings with pagination and filtering
@@ -15,15 +53,9 @@ router.get(
     // Parse and validate query parameters
     let page = parseInt(req.query.page, 10);
     let pageSize = parseInt(req.query.pageSize, 10);
-    const jobId =
-      typeof req.query.jobId === 'string' && req.query.jobId.trim() !== ''
-        ? req.query.jobId.trim()
-        : null;
+    const jobId = normalizeOptionalId(req.query.jobId, 'Invalid job ID', 'INVALID_JOB_ID');
     const customerId = req.query.customerId || '';
-    const pocketId =
-      typeof req.query.pocketId === 'string' && req.query.pocketId.trim() !== ''
-        ? req.query.pocketId.trim()
-        : null;
+    const pocketId = normalizeOptionalId(req.query.pocketId, 'Invalid pocket ID', 'INVALID_POCKET_ID');
 
     // Validate and set defaults for page
     if (isNaN(page) || page < 1) {
@@ -67,15 +99,18 @@ router.post(
   '/batch',
   asyncHandler(async (req, res) => {
     const { jobId, mappings } = req.body;
+    const normalizedJobId = normalizeRequiredId(
+      jobId,
+      'Invalid or missing jobId',
+      'INVALID_JOB_ID'
+    );
 
     // Validate request body
-    if (!jobId || typeof jobId !== 'number') {
-      throw new AppError('Invalid or missing jobId', 400, 'INVALID_JOB_ID');
-    }
-
     if (!Array.isArray(mappings) || mappings.length === 0) {
       throw new AppError('Mappings must be a non-empty array', 400, 'INVALID_MAPPINGS');
     }
+
+    const normalizedMappings = [];
 
     // Validate each mapping has required fields
     for (let i = 0; i < mappings.length; i++) {
@@ -102,7 +137,7 @@ router.post(
       }
 
       // Validate data types
-      if (typeof mapping.customerId !== 'string') {
+      if (typeof mapping.customerId !== 'string' || mapping.customerId.trim() === '') {
         throw new AppError(
           `Invalid customerId type at index ${i}`,
           400,
@@ -113,11 +148,16 @@ router.post(
       if (
         typeof mapping.customerLat !== 'number' ||
         typeof mapping.customerLon !== 'number' ||
-        typeof mapping.pocketId !== 'number' ||
         typeof mapping.distanceCustomerToPocket !== 'number' ||
-        typeof mapping.nearestBranchId !== 'number' ||
         typeof mapping.distancePocketToBranch !== 'number' ||
-        typeof mapping.distanceCustomerToBranch !== 'number'
+        typeof mapping.distanceCustomerToBranch !== 'number' ||
+        !Number.isFinite(mapping.customerLat) ||
+        !Number.isFinite(mapping.customerLon) ||
+        !Number.isFinite(mapping.distanceCustomerToPocket) ||
+        !Number.isFinite(mapping.distancePocketToBranch) ||
+        !Number.isFinite(mapping.distanceCustomerToBranch) ||
+        (typeof mapping.pocketId !== 'string' && typeof mapping.pocketId !== 'number') ||
+        (typeof mapping.nearestBranchId !== 'string' && typeof mapping.nearestBranchId !== 'number')
       ) {
         throw new AppError(
           `Invalid data types in mapping at index ${i}`,
@@ -125,12 +165,32 @@ router.post(
           'INVALID_TYPE'
         );
       }
+
+      normalizedMappings.push({
+        customerId: mapping.customerId.trim(),
+        customerLat: mapping.customerLat,
+        customerLon: mapping.customerLon,
+        pocketId: normalizeRequiredId(
+          mapping.pocketId,
+          `Invalid pocketId at index ${i}`,
+          'INVALID_TYPE'
+        ),
+        distanceCustomerToPocket: mapping.distanceCustomerToPocket,
+        nearestBranchId: normalizeRequiredId(
+          mapping.nearestBranchId,
+          `Invalid nearestBranchId at index ${i}`,
+          'INVALID_TYPE',
+          20
+        ),
+        distancePocketToBranch: mapping.distancePocketToBranch,
+        distanceCustomerToBranch: mapping.distanceCustomerToBranch,
+      });
     }
 
-    logger.info('Saving customer mappings', { jobId, count: mappings.length });
+    logger.info('Saving customer mappings', { jobId: normalizedJobId, count: normalizedMappings.length });
 
     // Call service to save mappings
-    const result = await mappingService.saveMappings(jobId, mappings);
+    const result = await mappingService.saveMappings(normalizedJobId, normalizedMappings);
 
     res.status(201).json({
       success: result.success,
@@ -161,13 +221,7 @@ router.delete(
     }
 
     // Validate jobId if provided
-    let parsedJobId = null;
-    if (jobId !== undefined && jobId !== null && jobId !== '') {
-      parsedJobId = parseInt(jobId, 10);
-      if (isNaN(parsedJobId) || parsedJobId < 1) {
-        throw new AppError('Invalid job ID', 400, 'INVALID_JOB_ID');
-      }
-    }
+    const parsedJobId = normalizeOptionalId(jobId, 'Invalid job ID', 'INVALID_JOB_ID');
 
     logger.info('Deleting customer mappings', {
       olderThan: deleteDate.toISOString(),

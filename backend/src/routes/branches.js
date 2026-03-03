@@ -54,16 +54,29 @@ router.post(
     // Generate unique job ID
     const jobId = uuidv4();
 
-    // Add job to queue
-    const job = await branchUploadQueue.add(
-      {
-        fileBuffer: req.file.buffer,
+    let job;
+    try {
+      // Add job to queue
+      job = await branchUploadQueue.add(
+        {
+          fileBuffer: req.file.buffer,
+          fileName: req.file.originalname,
+        },
+        {
+          jobId,
+        }
+      );
+    } catch (error) {
+      logger.error('Failed to queue branch upload job', {
+        error: error.message,
         fileName: req.file.originalname,
-      },
-      {
-        jobId,
-      }
-    );
+      });
+      throw new AppError(
+        'Upload queue is unavailable. Verify Redis service is running and try again.',
+        503,
+        'QUEUE_UNAVAILABLE'
+      );
+    }
 
     logger.info('Branch upload job queued', {
       jobId: job.id,

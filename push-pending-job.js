@@ -57,7 +57,7 @@ async function pushPendingJob() {
       process.exit(1);
     }
     
-    const filePath = files[0].path.replace(__dirname + path.sep, '').replace(/\\/g, '/');
+    const filePath = path.resolve(files[0].path).replace(/\\/g, '/');
     console.log(`📁 File found: ${filePath}`);
     
     // Get config

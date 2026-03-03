@@ -86,7 +86,7 @@ router.put(
         originLat,
         originLon,
         alphabet,
-        gridLevels || [500000, 100000, 20000, 5000, 1000],
+        JSON.stringify(gridLevels || [500000, 100000, 20000, 5000, 1000]),
       ]
     );
 

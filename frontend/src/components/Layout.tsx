@@ -11,6 +11,7 @@ import {
   Typography,
   Divider,
   IconButton,
+  Checkbox,
   Tooltip,
 } from '@mui/material';
 import {
@@ -23,6 +24,7 @@ import {
   Menu as MenuIcon,
   ChevronLeft as ChevronLeftIcon,
 } from '@mui/icons-material';
+import { DASHBOARD_GRID_LEVELS, useStore } from '../store/useStore';
 
 const drawerWidth = 240;
 const drawerWidthCollapsed = 64;
@@ -30,6 +32,10 @@ const drawerWidthCollapsed = 64;
 export default function Layout() {
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const dashboardMapPanel = useStore((state) => state.dashboardMapPanel);
+  const selectedGridLevels = useStore((state) => state.dashboardSelectedGridLevels);
+  const toggleDashboardGridLevel = useStore((state) => state.toggleDashboardGridLevel);
+  const isDashboardRoute = location.pathname === '/';
 
   const navItems = [
     { path: '/', label: 'Dashboard', icon: <DashboardIcon /> },
@@ -44,8 +50,16 @@ export default function Layout() {
   ];
 
   const toggleSidebar = () => {
-    setSidebarOpen(!sidebarOpen);
+    setSidebarOpen((prev) => !prev);
+    window.setTimeout(() => {
+      window.dispatchEvent(new Event('dashboard-layout-resize'));
+    }, 220);
   };
+
+  const mapStatusLabel = dashboardMapPanel.mapError || (dashboardMapPanel.mapLoaded ? 'Ready' : 'Loading...');
+  const mapStatusColor = dashboardMapPanel.mapError
+    ? '#DC2626'
+    : (dashboardMapPanel.mapLoaded ? '#059669' : '#D97706');
 
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh', background: '#F8FAFC' }}>
@@ -63,6 +77,8 @@ export default function Layout() {
             background: '#FFFFFF',
             transition: 'width 0.2s',
             overflowX: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
           },
         }}
       >
@@ -184,6 +200,105 @@ export default function Layout() {
               </ListItem>
             );
           })}
+
+          {isDashboardRoute && sidebarOpen && (
+            <Box
+              sx={{
+                mt: 1.25,
+                mb: 1,
+                p: 1.25,
+                border: '1px solid #E2E8F0',
+                borderRadius: '10px',
+                background: '#F8FAFC',
+              }}
+            >
+              <Typography sx={{ fontSize: '11px', fontWeight: 700, color: '#0F172A', mb: 0.75 }}>
+                Map Legend
+              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.6 }}>
+                <Box
+                  sx={{
+                    width: 18,
+                    height: 12,
+                    backgroundColor: '#93C5FD',
+                    opacity: 0.6,
+                    border: '2px solid #FDE047',
+                    borderRadius: '4px',
+                    flexShrink: 0,
+                  }}
+                />
+                <Typography sx={{ fontSize: '10px', color: '#334155' }}>
+                  India (Light blue fill, Yellow border)
+                </Typography>
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.8 }}>
+                <Box sx={{ width: 18, height: 0, borderTop: '2px solid #E2E8F0', flexShrink: 0 }} />
+                <Typography sx={{ fontSize: '10px', color: '#334155' }}>State borders</Typography>
+              </Box>
+              <Divider sx={{ my: 0.8, borderColor: '#E2E8F0' }} />
+              <Typography sx={{ fontSize: '10px', color: '#64748B', mb: 0.25 }}>Zoom Level</Typography>
+              <Typography sx={{ fontSize: '14px', fontWeight: 700, color: '#0F172A', mb: 0.75 }}>
+                {dashboardMapPanel.zoomLevel.toFixed(2)}
+              </Typography>
+              <Typography sx={{ fontSize: '10px', color: '#64748B', mb: 0.25 }}>Center</Typography>
+              <Typography sx={{ fontSize: '11px', color: '#0F172A', mb: 0.75 }}>
+                {dashboardMapPanel.center[1].toFixed(4)}degN, {dashboardMapPanel.center[0].toFixed(4)}degE
+              </Typography>
+              <Typography sx={{ fontSize: '10px', color: '#64748B', mb: 0.25 }}>Grid Overlay</Typography>
+              <Typography sx={{ fontSize: '11px', color: '#0F172A', mb: 0.75 }}>
+                {dashboardMapPanel.gridOverlay}
+              </Typography>
+              <Typography sx={{ fontSize: '10px', color: '#64748B', mb: 0.2 }}>Grid Layers</Typography>
+              <Box sx={{ mb: 0.7 }}>
+                {DASHBOARD_GRID_LEVELS.map((gridLevel) => {
+                  const isSelected = selectedGridLevels.includes(gridLevel.id);
+                  const zoomEligible = dashboardMapPanel.zoomLevel >= gridLevel.minZoom;
+
+                  return (
+                    <Box
+                      key={gridLevel.id}
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        mb: 0.1,
+                        mr: -0.25
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
+                        <Checkbox
+                          size="small"
+                          checked={isSelected}
+                          onChange={() => toggleDashboardGridLevel(gridLevel.id)}
+                          sx={{ p: 0.3, mr: 0.4 }}
+                        />
+                        <Typography sx={{ fontSize: '10px', color: '#334155' }}>{gridLevel.label}</Typography>
+                      </Box>
+                      {gridLevel.minZoom >= 6 && (
+                        <Typography sx={{ fontSize: '9px', color: zoomEligible ? '#059669' : '#94A3B8' }}>
+                          z6+
+                        </Typography>
+                      )}
+                    </Box>
+                  );
+                })}
+              </Box>
+              <Typography sx={{ fontSize: '10px', color: '#64748B', mb: 0.25 }}>Map Status</Typography>
+              <Typography
+                sx={{
+                  fontSize: '10px',
+                  color: mapStatusColor,
+                  lineHeight: 1.3,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  maxHeight: 96,
+                  overflowY: 'auto',
+                }}
+              >
+                {mapStatusLabel}
+              </Typography>
+            </Box>
+          )}
 
           {/* Admin Section */}
           {sidebarOpen && (
@@ -321,7 +436,7 @@ export default function Layout() {
           display: 'flex',
           flexDirection: 'column',
           overflowX: 'hidden',
-          overflowY: 'scroll',
+          overflowY: isDashboardRoute ? 'hidden' : 'scroll',
           minHeight: 0,
           minWidth: 0,
         }}

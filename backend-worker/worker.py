@@ -246,6 +246,13 @@ def process_job(job_data):
     file_path = job_data['filePath']
     config = job_data['config']
     
+    # Normalize file path to avoid cwd-dependent failures from manually requeued jobs.
+    if not os.path.isabs(file_path):
+        file_path = os.path.abspath(file_path)
+    if not os.path.exists(file_path):
+        fallback_path = os.path.join(UPLOAD_DIR, os.path.basename(file_path))
+        if os.path.exists(fallback_path):
+            file_path = fallback_path
     print(f"🔄 Starting job {job_id} for {file_path}")
     
     # Update job to active
@@ -517,3 +524,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

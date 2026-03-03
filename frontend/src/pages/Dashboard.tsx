@@ -1,37 +1,194 @@
 import { useEffect, useRef, useState } from 'react';
-import { Box, Typography, Paper, Card, CardContent, Grid } from '@mui/material';
-import { Map, NavigationControl, ScaleControl } from 'maplibre-gl';
+import { Box } from '@mui/material';
+import { Map, NavigationControl, ScaleControl, setWorkerUrl } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import indiaStateBounds from '../data/indiaStateBounds.json';
+import maplibreCspWorkerUrl from 'maplibre-gl/dist/maplibre-gl-csp-worker.js?url';
+import { type DashboardGridLevelId, useStore } from '../store/useStore';
 
-// Constants for India bounds - padded for better aspect ratio rendering
 const DEFAULT_BOUNDS = [63.0, 1.5, 102.5, 42.5] as [number, number, number, number];
-const DEFAULT_CENTER = [78.9629, 20.5937] as [number, number]; // Center of India
+const DEFAULT_CENTER = [78.9629, 20.5937] as [number, number];
 const DEFAULT_ZOOM = 4.5;
 
-// Grid levels configuration (for future implementation)
-// const GRID_LEVELS = [
-//   { name: '500km', size: 500, minZoom: 3, maxZoom: 6, opacity: 0.8, color: '#e74c3c', width: 2.5 },
-//   { name: '100km', size: 100, minZoom: 5, maxZoom: 8, opacity: 0.7, color: '#f39c12', width: 2 },
-//   { name: '20km', size: 20, minZoom: 7, maxZoom: 10, opacity: 0.6, color: '#3498db', width: 1.5 },
-//   { name: '5km', size: 5, minZoom: 9, maxZoom: 12, opacity: 0.5, color: '#9b59b6', width: 1 },
-//   { name: '1km', size: 1, minZoom: 11, maxZoom: 20, opacity: 0.4, color: '#27ae60', width: 0.5 }
-// ];
+const KM_GRID_LEVELS: Array<{
+  id: DashboardGridLevelId;
+  label: string;
+  stepKm: number;
+  minZoom: number;
+  color: string;
+  width: number;
+  opacity: number;
+}> = [
+  { id: '500km', label: '500 km', stepKm: 500, minZoom: 0, color: '#93C5FD', width: 1.4, opacity: 0.25 },
+  { id: '100km', label: '100 km', stepKm: 100, minZoom: 0, color: '#60A5FA', width: 1.1, opacity: 0.22 },
+  { id: '20km', label: '20 km', stepKm: 20, minZoom: 0, color: '#38BDF8', width: 0.9, opacity: 0.2 },
+  { id: '5km', label: '5 km', stepKm: 5, minZoom: 6, color: '#22D3EE', width: 0.75, opacity: 0.18 },
+  { id: '1km', label: '1 km', stepKm: 1, minZoom: 6, color: '#06B6D4', width: 0.55, opacity: 0.16 }
+];
+const GRID_SOURCE_PREFIX = 'dashboard-grid';
+const GRID_LAYER_PREFIX = 'dashboard-grid-lines';
+const OFFICIAL_INDIA_GEOJSON_URL = '/data/indiaStateBounds_official.geojson';
+const STATE_BORDERS_SOURCE_ID = 'official-state-borders';
+const STATE_BORDERS_LAYER_ID = 'state-borders';
+const STATE_BORDERS_GEOJSON_URL = '/data/stateBorders_official.geojson';
+const EMPTY_GRID_FEATURE_COLLECTION = {
+  type: 'FeatureCollection',
+  features: []
+} as GeoJSON.FeatureCollection<GeoJSON.LineString>;
 
-// Vector tile server configuration (for future implementation)
-// const VECTOR_TILE_URL = import.meta.env.VITE_VECTOR_TILE_URL || 'http://localhost:8080/grids/{z}/{x}/{y}.pbf';
+// Use explicit CSP worker file so runtime worker code does not depend on
+// helper symbols injected by the bundler.
+setWorkerUrl(maplibreCspWorkerUrl);
+
+const getGridSourceId = (id: DashboardGridLevelId) => `${GRID_SOURCE_PREFIX}-${id}`;
+const getGridLayerId = (id: DashboardGridLevelId) => `${GRID_LAYER_PREFIX}-${id}`;
+
+const stringifyDiagnosticValue = (value: unknown): string => {
+  if (value === undefined) return 'undefined';
+  if (value === null) return 'null';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value instanceof Error) {
+    return `${value.name}: ${value.message}${value.stack ? `\n${value.stack}` : ''}`;
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+};
+
+const buildViewportSnapshot = (mapInstance: Map): string => {
+  const center = mapInstance.getCenter();
+  const bounds = mapInstance.getBounds();
+
+  return [
+    `zoom=${mapInstance.getZoom().toFixed(2)}`,
+    `center=${center.lat.toFixed(4)}deg,${center.lng.toFixed(4)}deg`,
+    `bounds=[${bounds.getSouth().toFixed(4)},${bounds.getWest().toFixed(4)}]-[${bounds.getNorth().toFixed(4)},${bounds.getEast().toFixed(4)}]`
+  ].join(' | ');
+};
+
+const buildMapStatusMessage = (
+  summary: string,
+  mapInstance: Map | null,
+  details?: Record<string, unknown>,
+  error?: unknown
+): string => {
+  const lines: string[] = [summary];
+
+  if (mapInstance) {
+    lines.push(`viewport: ${buildViewportSnapshot(mapInstance)}`);
+  }
+
+  if (details) {
+    Object.entries(details).forEach(([key, value]) => {
+      if (value !== undefined) {
+        lines.push(`${key}: ${stringifyDiagnosticValue(value)}`);
+      }
+    });
+  }
+
+  if (error !== undefined) {
+    lines.push(`error: ${stringifyDiagnosticValue(error)}`);
+  }
+
+  return lines.join('\n');
+};
+
+const buildGridGeoJsonKm = (
+  minLon: number,
+  maxLon: number,
+  minLat: number,
+  maxLat: number,
+  stepKm: number,
+  referenceLat: number
+) => {
+  const features: GeoJSON.Feature<GeoJSON.LineString>[] = [];
+
+  const latStepDeg = stepKm / 110.574;
+  const cosLat = Math.cos((referenceLat * Math.PI) / 180);
+  const safeCosLat = Math.max(0.2, Math.abs(cosLat));
+  const lonStepDeg = stepKm / (111.32 * safeCosLat);
+
+  const estimatedLonLines = Math.ceil((maxLon - minLon) / lonStepDeg) + 1;
+  const estimatedLatLines = Math.ceil((maxLat - minLat) / latStepDeg) + 1;
+  if (estimatedLonLines + estimatedLatLines > 20000) {
+    return EMPTY_GRID_FEATURE_COLLECTION;
+  }
+
+  const startLon = Math.floor(minLon / lonStepDeg) * lonStepDeg;
+  const endLon = Math.ceil(maxLon / lonStepDeg) * lonStepDeg;
+  for (let lon = startLon; lon <= endLon; lon += lonStepDeg) {
+    const x = Number(lon.toFixed(6));
+    features.push({
+      type: 'Feature',
+      properties: {},
+      geometry: {
+        type: 'LineString',
+        coordinates: [[x, minLat], [x, maxLat]]
+      }
+    });
+  }
+
+  const startLat = Math.floor(minLat / latStepDeg) * latStepDeg;
+  const endLat = Math.ceil(maxLat / latStepDeg) * latStepDeg;
+  for (let lat = startLat; lat <= endLat; lat += latStepDeg) {
+    const y = Number(lat.toFixed(6));
+    features.push({
+      type: 'Feature',
+      properties: {},
+      geometry: {
+        type: 'LineString',
+        coordinates: [[minLon, y], [maxLon, y]]
+      }
+    });
+  }
+
+  return {
+    type: 'FeatureCollection',
+    features
+  } as GeoJSON.FeatureCollection<GeoJSON.LineString>;
+};
+
+const buildGridOverlayLabel = (selectedGridLevels: DashboardGridLevelId[], zoom: number): string => {
+  if (selectedGridLevels.length === 0) return 'None selected';
+
+  const visibleGridLabels = KM_GRID_LEVELS
+    .filter((level) => selectedGridLevels.includes(level.id) && zoom >= level.minZoom)
+    .map((level) => level.label);
+
+  if (visibleGridLabels.length > 0) {
+    return visibleGridLabels.join(', ');
+  }
+
+  const hasOnlyZoomRestrictedLevels = selectedGridLevels.every((id) => {
+    const levelConfig = KM_GRID_LEVELS.find((level) => level.id === id);
+    return Boolean(levelConfig && zoom < levelConfig.minZoom);
+  });
+
+  return hasOnlyZoomRestrictedLevels ? 'Selected grids visible from zoom 6+' : 'None visible';
+};
 
 export default function Dashboard() {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const map = useRef<Map | null>(null);
+  const updateGridOverlayRef = useRef<() => void>(() => undefined);
+  const setDashboardMapPanel = useStore((state) => state.setDashboardMapPanel);
+  const resetDashboardMapPanel = useStore((state) => state.resetDashboardMapPanel);
+  const selectedGridLevels = useStore((state) => state.dashboardSelectedGridLevels);
+  const selectedGridLevelsRef = useRef<DashboardGridLevelId[]>(selectedGridLevels);
   const [mapLoaded, setMapLoaded] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
   const [currentZoom, setCurrentZoom] = useState(DEFAULT_ZOOM);
   const [currentCenter, setCurrentCenter] = useState(DEFAULT_CENTER);
+  const [currentGridLabel, setCurrentGridLabel] = useState(
+    buildGridOverlayLabel(selectedGridLevels, DEFAULT_ZOOM)
+  );
 
   useEffect(() => {
     if (!mapContainer.current) return;
 
-    // Initialize map
     map.current = new Map({
       container: mapContainer.current,
       style: {
@@ -54,61 +211,176 @@ export default function Dashboard() {
       minZoom: 3
     });
 
-    console.log('Map initialized with container:', mapContainer.current);
+    map.current.addControl(new NavigationControl(), 'top-right');
+    map.current.addControl(new ScaleControl(), 'bottom-left');
 
-    // Add navigation controls
-    map.current.addControl(new maplibregl.NavigationControl(), 'top-right');
+    const handleMapResize = () => {
+      if (!map.current) return;
+      map.current.resize();
+    };
 
-    // Add scale control
-    map.current.addControl(new maplibregl.ScaleControl(), 'bottom-left');
+    window.addEventListener('resize', handleMapResize);
+    window.addEventListener('dashboard-layout-resize', handleMapResize);
+    window.setTimeout(handleMapResize, 0);
 
-    // Handle map load event
+    map.current.on('error', (event) => {
+      if (!map.current) return;
+
+      const typedEvent = event as {
+        error?: unknown;
+        sourceId?: string;
+        sourceType?: string;
+        tile?: unknown;
+      };
+
+      const statusMessage = buildMapStatusMessage(
+        'Map rendering error',
+        map.current,
+        {
+          styleLoaded: map.current.isStyleLoaded(),
+          sourceId: typedEvent.sourceId,
+          sourceType: typedEvent.sourceType,
+          tile: typedEvent.tile
+        },
+        typedEvent.error ?? event
+      );
+
+      console.error('Map render error:', typedEvent.error ?? event);
+      setMapLoaded(false);
+      setMapError(statusMessage);
+    });
+
+    const updateGridOverlay = () => {
+      if (!map.current || !map.current.isStyleLoaded()) return;
+
+      const zoom = map.current.getZoom();
+      const bounds = map.current.getBounds();
+      const minLon = Math.max(DEFAULT_BOUNDS[0], bounds.getWest());
+      const maxLon = Math.min(DEFAULT_BOUNDS[2], bounds.getEast());
+      const minLat = Math.max(DEFAULT_BOUNDS[1], bounds.getSouth());
+      const maxLat = Math.min(DEFAULT_BOUNDS[3], bounds.getNorth());
+      const selectedGridLevelIds = selectedGridLevelsRef.current;
+      const referenceLat = Math.max(minLat, Math.min(maxLat, map.current.getCenter().lat));
+      const visibleGridLabels: string[] = [];
+
+      KM_GRID_LEVELS.forEach((gridLevel) => {
+        const sourceId = getGridSourceId(gridLevel.id);
+        const layerId = getGridLayerId(gridLevel.id);
+        const source = map.current?.getSource(sourceId) as {
+          setData: (data: GeoJSON.FeatureCollection<GeoJSON.LineString>) => void;
+        } | undefined;
+
+        const shouldRender = selectedGridLevelIds.includes(gridLevel.id) && zoom >= gridLevel.minZoom;
+        if (shouldRender && source?.setData) {
+          source.setData(
+            buildGridGeoJsonKm(
+              minLon,
+              maxLon,
+              minLat,
+              maxLat,
+              gridLevel.stepKm,
+              referenceLat
+            )
+          );
+          if (map.current?.getLayer(layerId)) {
+            map.current.setLayoutProperty(layerId, 'visibility', 'visible');
+          }
+          visibleGridLabels.push(gridLevel.label);
+        } else {
+          if (source?.setData) {
+            source.setData(EMPTY_GRID_FEATURE_COLLECTION);
+          }
+          if (map.current?.getLayer(layerId)) {
+            map.current.setLayoutProperty(layerId, 'visibility', 'none');
+          }
+        }
+      });
+
+      setCurrentGridLabel(
+        visibleGridLabels.length > 0
+          ? visibleGridLabels.join(', ')
+          : buildGridOverlayLabel(selectedGridLevelIds, zoom)
+      );
+    };
+    updateGridOverlayRef.current = updateGridOverlay;
+
     map.current.on('load', () => {
       if (!map.current) return;
 
       try {
-        console.log('Adding India GeoJSON source...');
-        console.log('India data:', indiaStateBounds);
-
-        // Add India GeoJSON source
         map.current.addSource('officialIndia', {
           type: 'geojson',
-          data: indiaStateBounds as GeoJSON.FeatureCollection
+          data: OFFICIAL_INDIA_GEOJSON_URL
         });
 
-        console.log('India source added, adding fill layer...');
-
-        // Add India fill layer with bright color
         map.current.addLayer({
           id: 'india-bg',
           type: 'fill',
           source: 'officialIndia',
           paint: {
-            'fill-color': '#10B981',
-            'fill-opacity': 0.3
+            'fill-color': '#93C5FD',
+            'fill-opacity': 0.6
           }
         });
 
-        console.log('Fill layer added, adding border layer...');
+        map.current.addSource(STATE_BORDERS_SOURCE_ID, {
+          type: 'geojson',
+          data: STATE_BORDERS_GEOJSON_URL
+        });
 
-        // Add India borders layer with bright contrasting color
+        KM_GRID_LEVELS.forEach((gridLevel) => {
+          const sourceId = getGridSourceId(gridLevel.id);
+          const layerId = getGridLayerId(gridLevel.id);
+
+          map.current?.addSource(sourceId, {
+            type: 'geojson',
+            data: EMPTY_GRID_FEATURE_COLLECTION
+          });
+
+          map.current?.addLayer({
+            id: layerId,
+            type: 'line',
+            source: sourceId,
+            layout: {
+              visibility: 'none'
+            },
+            paint: {
+              'line-color': gridLevel.color,
+              'line-width': gridLevel.width,
+              'line-opacity': gridLevel.opacity
+            }
+          });
+        });
+
+        map.current.addLayer({
+          id: STATE_BORDERS_LAYER_ID,
+          type: 'line',
+          source: STATE_BORDERS_SOURCE_ID,
+          layout: {
+            'line-join': 'round',
+            'line-cap': 'round'
+          },
+          paint: {
+            'line-color': '#E2E8F0',
+            'line-width': 1.3,
+            'line-opacity': 0.9
+          }
+        });
+
         map.current.addLayer({
           id: 'india-borders',
           type: 'line',
           source: 'officialIndia',
           paint: {
-            'line-color': '#FBBF24',
-            'line-width': 3,
+            'line-color': '#FDE047',
+            'line-width': 4,
             'line-opacity': 1
           }
         });
 
-        console.log('Border layer added, fitting bounds...');
-
-        // Fit map to India bounds
         const bounds = [
-          [68.176645, 7.965535], // Southwest coordinates (min lon, min lat)
-          [97.402561, 35.494010]  // Northeast coordinates (max lon, max lat)
+          [68.176645, 7.965535],
+          [97.402561, 35.49401]
         ] as [[number, number], [number, number]];
 
         map.current.fitBounds(bounds, {
@@ -116,30 +388,87 @@ export default function Dashboard() {
           duration: 1000
         });
 
-        console.log('India map layers added successfully!');
-        console.log('Map sources:', map.current.getStyle().sources);
-        console.log('Map layers:', map.current.getStyle().layers);
+        map.current.once('idle', () => {
+          if (!map.current) return;
+
+          const hasIndiaLayers =
+            Boolean(map.current.getLayer('india-bg')) &&
+            Boolean(map.current.getLayer('india-borders'));
+          const hasStateBordersLayer = Boolean(map.current.getLayer(STATE_BORDERS_LAYER_ID));
+          const hasGridLayers = KM_GRID_LEVELS.every(
+            (gridLevel) => Boolean(map.current?.getLayer(getGridLayerId(gridLevel.id)))
+          );
+
+          if (!hasIndiaLayers || !hasStateBordersLayer || !hasGridLayers) {
+            setMapLoaded(false);
+            setMapError(buildMapStatusMessage(
+              'Required map layers not available',
+              map.current,
+              {
+                styleLoaded: map.current.isStyleLoaded(),
+                hasIndiaSource: Boolean(map.current.getSource('officialIndia')),
+                hasIndiaFillLayer: Boolean(map.current.getLayer('india-bg')),
+                hasIndiaBorderLayer: Boolean(map.current.getLayer('india-borders')),
+                hasStateBorderSource: Boolean(map.current.getSource(STATE_BORDERS_SOURCE_ID)),
+                hasStateBorderLayer: hasStateBordersLayer,
+                hasGridLayers,
+                selectedGridLevels: selectedGridLevelsRef.current
+              }
+            ));
+            return;
+          }
+
+          const visibleIndia = map.current.queryRenderedFeatures(undefined, {
+            layers: ['india-bg']
+          });
+
+          let sourceFeatureCount: number | 'unavailable' = 'unavailable';
+          try {
+            sourceFeatureCount = map.current.querySourceFeatures('officialIndia').length;
+          } catch {
+            sourceFeatureCount = 'unavailable';
+          }
+
+          if (visibleIndia.length === 0) {
+            setMapLoaded(false);
+            setMapError(buildMapStatusMessage(
+              'India polygon not visible in current view',
+              map.current,
+              {
+                styleLoaded: map.current.isStyleLoaded(),
+                renderedFeatureCount: visibleIndia.length,
+                sourceFeatureCount,
+                hasIndiaSource: Boolean(map.current.getSource('officialIndia')),
+                hasIndiaFillLayer: Boolean(map.current.getLayer('india-bg')),
+                hasIndiaBorderLayer: Boolean(map.current.getLayer('india-borders')),
+                hasStateBorderLayer: Boolean(map.current.getLayer(STATE_BORDERS_LAYER_ID)),
+                hasGridLayers,
+                selectedGridLevels: selectedGridLevelsRef.current
+              }
+            ));
+          }
+        });
+        setMapError(null);
+        setMapLoaded(true);
       } catch (error) {
         console.error('Error adding India map layers:', error);
+        setMapLoaded(false);
+        setMapError(buildMapStatusMessage('India layer failed to render', map.current, undefined, error));
       }
-
-      // TODO: Add vector tile grid overlays when tile server is configured
-      // Grid overlays require a vector tile server running at VECTOR_TILE_URL
-      // This will be implemented in a future phase
-
-      setMapLoaded(true);
     });
 
-    // Update zoom and center on move
     map.current.on('move', () => {
       if (!map.current) return;
       setCurrentZoom(map.current.getZoom());
       const center = map.current.getCenter();
       setCurrentCenter([center.lng, center.lat]);
     });
+    map.current.on('moveend', updateGridOverlay);
 
-    // Clean up on unmount
     return () => {
+      window.removeEventListener('resize', handleMapResize);
+      window.removeEventListener('dashboard-layout-resize', handleMapResize);
+      updateGridOverlayRef.current = () => undefined;
       if (map.current) {
         map.current.remove();
         map.current = null;
@@ -147,114 +476,35 @@ export default function Dashboard() {
     };
   }, []);
 
-  // Function to add branch markers (placeholder for future implementation)
-  const addBranchMarkers = () => {
-    // This will be implemented when branch data is available
-    // Will use clustering for performance with many markers
-  };
+  useEffect(() => {
+    selectedGridLevelsRef.current = selectedGridLevels;
+    const zoomForLabel = map.current ? map.current.getZoom() : DEFAULT_ZOOM;
+    setCurrentGridLabel(buildGridOverlayLabel(selectedGridLevels, zoomForLabel));
+    updateGridOverlayRef.current();
+  }, [selectedGridLevels]);
 
-  // Function to handle nearest branch finding (placeholder)
-  const findNearestBranch = (lat: number, lng: number) => {
-    // This will be implemented to query backend API
-    console.log(`Finding nearest branch to: ${lat}, ${lng}`);
-  };
+  useEffect(() => {
+    setDashboardMapPanel({
+      zoomLevel: currentZoom,
+      center: currentCenter,
+      gridOverlay: currentGridLabel,
+      mapLoaded,
+      mapError
+    });
+  }, [currentZoom, currentCenter, currentGridLabel, mapLoaded, mapError, setDashboardMapPanel]);
+
+  useEffect(() => () => {
+    resetDashboardMapPanel();
+  }, [resetDashboardMapPanel]);
 
   return (
-    <Box sx={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* Header */}
-      <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
-        <Typography variant="h5" component="h1" gutterBottom>
-          Territory Dashboard
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          Interactive map with hierarchical grid overlay and India boundaries
-        </Typography>
-      </Box>
-
-      {/* Map Info Cards */}
-      <Grid container spacing={2} sx={{ p: 2 }}>
-        <Grid item xs={12} sm={6} md={3}>
-          <Card variant="outlined" sx={{ height: '100%' }}>
-            <CardContent>
-              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                Zoom Level
-              </Typography>
-              <Typography variant="h6">
-                {currentZoom.toFixed(2)}
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <Card variant="outlined" sx={{ height: '100%' }}>
-            <CardContent>
-              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                Center
-              </Typography>
-              <Typography variant="body2">
-                {currentCenter[1].toFixed(4)}°N, {currentCenter[0].toFixed(4)}°E
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <Card variant="outlined" sx={{ height: '100%' }}>
-            <CardContent>
-              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                Grid Overlay
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                Coming Soon
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <Card variant="outlined" sx={{ height: '100%' }}>
-            <CardContent>
-              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                Map Status
-              </Typography>
-              <Typography variant="body2" color={mapLoaded ? 'success.main' : 'warning.main'}>
-                {mapLoaded ? 'Ready' : 'Loading...'}
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-      </Grid>
-
-      {/* Map Legend */}
-      <Paper sx={{ p: 2, mx: 2, mb: 2 }}>
-        <Typography variant="subtitle2" gutterBottom>
-          Map Legend
-        </Typography>
-        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Box
-              sx={{
-                width: 24,
-                height: 16,
-                backgroundColor: '#10B981',
-                opacity: 0.3,
-                border: '3px solid #FBBF24',
-                borderRadius: 1
-              }}
-            />
-            <Typography variant="caption">India (Green fill, Yellow border)</Typography>
-          </Box>
-          <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
-            Grid overlays will be added in future phase
-          </Typography>
-        </Box>
-      </Paper>
-
-      {/* Map Container */}
+    <Box sx={{ width: '100%', height: '100%', minHeight: 0 }}>
       <Box
         ref={mapContainer}
         sx={{
-          flexGrow: 1,
           width: '100%',
-          minHeight: 400,
+          height: '100%',
+          minHeight: 0,
           position: 'relative',
           '& .maplibregl-ctrl-attrib': {
             display: 'none'

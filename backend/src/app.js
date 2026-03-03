@@ -36,8 +36,34 @@ const API_VERSION = process.env.API_VERSION || 'v1';
 app.use(helmet());
 
 // CORS configuration
+const configuredOrigins = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const defaultOrigins = ['http://localhost:5173', 'http://localhost:5174'];
+const allowedOrigins = configuredOrigins.length > 0 ? configuredOrigins : defaultOrigins;
+const localhostDevOriginPattern = /^http:\/\/localhost:\d+$/;
+
 const corsOptions = {
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  origin: (origin, callback) => {
+    // Allow non-browser clients or same-origin requests.
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+
+    const isExplicitlyAllowed = allowedOrigins.includes(origin);
+    const isLocalhostDevOrigin =
+      process.env.NODE_ENV !== 'production' && localhostDevOriginPattern.test(origin);
+
+    if (isExplicitlyAllowed || isLocalhostDevOrigin) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
   credentials: true,
 };
 app.use(cors(corsOptions));

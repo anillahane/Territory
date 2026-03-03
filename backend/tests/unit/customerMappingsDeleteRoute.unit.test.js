@@ -56,7 +56,7 @@ describe('DELETE /api/v1/customer-mappings', () => {
 
     expect(mappingService.deleteMappings).toHaveBeenCalledWith(
       new Date('2025-01-01'),
-      42
+      '42'
     );
   });
 
@@ -89,20 +89,27 @@ describe('DELETE /api/v1/customer-mappings', () => {
     expect(response.body.error).toBe('Invalid date format for olderThan');
   });
 
-  test('should reject request with invalid jobId', async () => {
+  test('should reject request with overly long jobId', async () => {
+    const invalidJobId = 'a'.repeat(51);
     const response = await request(app)
-      .delete('/api/v1/customer-mappings?olderThan=2025-01-01&jobId=invalid')
+      .delete(`/api/v1/customer-mappings?olderThan=2025-01-01&jobId=${invalidJobId}`)
       .expect(400);
 
     expect(response.body.error).toBe('Invalid job ID');
   });
 
-  test('should reject request with negative jobId', async () => {
-    const response = await request(app)
-      .delete('/api/v1/customer-mappings?olderThan=2025-01-01&jobId=-1')
-      .expect(400);
+  test('should accept UUID style jobId', async () => {
+    const jobId = '1b9317ca-6885-49f2-950a-44231765cf03';
+    mappingService.deleteMappings.mockResolvedValue(5);
 
-    expect(response.body.error).toBe('Invalid job ID');
+    await request(app)
+      .delete(`/api/v1/customer-mappings?olderThan=2025-01-01&jobId=${jobId}`)
+      .expect(200);
+
+    expect(mappingService.deleteMappings).toHaveBeenCalledWith(
+      new Date('2025-01-01'),
+      jobId
+    );
   });
 
   test('should handle database errors gracefully', async () => {

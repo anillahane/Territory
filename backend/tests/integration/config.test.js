@@ -45,9 +45,10 @@ describe('Configuration API Integration Tests', () => {
         .send(newConfig)
         .expect(200);
 
-      expect(response.body.originLat).toBe(newConfig.originLat);
-      expect(response.body.originLon).toBe(newConfig.originLon);
-      expect(response.body.alphabet).toBe(newConfig.alphabet);
+      const updatedConfig = response.body.config || response.body;
+      expect(updatedConfig.originLat).toBe(newConfig.originLat);
+      expect(updatedConfig.originLon).toBe(newConfig.originLon);
+      expect(updatedConfig.alphabet).toBe(newConfig.alphabet);
     });
 
     test('should reject invalid latitude', async () => {
@@ -92,10 +93,12 @@ describe('Configuration API Integration Tests', () => {
         .get('/api/v1/config/history')
         .expect(200);
 
-      expect(Array.isArray(response.body)).toBe(true);
-      expect(response.body.length).toBeGreaterThan(0);
-      expect(response.body[0]).toHaveProperty('changed_at');
-      expect(response.body[0]).toHaveProperty('config');
+      const history = response.body.history || response.body;
+
+      expect(Array.isArray(history)).toBe(true);
+      expect(history.length).toBeGreaterThan(0);
+      expect(history[0].changedAt || history[0].changed_at).toBeDefined();
+      expect(history[0].alphabet || history[0].config).toBeDefined();
     });
   });
 });

@@ -4,6 +4,43 @@ const { encodePocketId } = require('../utils/geometry');
 const logger = require('../config/logger');
 const { branchUploadQueue } = require('../config/queue');
 
+function ensureBuffer(input) {
+  if (Buffer.isBuffer(input)) {
+    return input;
+  }
+
+  if (input && input.type === 'Buffer' && Array.isArray(input.data)) {
+    return Buffer.from(input.data);
+  }
+
+  if (ArrayBuffer.isView(input)) {
+    return Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+  }
+
+  if (input instanceof ArrayBuffer) {
+    return Buffer.from(input);
+  }
+
+  throw new Error('Invalid uploaded file payload');
+}
+
+function normalizeHeaderKey(key) {
+  return String(key || '')
+    .replace(/\u00a0/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function getFieldValue(row, aliases) {
+  const normalizedAliasSet = new Set(aliases.map((alias) => normalizeHeaderKey(alias)));
+  for (const [key, value] of Object.entries(row)) {
+    if (normalizedAliasSet.has(normalizeHeaderKey(key))) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Process branch upload job
  * @param {Object} job - Bull job object
@@ -19,11 +56,13 @@ async function processBranchUpload(job) {
   });
 
   try {
+    const normalizedBuffer = ensureBuffer(fileBuffer);
+
     // Parse Excel file
-    const workbook = xlsx.read(fileBuffer, { type: 'buffer' });
+    const workbook = xlsx.read(normalizedBuffer, { type: 'buffer' });
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
-    const data = xlsx.utils.sheet_to_json(sheet);
+    const data = xlsx.utils.sheet_to_json(sheet, { defval: '' });
 
     if (data.length === 0) {
       throw new Error('Excel file is empty');
@@ -50,10 +89,10 @@ async function processBranchUpload(job) {
       const rowNum = i + 2; // Excel row number (1-indexed + header)
 
       // Map column names (case-insensitive)
-      const id = row.ID || row.id || row['Branch ID'] || row['branch id'];
-      const city = row.City || row.city || row.CITY || '';
-      const lat = parseFloat(row.Latitude || row.latitude || row.Lat || row.lat);
-      const lon = parseFloat(row.Longitude || row.longitude || row.Lon || row.lon);
+      const id = getFieldValue(row, ['ID', 'Branch ID', 'BranchID']);
+      const city = getFieldValue(row, ['City']) || '';
+      const lat = parseFloat(getFieldValue(row, ['Latitude', 'Lat']));
+      const lon = parseFloat(getFieldValue(row, ['Longitude', 'Lon', 'Lng', 'Long']));
 
       // Validate
       if (!id) {

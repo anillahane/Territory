@@ -28,6 +28,32 @@ export interface CustomerDot {
   label?: string;
 }
 
+export interface DashboardMapPanel {
+  zoomLevel: number;
+  center: [number, number];
+  gridOverlay: string;
+  mapLoaded: boolean;
+  mapError: string | null;
+}
+
+export type DashboardGridLevelId = '500km' | '100km' | '20km' | '5km' | '1km';
+
+export const DASHBOARD_GRID_LEVELS: Array<{ id: DashboardGridLevelId; label: string; minZoom: number }> = [
+  { id: '500km', label: '500 km', minZoom: 0 },
+  { id: '100km', label: '100 km', minZoom: 0 },
+  { id: '20km', label: '20 km', minZoom: 0 },
+  { id: '5km', label: '5 km', minZoom: 6 },
+  { id: '1km', label: '1 km', minZoom: 6 }
+];
+
+const defaultDashboardMapPanel: DashboardMapPanel = {
+  zoomLevel: 4.5,
+  center: [78.9629, 20.5937],
+  gridOverlay: '500 km, 100 km, 20 km',
+  mapLoaded: false,
+  mapError: null
+};
+
 interface AppState {
   // Configuration
   config: Config | null;
@@ -77,6 +103,13 @@ interface AppState {
   setError: (message: string | null) => void;
   setSuccess: (message: string | null) => void;
   clearNotifications: () => void;
+
+  // Dashboard map panel
+  dashboardMapPanel: DashboardMapPanel;
+  setDashboardMapPanel: (panel: Partial<DashboardMapPanel>) => void;
+  resetDashboardMapPanel: () => void;
+  dashboardSelectedGridLevels: DashboardGridLevelId[];
+  toggleDashboardGridLevel: (id: DashboardGridLevelId) => void;
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -137,4 +170,22 @@ export const useStore = create<AppState>((set) => ({
   setError: (message) => set({ error: message, success: null }),
   setSuccess: (message) => set({ success: message, error: null }),
   clearNotifications: () => set({ error: null, success: null }),
+
+  // Dashboard map panel
+  dashboardMapPanel: defaultDashboardMapPanel,
+  setDashboardMapPanel: (panel) =>
+    set((state) => ({
+      dashboardMapPanel: {
+        ...state.dashboardMapPanel,
+        ...panel,
+      },
+    })),
+  resetDashboardMapPanel: () => set({ dashboardMapPanel: defaultDashboardMapPanel }),
+  dashboardSelectedGridLevels: DASHBOARD_GRID_LEVELS.map((level) => level.id),
+  toggleDashboardGridLevel: (id) =>
+    set((state) => ({
+      dashboardSelectedGridLevels: state.dashboardSelectedGridLevels.includes(id)
+        ? state.dashboardSelectedGridLevels.filter((existingId) => existingId !== id)
+        : [...state.dashboardSelectedGridLevels, id]
+    })),
 }));

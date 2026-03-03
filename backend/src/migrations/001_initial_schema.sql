@@ -52,6 +52,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Trigger to update geom on insert/update
+DROP TRIGGER IF EXISTS trigger_update_branch_geom ON branches;
 CREATE TRIGGER trigger_update_branch_geom
     BEFORE INSERT OR UPDATE OF lat, lon ON branches
     FOR EACH ROW
@@ -67,6 +68,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Trigger for config table
+DROP TRIGGER IF EXISTS trigger_update_config_timestamp ON config;
 CREATE TRIGGER trigger_update_config_timestamp
     BEFORE UPDATE ON config
     FOR EACH ROW
@@ -97,6 +99,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Trigger for config audit
+DROP TRIGGER IF EXISTS trigger_audit_config ON config;
 CREATE TRIGGER trigger_audit_config
     BEFORE UPDATE ON config
     FOR EACH ROW

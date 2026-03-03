@@ -42,10 +42,9 @@ if ($files.Count -eq 0) {
 }
 
 $filePath = $files[0].FullName
-$relativeFilePath = $filePath -replace [regex]::Escape((Get-Location).Path + "\"), ""
-$relativeFilePath = $relativeFilePath -replace "\\", "/"
+$normalizedFilePath = $filePath -replace "\\", "/"
 
-Write-Host "File found: $relativeFilePath" -ForegroundColor Green
+Write-Host "File found: $normalizedFilePath" -ForegroundColor Green
 
 # Get config from database
 $configQuery = "SELECT origin_lat, origin_lon, alphabet FROM config WHERE id = 1;"
@@ -64,7 +63,7 @@ $alphabet = $configParts[2].Trim()
 # Create job payload
 $jobPayload = @{
     jobId = $jobId
-    filePath = $relativeFilePath
+    filePath = $normalizedFilePath
     fileName = $fileName
     config = @{
         originLat = $originLat
@@ -76,7 +75,6 @@ $jobPayload = @{
 Write-Host "Pushing job to Redis queue..." -ForegroundColor Cyan
 
 # Push to Redis using redis-cli
-$escapedPayload = $jobPayload -replace '"', '\"'
 redis-cli -h localhost -p 6379 LPUSH python_batch_jobs "$jobPayload"
 
 if ($LASTEXITCODE -ne 0) {

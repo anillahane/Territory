@@ -80,7 +80,7 @@ describe('GET /api/v1/customer-mappings', () => {
       .expect(200);
 
     expect(mappingService.getMappings).toHaveBeenCalledWith(
-      { jobId: 42, customerId: '', pocketId: null },
+      { jobId: '42', customerId: '', pocketId: null },
       { page: 1, pageSize: 100 }
     );
   });
@@ -112,7 +112,7 @@ describe('GET /api/v1/customer-mappings', () => {
       .expect(200);
 
     expect(mappingService.getMappings).toHaveBeenCalledWith(
-      { jobId: null, customerId: '', pocketId: 999 },
+      { jobId: null, customerId: '', pocketId: '999' },
       { page: 1, pageSize: 100 }
     );
   });
@@ -128,7 +128,7 @@ describe('GET /api/v1/customer-mappings', () => {
       .expect(200);
 
     expect(mappingService.getMappings).toHaveBeenCalledWith(
-      { jobId: 10, customerId: 'ABC', pocketId: 500 },
+      { jobId: '10', customerId: 'ABC', pocketId: '500' },
       { page: 1, pageSize: 100 }
     );
   });
@@ -189,17 +189,19 @@ describe('GET /api/v1/customer-mappings', () => {
     expect(response.body.error).toBe('Page size must be between 1 and 1000');
   });
 
-  test('should reject invalid job ID', async () => {
+  test('should reject overly long job ID', async () => {
+    const invalidJobId = 'a'.repeat(51);
     const response = await request(app)
-      .get('/api/v1/customer-mappings?jobId=invalid')
+      .get(`/api/v1/customer-mappings?jobId=${invalidJobId}`)
       .expect(400);
 
     expect(response.body.error).toBe('Invalid job ID');
   });
 
-  test('should reject invalid pocket ID', async () => {
+  test('should reject overly long pocket ID', async () => {
+    const invalidPocketId = 'p'.repeat(51);
     const response = await request(app)
-      .get('/api/v1/customer-mappings?pocketId=abc')
+      .get(`/api/v1/customer-mappings?pocketId=${invalidPocketId}`)
       .expect(400);
 
     expect(response.body.error).toBe('Invalid pocket ID');

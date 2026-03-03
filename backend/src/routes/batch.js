@@ -122,11 +122,22 @@ batchQueue.process(async (job) => {
           }
           
           // Extract customer ID from row (try common column names)
-          const customerId = row.LAN || row.lan || row.CustomerID || row.customer_id || row.ID || row.id || `CUST_${i + 1}`;
+          const customerIdRaw =
+            row.LAN ??
+            row.lan ??
+            row.CustomerID ??
+            row.customer_id ??
+            row.ID ??
+            row.id;
+          const normalizedCustomerId =
+            customerIdRaw === undefined || customerIdRaw === null
+              ? ''
+              : String(customerIdRaw).trim();
+          const customerId = normalizedCustomerId !== '' ? normalizedCustomerId : `CUST_${i + 1}`;
           
           // Collect mapping data for persistence
           mappings.push({
-            customerId: String(customerId),
+            customerId,
             customerLat: lat,
             customerLon: lon,
             pocketId: nearestPocket.pocketId,

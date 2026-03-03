@@ -22,11 +22,10 @@ describe('Branches API Integration Tests', () => {
   describe('POST /api/v1/branches', () => {
     test('should create a new branch', async () => {
       const branch = {
-        name: 'Mumbai Branch',
-        code: 'MUM001',
-        latitude: 19.0760,
-        longitude: 72.8777,
-        address: '123 Marine Drive, Mumbai',
+        id: 'MUM001',
+        city: 'Mumbai',
+        lat: 19.0760,
+        lon: 72.8777,
       };
 
       const response = await request(app)
@@ -34,19 +33,21 @@ describe('Branches API Integration Tests', () => {
         .send(branch)
         .expect(201);
 
-      expect(response.body).toHaveProperty('id');
-      expect(response.body.name).toBe(branch.name);
-      expect(response.body.code).toBe(branch.code);
-      expect(response.body).toHaveProperty('pocket_id');
-      expect(response.body.pocket_id).toMatch(/^[0-9A-Z]+-[0-9A-Z]+-[0-9A-Z]+-[0-9A-Z]+-[0-9A-Z]+$/);
+      expect(response.body).toHaveProperty('branch');
+      expect(response.body.branch.id).toBe(branch.id);
+      expect(response.body.branch.city).toBe(branch.city);
+      expect(response.body.branch).toHaveProperty('pocketId');
+      expect(response.body.branch.pocketId).toMatch(
+        /^[0-9A-Z]+-[0-9A-Z]+-[0-9A-Z]+-[0-9A-Z]+-[0-9A-Z]+$/
+      );
     });
 
-    test('should reject duplicate branch code', async () => {
+    test('should reject duplicate branch id', async () => {
       const branch = {
-        name: 'Mumbai Branch',
-        code: 'MUM001',
-        latitude: 19.0760,
-        longitude: 72.8777,
+        id: 'MUM001',
+        city: 'Mumbai',
+        lat: 19.0760,
+        lon: 72.8777,
       };
 
       // Create first branch
@@ -64,10 +65,10 @@ describe('Branches API Integration Tests', () => {
 
     test('should reject invalid coordinates', async () => {
       const branch = {
-        name: 'Invalid Branch',
-        code: 'INV001',
-        latitude: 100, // Invalid
-        longitude: 72.8777,
+        id: 'INV001',
+        city: 'Invalid Branch',
+        lat: 100, // Invalid
+        lon: 72.8777,
       };
 
       await request(app)
@@ -83,15 +84,15 @@ describe('Branches API Integration Tests', () => {
         .get('/api/v1/branches')
         .expect(200);
 
-      expect(Array.isArray(response.body)).toBe(true);
-      expect(response.body.length).toBe(0);
+      expect(Array.isArray(response.body.branches)).toBe(true);
+      expect(response.body.branches.length).toBe(0);
     });
 
     test('should return all branches', async () => {
       // Create test branches
       const branches = [
-        { name: 'Mumbai', code: 'MUM001', latitude: 19.0760, longitude: 72.8777 },
-        { name: 'Delhi', code: 'DEL001', latitude: 28.7041, longitude: 77.1025 },
+        { id: 'MUM001', city: 'Mumbai', lat: 19.0760, lon: 72.8777 },
+        { id: 'DEL001', city: 'Delhi', lat: 28.7041, lon: 77.1025 },
       ];
 
       for (const branch of branches) {
@@ -102,7 +103,7 @@ describe('Branches API Integration Tests', () => {
         .get('/api/v1/branches')
         .expect(200);
 
-      expect(response.body.length).toBe(2);
+      expect(response.body.branches.length).toBe(2);
     });
 
     test('should support pagination', async () => {
@@ -111,28 +112,28 @@ describe('Branches API Integration Tests', () => {
         await request(app)
           .post('/api/v1/branches')
           .send({
-            name: `Branch ${i}`,
-            code: `BR${String(i).padStart(3, '0')}`,
-            latitude: 19.0760,
-            longitude: 72.8777,
+            id: `BR${String(i).padStart(3, '0')}`,
+            city: `City ${i}`,
+            lat: 19.0760,
+            lon: 72.8777,
           });
       }
 
       const response = await request(app)
-        .get('/api/v1/branches?page=1&limit=10')
+        .get('/api/v1/branches?limit=10&offset=0')
         .expect(200);
 
-      expect(response.body.length).toBe(10);
+      expect(response.body.branches.length).toBe(10);
     });
   });
 
   describe('GET /api/v1/branches/:id', () => {
     test('should return branch by id', async () => {
       const branch = {
-        name: 'Mumbai Branch',
-        code: 'MUM001',
-        latitude: 19.0760,
-        longitude: 72.8777,
+        id: 'MUM001',
+        city: 'Mumbai',
+        lat: 19.0760,
+        lon: 72.8777,
       };
 
       const createResponse = await request(app)
@@ -140,16 +141,16 @@ describe('Branches API Integration Tests', () => {
         .send(branch);
 
       const response = await request(app)
-        .get(`/api/v1/branches/${createResponse.body.id}`)
+        .get(`/api/v1/branches/${createResponse.body.branch.id}`)
         .expect(200);
 
-      expect(response.body.id).toBe(createResponse.body.id);
-      expect(response.body.name).toBe(branch.name);
+      expect(response.body.id).toBe(createResponse.body.branch.id);
+      expect(response.body.city).toBe(branch.city);
     });
 
     test('should return 404 for non-existent branch', async () => {
       await request(app)
-        .get('/api/v1/branches/99999')
+        .get('/api/v1/branches/UNKNOWN')
         .expect(404);
     });
   });
@@ -157,10 +158,10 @@ describe('Branches API Integration Tests', () => {
   describe('PUT /api/v1/branches/:id', () => {
     test('should update branch', async () => {
       const branch = {
-        name: 'Mumbai Branch',
-        code: 'MUM001',
-        latitude: 19.0760,
-        longitude: 72.8777,
+        id: 'MUM001',
+        city: 'Mumbai',
+        lat: 19.0760,
+        lon: 72.8777,
       };
 
       const createResponse = await request(app)
@@ -168,27 +169,30 @@ describe('Branches API Integration Tests', () => {
         .send(branch);
 
       const updates = {
-        name: 'Mumbai Main Branch',
-        address: 'New Address',
+        city: 'Mumbai Main',
+        lat: 19.0765,
+        lon: 72.8780,
       };
 
       const response = await request(app)
-        .put(`/api/v1/branches/${createResponse.body.id}`)
+        .put(`/api/v1/branches/${createResponse.body.branch.id}`)
         .send(updates)
         .expect(200);
 
-      expect(response.body.name).toBe(updates.name);
-      expect(response.body.address).toBe(updates.address);
+      expect(response.body).toHaveProperty('branch');
+      expect(response.body.branch.city).toBe(updates.city);
+      expect(response.body.branch.lat).toBe(updates.lat);
+      expect(response.body.branch.lon).toBe(updates.lon);
     });
   });
 
   describe('DELETE /api/v1/branches/:id', () => {
     test('should delete branch', async () => {
       const branch = {
-        name: 'Mumbai Branch',
-        code: 'MUM001',
-        latitude: 19.0760,
-        longitude: 72.8777,
+        id: 'MUM001',
+        city: 'Mumbai',
+        lat: 19.0760,
+        lon: 72.8777,
       };
 
       const createResponse = await request(app)
@@ -196,12 +200,12 @@ describe('Branches API Integration Tests', () => {
         .send(branch);
 
       await request(app)
-        .delete(`/api/v1/branches/${createResponse.body.id}`)
-        .expect(204);
+        .delete(`/api/v1/branches/${createResponse.body.branch.id}`)
+        .expect(200);
 
       // Verify deletion
       await request(app)
-        .get(`/api/v1/branches/${createResponse.body.id}`)
+        .get(`/api/v1/branches/${createResponse.body.branch.id}`)
         .expect(404);
     });
   });
