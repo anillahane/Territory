@@ -6,6 +6,13 @@ export interface Config {
   originLon: number;
   alphabet: string;
   gridLevels: number[];
+  gridLevelColors: {
+    '500km': string;
+    '100km': string;
+    '20km': string;
+    '5km': string;
+    '1km': string;
+  };
   version: number;
   createdAt: string;
   updatedAt: string;

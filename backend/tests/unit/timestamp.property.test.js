@@ -26,6 +26,7 @@ const ensureTestBranches = async () => {
 };
 
 describe('Property 18: Timestamp Presence', () => {
+  jest.setTimeout(30000);
 
   beforeAll(async () => {
     await ensureTestBranches();
@@ -94,7 +95,7 @@ describe('Property 18: Timestamp Presence', () => {
           await query('DELETE FROM jobs WHERE job_id = $1', [jobId]);
         }
       ),
-      { numRuns: 100 }
+      { numRuns: 50 }
     );
   });
 

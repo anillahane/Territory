@@ -1,27 +1,43 @@
 import { useState, useEffect } from 'react';
 import {
-  Box,
-  Typography,
-  Paper,
-  TextField,
-  Button,
   Alert,
-  CircularProgress,
-  Grid,
-  Divider,
+  Box,
+  Button,
+  Checkbox,
   Chip,
+  CircularProgress,
+  Divider,
+  FormControlLabel,
+  FormGroup,
+  Grid,
+  Paper,
+  Stack,
+  TextField,
+  Typography
 } from '@mui/material';
-import { Save as SaveIcon, History as HistoryIcon } from '@mui/icons-material';
+import {
+  Save as SaveIcon,
+  History as HistoryIcon,
+  DeleteSweep as DeleteSweepIcon,
+  HealthAndSafety as HealthAndSafetyIcon
+} from '@mui/icons-material';
+import { useNavigate } from 'react-router-dom';
 import { useStore } from '../store/useStore';
 import api from '../services/api';
 
-interface Config {
+type GridLevelId = '500km' | '100km' | '20km' | '5km' | '1km';
+
+type GridLevelColorMap = Record<GridLevelId, string>;
+
+type Config = {
   originLat: number;
   originLon: number;
   alphabet: string;
-}
+  gridLevels: number[];
+  gridLevelColors: GridLevelColorMap;
+};
 
-interface ConfigHistory {
+type ConfigHistory = {
   id: number;
   originLat?: number;
   originLon?: number;
@@ -31,35 +47,108 @@ interface ConfigHistory {
   changedAt?: string;
   changed_at?: string;
   version?: number;
-}
+  gridLevels?: unknown;
+  gridLevelColors?: unknown;
+};
+
+const GRID_LEVEL_ROWS: Array<{ id: GridLevelId; label: string; meters: number }> = [
+  { id: '500km', label: '500 km', meters: 500000 },
+  { id: '100km', label: '100 km', meters: 100000 },
+  { id: '20km', label: '20 km', meters: 20000 },
+  { id: '5km', label: '5 km', meters: 5000 },
+  { id: '1km', label: '1 km', meters: 1000 }
+];
+
+const DEFAULT_GRID_LEVELS = GRID_LEVEL_ROWS.map((item) => item.meters);
+
+const DEFAULT_GRID_LEVEL_COLORS: GridLevelColorMap = {
+  '500km': '#93C5FD',
+  '100km': '#60A5FA',
+  '20km': '#38BDF8',
+  '5km': '#22D3EE',
+  '1km': '#06B6D4'
+};
+
+const HEX_COLOR_REGEX = /^#[0-9A-Fa-f]{6}$/;
+
+const normalizeHexColor = (value: unknown, fallback: string): string => {
+  const normalized = String(value || '').trim();
+  if (!HEX_COLOR_REGEX.test(normalized)) {
+    return fallback;
+  }
+  return normalized.toUpperCase();
+};
+
+const normalizeGridLevelColors = (rawColors: unknown): GridLevelColorMap => {
+  const nextColors: GridLevelColorMap = { ...DEFAULT_GRID_LEVEL_COLORS };
+  if (!rawColors || typeof rawColors !== 'object' || Array.isArray(rawColors)) {
+    return nextColors;
+  }
+
+  GRID_LEVEL_ROWS.forEach((row) => {
+    nextColors[row.id] = normalizeHexColor(
+      (rawColors as Record<string, unknown>)[row.id],
+      DEFAULT_GRID_LEVEL_COLORS[row.id]
+    );
+  });
+
+  return nextColors;
+};
+
+const normalizeGridLevels = (rawLevels: unknown): number[] => {
+  if (!Array.isArray(rawLevels)) {
+    return [...DEFAULT_GRID_LEVELS];
+  }
+
+  const parsed = rawLevels
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0);
+
+  if (parsed.length !== DEFAULT_GRID_LEVELS.length) {
+    return [...DEFAULT_GRID_LEVELS];
+  }
+
+  return parsed;
+};
 
 export default function Configuration() {
+  const navigate = useNavigate();
   const { setError, setSuccess } = useStore();
   const [config, setConfig] = useState<Config>({
     originLat: 8.0,
     originLon: 68.0,
     alphabet: '0123456789ABCDEFGHJKLMNPQRSTUV',
+    gridLevels: [...DEFAULT_GRID_LEVELS],
+    gridLevelColors: { ...DEFAULT_GRID_LEVEL_COLORS }
   });
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [history, setHistory] = useState<ConfigHistory[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [clearOptions, setClearOptions] = useState({
+    clearCustomerData: false,
+    clearBranchData: false,
+    clearPocketData: false
+  });
+  const [clearingData, setClearingData] = useState(false);
 
   useEffect(() => {
-    loadConfig();
+    void loadConfig();
   }, []);
 
   const loadConfig = async () => {
     setLoading(true);
     try {
       const data = await api.getConfig();
-      // Handle both response formats
       const configData = data.config || data;
+
       setConfig({
-        originLat: configData.originLat,
-        originLon: configData.originLon,
-        alphabet: configData.alphabet,
+        originLat: Number(configData.originLat),
+        originLon: Number(configData.originLon),
+        alphabet: String(configData.alphabet || ''),
+        gridLevels: normalizeGridLevels(configData.gridLevels),
+        gridLevelColors: normalizeGridLevelColors(configData.gridLevelColors)
       });
     } catch (error: any) {
       console.error('Failed to load configuration:', error);
@@ -72,7 +161,6 @@ export default function Configuration() {
   const loadHistory = async () => {
     try {
       const data = await api.getConfigHistory();
-      // Handle response format
       const historyData = data.history || data;
       setHistory(Array.isArray(historyData) ? historyData : []);
       setShowHistory(true);
@@ -106,6 +194,13 @@ export default function Configuration() {
       newErrors.alphabet = 'Alphabet cannot contain hyphen (-)';
     }
 
+    GRID_LEVEL_ROWS.forEach((row) => {
+      const color = config.gridLevelColors[row.id];
+      if (!HEX_COLOR_REGEX.test(String(color || ''))) {
+        newErrors[`gridLevelColors.${row.id}`] = `${row.label} color must be a valid hex color`;
+      }
+    });
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -118,12 +213,14 @@ export default function Configuration() {
     setSaving(true);
     try {
       const response = await api.updateConfig(config);
-      // Handle response format
       const updatedConfig = response.config || response;
+
       setConfig({
-        originLat: updatedConfig.originLat,
-        originLon: updatedConfig.originLon,
-        alphabet: updatedConfig.alphabet,
+        originLat: Number(updatedConfig.originLat),
+        originLon: Number(updatedConfig.originLon),
+        alphabet: String(updatedConfig.alphabet || ''),
+        gridLevels: normalizeGridLevels(updatedConfig.gridLevels),
+        gridLevelColors: normalizeGridLevelColors(updatedConfig.gridLevelColors)
       });
       setSuccess('Configuration updated successfully');
       setErrors({});
@@ -135,14 +232,104 @@ export default function Configuration() {
     }
   };
 
-  const handleChange = (field: keyof Config) => (
+  const handleChange = (field: 'originLat' | 'originLon' | 'alphabet') => (
     event: React.ChangeEvent<HTMLInputElement>
   ) => {
-    const value = field === 'alphabet' ? event.target.value : parseFloat(event.target.value);
-    setConfig({ ...config, [field]: value });
-    // Clear error for this field
+    const value = field === 'alphabet' ? event.target.value : Number(event.target.value);
+    setConfig((previousConfig) => ({
+      ...previousConfig,
+      [field]: value
+    }));
+
     if (errors[field]) {
-      setErrors({ ...errors, [field]: '' });
+      setErrors((previousErrors) => ({
+        ...previousErrors,
+        [field]: ''
+      }));
+    }
+  };
+
+  const handleGridLevelColorChange = (gridLevelId: GridLevelId) => (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const nextColor = normalizeHexColor(event.target.value, DEFAULT_GRID_LEVEL_COLORS[gridLevelId]);
+    setConfig((previousConfig) => ({
+      ...previousConfig,
+      gridLevelColors: {
+        ...previousConfig.gridLevelColors,
+        [gridLevelId]: nextColor
+      }
+    }));
+
+    const errorKey = `gridLevelColors.${gridLevelId}`;
+    if (errors[errorKey]) {
+      setErrors((previousErrors) => ({
+        ...previousErrors,
+        [errorKey]: ''
+      }));
+    }
+  };
+
+  const handleClearOptionChange = (field: 'clearCustomerData' | 'clearBranchData' | 'clearPocketData') => (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    setClearOptions((previousState) => ({
+      ...previousState,
+      [field]: event.target.checked
+    }));
+  };
+
+  const handleClearSelectedData = async () => {
+    const hasSelection =
+      clearOptions.clearCustomerData
+      || clearOptions.clearBranchData
+      || clearOptions.clearPocketData;
+    if (!hasSelection) {
+      setError('Select at least one data domain to clear.');
+      return;
+    }
+
+    const selectedLabels = [
+      clearOptions.clearCustomerData ? 'Customer Data' : null,
+      clearOptions.clearBranchData ? 'Branch Data' : null,
+      clearOptions.clearPocketData ? 'Pocket Data' : null
+    ].filter(Boolean);
+
+    const confirmationMessage = [
+      'This action will permanently clear selected data.',
+      `Selected: ${selectedLabels.join(', ')}`,
+      'Do you want to continue?'
+    ].join('\n');
+
+    if (!window.confirm(confirmationMessage)) {
+      return;
+    }
+
+    setClearingData(true);
+    try {
+      const response = await api.clearSystemData(clearOptions);
+      const deletedRows = response?.deletedRows && typeof response.deletedRows === 'object'
+        ? response.deletedRows
+        : {};
+      const deletedSummary = Object.entries(deletedRows)
+        .map(([tableName, count]) => `${tableName}: ${count}`)
+        .join(', ');
+
+      setSuccess(
+        deletedSummary
+          ? `Selected data cleared successfully. ${deletedSummary}`
+          : 'Selected data cleared successfully.'
+      );
+      setClearOptions({
+        clearCustomerData: false,
+        clearBranchData: false,
+        clearPocketData: false
+      });
+    } catch (error: any) {
+      console.error('Failed to clear selected data:', error);
+      setError(error.message || 'Failed to clear selected data');
+    } finally {
+      setClearingData(false);
     }
   };
 
@@ -169,17 +356,16 @@ export default function Configuration() {
           <Chip label="ADMIN ONLY" color="error" size="small" sx={{ fontWeight: 700 }} />
         </Box>
         <Typography variant="body1" color="text.secondary">
-          Configure the core mathematical foundation for Pocket ID generation
+          Configure the core mathematical foundation and grid visualization settings
         </Typography>
       </Box>
 
       <Alert severity="error" sx={{ mb: 3 }}>
         <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
-          ⚠️ CRITICAL SYSTEM SETTINGS
+          Critical System Settings
         </Typography>
         <Typography variant="body2">
-          Changing these values will invalidate ALL existing Pocket IDs and require recalculating ALL branch assignments. 
-          Only modify during initial setup or major system migrations. Contact your system administrator before making changes.
+          Changing origin or alphabet may invalidate existing Pocket IDs and require recalculating branch assignments.
         </Typography>
       </Alert>
 
@@ -221,13 +407,70 @@ export default function Configuration() {
                 value={config.alphabet}
                 onChange={handleChange('alphabet')}
                 error={!!errors.alphabet}
-                helperText={
-                  errors.alphabet ||
-                  'Exactly 30 unique characters for encoding (no hyphen)'
-                }
+                helperText={errors.alphabet || 'Exactly 30 unique characters for encoding (no hyphen)'}
                 inputProps={{ maxLength: 30 }}
-                sx={{ mb: 3 }}
+                sx={{ mb: 2.5 }}
               />
+
+              <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
+                Grid Level Colors
+              </Typography>
+              <Stack spacing={1.2} sx={{ mb: 3 }}>
+                {GRID_LEVEL_ROWS.map((row, index) => (
+                  <Box
+                    key={row.id}
+                    sx={{
+                      p: 1,
+                      border: '1px solid',
+                      borderColor: 'divider',
+                      borderRadius: 1,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 1.5
+                    }}
+                  >
+                    <Box>
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                        {row.label}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {config.gridLevels[index]?.toLocaleString() || row.meters.toLocaleString()} meters
+                      </Typography>
+                    </Box>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Box
+                        component="input"
+                        type="color"
+                        value={config.gridLevelColors[row.id]}
+                        onChange={handleGridLevelColorChange(row.id)}
+                        aria-label={`${row.label} color`}
+                        sx={{
+                          width: 40,
+                          height: 32,
+                          p: 0,
+                          border: '1px solid #CBD5E1',
+                          borderRadius: 1,
+                          backgroundColor: 'transparent',
+                          cursor: 'pointer'
+                        }}
+                      />
+                      <Typography variant="caption" sx={{ fontFamily: 'monospace', minWidth: 64 }}>
+                        {config.gridLevelColors[row.id]}
+                      </Typography>
+                    </Box>
+                  </Box>
+                ))}
+                {GRID_LEVEL_ROWS.map((row) => {
+                  const colorError = errors[`gridLevelColors.${row.id}`];
+                  if (!colorError) return null;
+                  return (
+                    <Typography key={`${row.id}-error`} variant="caption" color="error">
+                      {colorError}
+                    </Typography>
+                  );
+                })}
+              </Stack>
 
               <Box display="flex" gap={2}>
                 <Button
@@ -246,6 +489,15 @@ export default function Configuration() {
                 >
                   View History
                 </Button>
+
+                <Button
+                  variant="outlined"
+                  color="warning"
+                  startIcon={<HealthAndSafetyIcon />}
+                  onClick={() => navigate('/admin/territory-health')}
+                >
+                  Open Territory Health
+                </Button>
               </Box>
             </Box>
           </Paper>
@@ -257,50 +509,93 @@ export default function Configuration() {
               What This Controls
             </Typography>
             <Divider sx={{ my: 2 }} />
-            
+
             <Box sx={{ mb: 2 }}>
               <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#92400E', mb: 0.5 }}>
-                🌍 Origin Point
+                Origin Point
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                The reference location from which ALL distance calculations are made. This is the "zero point" of your coordinate system.
+                Reference location from which pocket coordinate distances are calculated.
               </Typography>
             </Box>
 
             <Box sx={{ mb: 2 }}>
               <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#92400E', mb: 0.5 }}>
-                🔤 Alphabet
+                Alphabet
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                The 30-character set used to encode grid positions into Pocket IDs (e.g., "A1B2C-D3E4F"). Must not contain hyphens.
+                30-character set used to encode grid positions into Pocket IDs.
               </Typography>
             </Box>
 
             <Box sx={{ mb: 2 }}>
               <Typography variant="subtitle2" sx={{ fontWeight: 600, color: '#92400E', mb: 0.5 }}>
-                📏 Grid Levels
+                Grid Levels and Colors
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                The 5 distance tiers (500km, 100km, 20km, 5km, 1km) that define how the world is divided into pockets.
+                Fixed levels (500 km to 1 km) and their dashboard overlay colors.
               </Typography>
             </Box>
+          </Paper>
 
-            <Divider sx={{ my: 2 }} />
+          <Paper sx={{ p: 3, mt: 2, bgcolor: '#FEF2F2', border: '1px solid #FCA5A5' }}>
+            <Typography variant="h6" gutterBottom sx={{ color: '#991B1B' }}>
+              Data Reset
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              Clear selected operational datasets. This cannot be undone.
+            </Typography>
 
-            <Alert severity="warning" sx={{ bgcolor: '#FEF3C7' }}>
-              <Typography variant="caption" sx={{ fontWeight: 600 }}>
-                Impact of Changes:
-              </Typography>
-              <Typography variant="caption" component="div">
-                • All existing Pocket IDs become invalid
-              </Typography>
-              <Typography variant="caption" component="div">
-                • All branch assignments must be recalculated
-              </Typography>
-              <Typography variant="caption" component="div">
-                • Historical data references may break
-              </Typography>
-            </Alert>
+            <FormGroup sx={{ mb: 2 }}>
+              <FormControlLabel
+                control={(
+                  <Checkbox
+                    checked={clearOptions.clearCustomerData}
+                    onChange={handleClearOptionChange('clearCustomerData')}
+                    disabled={clearingData}
+                  />
+                )}
+                label="Clear Customer Data"
+              />
+              <FormControlLabel
+                control={(
+                  <Checkbox
+                    checked={clearOptions.clearBranchData}
+                    onChange={handleClearOptionChange('clearBranchData')}
+                    disabled={clearingData}
+                  />
+                )}
+                label="Clear Branch Data"
+              />
+              <FormControlLabel
+                control={(
+                  <Checkbox
+                    checked={clearOptions.clearPocketData}
+                    onChange={handleClearOptionChange('clearPocketData')}
+                    disabled={clearingData}
+                  />
+                )}
+                label="Clear Pocket Data"
+              />
+            </FormGroup>
+
+            <Button
+              fullWidth
+              color="error"
+              variant="contained"
+              onClick={handleClearSelectedData}
+              disabled={
+                clearingData
+                || (
+                  !clearOptions.clearCustomerData
+                  && !clearOptions.clearBranchData
+                  && !clearOptions.clearPocketData
+                )
+              }
+              startIcon={clearingData ? <CircularProgress size={18} color="inherit" /> : <DeleteSweepIcon />}
+            >
+              {clearingData ? 'Clearing Data...' : 'Clear Selected Data'}
+            </Button>
           </Paper>
         </Grid>
 
@@ -313,6 +608,7 @@ export default function Configuration() {
               <Box sx={{ mt: 2 }}>
                 {history.map((item) => {
                   const changedAt = item.changedAt ?? item.changed_at;
+                  const historyColors = normalizeGridLevelColors(item.gridLevelColors);
                   return (
                     <Box
                       key={item.id}
@@ -321,7 +617,7 @@ export default function Configuration() {
                         mb: 2,
                         border: '1px solid',
                         borderColor: 'divider',
-                        borderRadius: 1,
+                        borderRadius: 1
                       }}
                     >
                       <Typography variant="caption" color="text.secondary">
@@ -333,7 +629,21 @@ export default function Configuration() {
                       <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
                         Alphabet: {item.alphabet}
                       </Typography>
-                      <Typography variant="caption" color="text.secondary">
+                      <Stack direction="row" spacing={0.8} sx={{ mt: 1, flexWrap: 'wrap' }}>
+                        {GRID_LEVEL_ROWS.map((row) => (
+                          <Chip
+                            key={`${item.id}-${row.id}`}
+                            size="small"
+                            label={`${row.label}: ${historyColors[row.id]}`}
+                            sx={{
+                              border: `1px solid ${historyColors[row.id]}`,
+                              bgcolor: 'transparent',
+                              fontFamily: 'monospace'
+                            }}
+                          />
+                        ))}
+                      </Stack>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
                         Version: {item.version}
                       </Typography>
                     </Box>

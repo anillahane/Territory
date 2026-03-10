@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type SyntheticEvent } from 'react';
 import {
   Box,
   Typography,
@@ -25,6 +25,8 @@ import {
   Card,
   CardContent,
   Grid,
+  Tab,
+  Tabs,
 } from '@mui/material';
 import {
   Upload as UploadIcon,
@@ -36,8 +38,10 @@ import {
   BarChart as BarChartIcon,
   Map as MapIcon,
 } from '@mui/icons-material';
+import { useSearchParams } from 'react-router-dom';
 import { useStore } from '../store/useStore';
 import api from '../services/api';
+import BranchEmployeePocketMapping from '../components/BranchEmployeePocketMapping';
 
 interface Job {
   jobId: string;
@@ -55,8 +59,14 @@ interface Job {
   };
 }
 
+const resolveBatchTab = (value: string | null): 'jobs' | 'mapping' => (
+  value === 'mapping' ? 'mapping' : 'jobs'
+);
+
 export default function BatchProcessing() {
   const { setError, setSuccess } = useStore();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedBatchTab = resolveBatchTab(searchParams.get('tab'));
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -68,6 +78,11 @@ export default function BatchProcessing() {
   const [statsDialogOpen, setStatsDialogOpen] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null); // Track currently processing job
   const [pollingInterval, setPollingInterval] = useState<number | null>(null);
+  const [batchTab, setBatchTab] = useState<'jobs' | 'mapping'>(requestedBatchTab);
+
+  useEffect(() => {
+    setBatchTab(requestedBatchTab);
+  }, [requestedBatchTab]);
 
   useEffect(() => {
     console.log('BatchProcessing component mounted');
@@ -368,19 +383,45 @@ export default function BatchProcessing() {
     }
   };
 
+  const handleBatchTabChange = (_event: SyntheticEvent, value: 'jobs' | 'mapping') => {
+    setBatchTab(value);
+
+    const nextParams = new URLSearchParams(searchParams);
+    if (value === 'mapping') {
+      nextParams.set('tab', 'mapping');
+    } else {
+      nextParams.delete('tab');
+    }
+    setSearchParams(nextParams, { replace: true });
+  };
+
   return (
     <Box sx={{ width: '100%', height: '100%', p: 3 }}>
-      {loadingJobs && jobs.length === 0 && (
-        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px' }}>
-          <CircularProgress />
-          <Typography variant="body2" sx={{ ml: 2 }}>
-            Loading batch processing module...
-          </Typography>
-        </Box>
-      )}
-      
-      {!loadingJobs || jobs.length > 0 ? (
+      <Paper sx={{ mb: 2 }}>
+        <Tabs
+          value={batchTab}
+          onChange={handleBatchTabChange}
+          variant="scrollable"
+          allowScrollButtonsMobile
+        >
+          <Tab value="jobs" label="Batch Jobs" />
+          <Tab value="mapping" label="Branch > Employee > Pocket Mapping" />
+        </Tabs>
+      </Paper>
+
+      {batchTab === 'jobs' ? (
         <>
+          {loadingJobs && jobs.length === 0 && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px' }}>
+              <CircularProgress />
+              <Typography variant="body2" sx={{ ml: 2 }}>
+                Loading batch processing module...
+              </Typography>
+            </Box>
+          )}
+
+          {!loadingJobs || jobs.length > 0 ? (
+            <>
           <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
             <Box>
               <Typography variant="h4" gutterBottom>
@@ -887,8 +928,12 @@ export default function BatchProcessing() {
           <Button onClick={() => setStatsDialogOpen(false)}>Close</Button>
         </DialogActions>
       </Dialog>
+            </>
+          ) : null}
         </>
-      ) : null}
+      ) : (
+        <BranchEmployeePocketMapping embeddedInBatch />
+      )}
     </Box>
   );
 }

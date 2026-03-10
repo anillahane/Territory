@@ -165,10 +165,11 @@ describe('Geometry Module', () => {
       expect(result[1].col).toBe(3);
     });
 
-    test('should throw error for invalid format', () => {
-      expect(() => decodeIndices('7F-33-22')).toThrow();
-      expect(() => decodeIndices('7F-3-22-11-00')).toThrow(); // Part '7F-3' has wrong length
+    test('should validate supported format variants', () => {
+      expect(() => decodeIndices('7F-33-22')).not.toThrow(); // Truncated Pocket ID is valid
+      expect(() => decodeIndices('7F-3-22-11-00')).toThrow(); // Part '3' has wrong length
       expect(() => decodeIndices('7F-33-22-11-00')).not.toThrow(); // Valid format (5 parts)
+      expect(() => decodeIndices('7F-33-22-11-00-44')).toThrow(); // Too many parts
     });
 
     test('should throw error for invalid characters', () => {

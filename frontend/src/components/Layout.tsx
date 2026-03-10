@@ -1,5 +1,9 @@
-import { Outlet, Link, useLocation } from 'react-router-dom';
-import { useState } from 'react';
+// --- ORIGINAL BACKUP ---
+// import { Outlet, Link, useLocation } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+// --- ORIGINAL BACKUP ---
+// import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Box,
   Drawer,
@@ -19,9 +23,11 @@ import {
   Dashboard as DashboardIcon,
   Settings as SettingsIcon,
   Business as BusinessIcon,
+  Group as GroupIcon,
   Calculate as CalculateIcon,
   CloudUpload as CloudUploadIcon,
   TableChart as TableChartIcon,
+  HealthAndSafety as HealthAndSafetyIcon,
   Menu as MenuIcon,
   ChevronLeft as ChevronLeftIcon,
   ExpandLess as ExpandLessIcon,
@@ -34,8 +40,10 @@ const drawerWidthCollapsed = 64;
 
 export default function Layout() {
   const location = useLocation();
+  const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mapLegendExpanded, setMapLegendExpanded] = useState(true);
+  const mainContentRef = useRef<HTMLDivElement | null>(null);
   const dashboardMapPanel = useStore((state) => state.dashboardMapPanel);
   const selectedGridLevels = useStore((state) => state.dashboardSelectedGridLevels);
   const toggleDashboardGridLevel = useStore((state) => state.toggleDashboardGridLevel);
@@ -46,13 +54,27 @@ export default function Layout() {
   const navItems = [
     { path: '/', label: 'Dashboard', icon: <DashboardIcon /> },
     { path: '/branches', label: 'Branches', icon: <BusinessIcon /> },
+    { path: '/employee-mapping', label: 'Employee Mapping', icon: <GroupIcon /> },
     { path: '/batch', label: 'Batch Processing', icon: <CloudUploadIcon /> },
     { path: '/mappings', label: 'Customer Pocket Mappings', icon: <TableChartIcon /> },
   ];
 
+  // --- ORIGINAL BACKUP ---
+  // const adminItems = [
+  //   { path: '/calculator', label: 'Pocket ID Calculator', icon: <CalculateIcon /> },
+  //   { path: '/config', label: 'System Configuration', icon: <SettingsIcon /> },
+  // ];
+  // --- ORIGINAL BACKUP ---
+  // const adminItems = [
+  //   { path: '/calculator', label: 'Pocket ID Calculator', icon: <CalculateIcon /> },
+  //   { path: '/config', label: 'System Configuration', icon: <SettingsIcon /> },
+  //   { path: '/admin/territory-health', label: 'Territory Health', icon: <HealthAndSafetyIcon /> },
+  // ];
   const adminItems = [
     { path: '/calculator', label: 'Pocket ID Calculator', icon: <CalculateIcon /> },
     { path: '/config', label: 'System Configuration', icon: <SettingsIcon /> },
+    { path: '/admin/territory-health', label: 'Territory Health', icon: <HealthAndSafetyIcon /> },
+    { path: '/admin/grid-cells', label: 'Master Tile Viewer', icon: <TableChartIcon /> },
   ];
 
   const toggleSidebar = () => {
@@ -61,6 +83,31 @@ export default function Layout() {
       window.dispatchEvent(new Event('dashboard-layout-resize'));
     }, 220);
   };
+
+  const handleNavigate = (path: string) => {
+    if (location.pathname !== path) {
+      navigate(path);
+    }
+
+    window.requestAnimationFrame(() => {
+      if (mainContentRef.current) {
+        mainContentRef.current.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+      }
+      window.dispatchEvent(new Event('dashboard-layout-resize'));
+      window.dispatchEvent(new Event('resize'));
+    });
+  };
+
+  useEffect(() => {
+    if (mainContentRef.current) {
+      mainContentRef.current.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    }
+
+    window.requestAnimationFrame(() => {
+      window.dispatchEvent(new Event('dashboard-layout-resize'));
+      window.dispatchEvent(new Event('resize'));
+    });
+  }, [location.pathname]);
 
   const mapStatusLabel = dashboardMapPanel.mapError || (dashboardMapPanel.mapLoaded ? 'Ready' : 'Loading...');
   const mapStatusColor = dashboardMapPanel.mapError
@@ -166,8 +213,10 @@ export default function Layout() {
               <ListItem key={item.path} disablePadding sx={{ mb: 0.5 }}>
                 <Tooltip title={!sidebarOpen ? item.label : ''} placement="right">
                   <ListItemButton
-                    component={Link}
-                    to={item.path}
+                    // --- ORIGINAL BACKUP ---
+                    // component={Link}
+                    // to={item.path}
+                    onClick={() => handleNavigate(item.path)}
                     sx={{
                       borderRadius: '8px',
                       py: 1.125,
@@ -366,8 +415,10 @@ export default function Layout() {
               <ListItem key={item.path} disablePadding sx={{ mb: 0.5 }}>
                 <Tooltip title={!sidebarOpen ? item.label : ''} placement="right">
                   <ListItemButton
-                    component={Link}
-                    to={item.path}
+                    // --- ORIGINAL BACKUP ---
+                    // component={Link}
+                    // to={item.path}
+                    onClick={() => handleNavigate(item.path)}
                     sx={{
                       borderRadius: '8px',
                       py: 1.125,
@@ -473,6 +524,7 @@ export default function Layout() {
       {/* Main Content */}
       <Box
         component="main"
+        ref={mainContentRef}
         sx={{
           flexGrow: 1,
           display: 'flex',

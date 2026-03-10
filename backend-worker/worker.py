@@ -7,6 +7,7 @@ Handles large file processing (5000+ rows) with memory-efficient chunking
 import redis
 import json
 import os
+import ntpath
 import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine, text
@@ -22,6 +23,10 @@ UPLOAD_DIR = os.getenv('UPLOAD_DIR', '../backend/uploads')
 # Grid configuration
 METERS_PER_DEGREE_LAT = 111000
 GRID_LEVELS = [500000, 100000, 20000, 5000, 1000]
+DEFAULT_POCKET_CONFIG_ORIGIN_LAT = 8.0
+DEFAULT_POCKET_CONFIG_ORIGIN_LON = 68.0
+DEFAULT_POCKET_CONFIG_ALPHABET = '0123456789ABCDEFGHJKLMNPQRSTUV'
+MAX_POCKET_CENTER_DISTANCE_TOLERANCE_METERS = 250
 
 # Initialize connections
 print(f"🔌 Connecting to Redis: {REDIS_URL}")
@@ -158,6 +163,96 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     
     return R * c
 
+def sanitize_pocket_config(raw_config):
+    """Normalize pocket config with safe defaults."""
+    if not isinstance(raw_config, dict):
+        raw_config = {}
+
+    origin_lat = raw_config.get('originLat')
+    origin_lon = raw_config.get('originLon')
+    alphabet = str(raw_config.get('alphabet') or '').strip()
+
+    try:
+        parsed_origin_lat = float(origin_lat)
+    except (TypeError, ValueError):
+        parsed_origin_lat = DEFAULT_POCKET_CONFIG_ORIGIN_LAT
+
+    try:
+        parsed_origin_lon = float(origin_lon)
+    except (TypeError, ValueError):
+        parsed_origin_lon = DEFAULT_POCKET_CONFIG_ORIGIN_LON
+
+    return {
+        'originLat': parsed_origin_lat if math.isfinite(parsed_origin_lat) else DEFAULT_POCKET_CONFIG_ORIGIN_LAT,
+        'originLon': parsed_origin_lon if math.isfinite(parsed_origin_lon) else DEFAULT_POCKET_CONFIG_ORIGIN_LON,
+        'alphabet': alphabet if len(alphabet) == 30 else DEFAULT_POCKET_CONFIG_ALPHABET
+    }
+
+def is_valid_nearest_pocket_candidate(nearest_pocket, pocket_level_size=5000):
+    """Validate nearest pocket output for geographical sanity and expected bounds."""
+    if not isinstance(nearest_pocket, dict):
+        return False
+
+    pocket_id = str(nearest_pocket.get('pocketId') or '').strip()
+    distance = nearest_pocket.get('distance')
+    center_lat = nearest_pocket.get('centerLat')
+    center_lon = nearest_pocket.get('centerLon')
+
+    try:
+        distance = float(distance)
+        center_lat = float(center_lat)
+        center_lon = float(center_lon)
+    except (TypeError, ValueError):
+        return False
+
+    max_expected_distance = ((float(pocket_level_size) * math.sqrt(2)) / 2) + MAX_POCKET_CENTER_DISTANCE_TOLERANCE_METERS
+
+    return (
+        pocket_id != ''
+        and math.isfinite(distance)
+        and distance >= 0
+        and distance <= max_expected_distance
+        and math.isfinite(center_lat)
+        and math.isfinite(center_lon)
+        and -90 <= center_lat <= 90
+        and -180 <= center_lon <= 180
+    )
+
+def resolve_nearest_pocket_assignment(customer_lat, customer_lon, raw_config, pocket_level_size=5000):
+    """Find nearest pocket with fallback origin when config drifts into invalid decode space."""
+    primary_config = sanitize_pocket_config(raw_config)
+    fallback_config = {
+        'originLat': DEFAULT_POCKET_CONFIG_ORIGIN_LAT,
+        'originLon': DEFAULT_POCKET_CONFIG_ORIGIN_LON,
+        'alphabet': primary_config['alphabet'] or DEFAULT_POCKET_CONFIG_ALPHABET
+    }
+
+    def attempt(candidate_config, used_fallback_config):
+        nearest = find_nearest_pocket(
+            customer_lat,
+            customer_lon,
+            candidate_config,
+            pocket_level_size=pocket_level_size
+        )
+        if not is_valid_nearest_pocket_candidate(nearest, pocket_level_size):
+            raise ValueError('Invalid nearest pocket candidate generated from pocket config')
+        return {
+            'nearestPocket': nearest,
+            'usedFallbackConfig': used_fallback_config
+        }
+
+    try:
+        return attempt(primary_config, False)
+    except Exception as primary_error:
+        should_try_fallback = (
+            primary_config['originLat'] != fallback_config['originLat']
+            or primary_config['originLon'] != fallback_config['originLon']
+        )
+        if not should_try_fallback:
+            raise primary_error
+
+        return attempt(fallback_config, True)
+
 def find_nearest_pocket(customer_lat, customer_lon, config, pocket_level_size=5000):
     """Assign customer to the containing pocket cell at the configured pocket level."""
     x, y = lat_lon_to_meters(
@@ -223,14 +318,73 @@ def process_job(job_data):
     file_path = job_data['filePath']
     config = job_data['config']
     replace_existing = parse_bool_flag(job_data.get('replaceExisting', False), False)
-    
+
+    # --- ORIGINAL BACKUP ---
     # Normalize file path to avoid cwd-dependent failures from manually requeued jobs.
-    if not os.path.isabs(file_path):
-        file_path = os.path.abspath(file_path)
-    if not os.path.exists(file_path):
-        fallback_path = os.path.join(UPLOAD_DIR, os.path.basename(file_path))
-        if os.path.exists(fallback_path):
-            file_path = fallback_path
+    # if not os.path.isabs(file_path):
+    #     file_path = os.path.abspath(file_path)
+    # if not os.path.exists(file_path):
+    #     fallback_path = os.path.join(UPLOAD_DIR, os.path.basename(file_path))
+    #     if os.path.exists(fallback_path):
+    #         file_path = fallback_path
+
+    # Resolve mixed Windows/Linux path payloads robustly.
+    original_file_path = job_data.get('originalFilePath')
+    raw_candidates = [file_path, original_file_path]
+    resolved_file_path = None
+    checked_candidates = []
+
+    def add_candidate(candidate_value):
+        if not candidate_value:
+            return
+        candidate = str(candidate_value).strip()
+        if not candidate:
+            return
+        if candidate in checked_candidates:
+            return
+        checked_candidates.append(candidate)
+
+    for candidate in raw_candidates:
+        add_candidate(candidate)
+
+        if candidate:
+            candidate_text = str(candidate).strip()
+            if candidate_text and '\\' in candidate_text:
+                add_candidate(candidate_text.replace('\\', '/'))
+
+            base_posix = os.path.basename(candidate_text) if candidate_text else ''
+            base_windows = ntpath.basename(candidate_text) if candidate_text else ''
+            add_candidate(base_posix)
+            add_candidate(base_windows)
+
+            if base_posix:
+                add_candidate(os.path.join(UPLOAD_DIR, base_posix))
+            if base_windows:
+                add_candidate(os.path.join(UPLOAD_DIR, base_windows))
+
+    for candidate in checked_candidates:
+        if not candidate:
+            continue
+
+        normalized_candidate = candidate
+        if not os.path.isabs(normalized_candidate):
+            normalized_candidate = os.path.abspath(normalized_candidate)
+
+        if os.path.exists(normalized_candidate):
+            resolved_file_path = normalized_candidate
+            break
+
+        upload_candidate = os.path.join(UPLOAD_DIR, ntpath.basename(candidate))
+        if os.path.exists(upload_candidate):
+            resolved_file_path = upload_candidate
+            break
+
+    if not resolved_file_path:
+        raise FileNotFoundError(
+            f"Input file not found for job {job_id}. Checked candidates: {checked_candidates}"
+        )
+
+    file_path = resolved_file_path
     print(f"🔄 Starting job {job_id} for {file_path}")
     
     # Update job to active
@@ -268,6 +422,7 @@ def process_job(job_data):
         all_mappings = []
         pocket_stats = {}
         pocket_centers = {}
+        fallback_pocket_config_hits = 0
         
         # Process in chunks (split dataframe into chunks)
         chunk_size = 5000
@@ -313,8 +468,13 @@ def process_job(job_data):
                                     existing_branch['lat'], existing_branch['lon']
                                 )
                     
-                    # Identify containing pocket at 5km level.
-                    nearest_pocket = find_nearest_pocket(lat, lon, config)
+                    # --- ORIGINAL BACKUP ---
+                    # # Identify containing pocket at 5km level.
+                    # nearest_pocket = find_nearest_pocket(lat, lon, config)
+                    pocket_assignment = resolve_nearest_pocket_assignment(lat, lon, config, pocket_level_size=5000)
+                    nearest_pocket = pocket_assignment['nearestPocket']
+                    if pocket_assignment['usedFallbackConfig']:
+                        fallback_pocket_config_hits += 1
                     pocket_id = nearest_pocket['pocketId']
                     
                     # Store result
@@ -443,6 +603,7 @@ def process_job(job_data):
             "mappingsPersisted": len(all_mappings),
             "replaceExisting": bool(replace_existing),
             "replacedMappingsCount": int(replaced_mappings_count),
+            "fallbackPocketConfigHits": int(fallback_pocket_config_hits),
             "territoryUrl": f"/api/v1/batch/territories/{job_id}",
             "worker": "python"
         }
@@ -477,6 +638,7 @@ def process_job(job_data):
             'pocketStats': pocket_stats,
             'mappingsPersisted': len(all_mappings),
             'replacedMappingsCount': int(replaced_mappings_count),
+            'fallbackPocketConfigHits': int(fallback_pocket_config_hits),
             'buffer': None  # File saved to disk
         }
     
@@ -531,4 +693,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

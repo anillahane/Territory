@@ -49,7 +49,7 @@ describe('MappingService Property-Based Tests', () => {
             // Mock successful database insert - return the batch size for each call
             query.mockImplementation((queryText, values) => {
               // Calculate how many rows are being inserted based on values length
-              const rowCount = values.length / 9;
+              const rowCount = values.length / 12;
               totalInserted += rowCount;
               return Promise.resolve({ rowCount });
             });
@@ -70,7 +70,7 @@ describe('MappingService Property-Based Tests', () => {
               const queryText = call[0];
               const queryValues = call[1];
 
-              // Verify the query includes all 9 required fields
+              // Verify the query includes all required and optional fields
               expect(queryText).toContain('job_id');
               expect(queryText).toContain('customer_id');
               expect(queryText).toContain('customer_lat');
@@ -80,15 +80,22 @@ describe('MappingService Property-Based Tests', () => {
               expect(queryText).toContain('nearest_branch_id');
               expect(queryText).toContain('distance_pocket_to_branch');
               expect(queryText).toContain('distance_customer_to_branch');
+              expect(queryText).toContain('uploaded_branch_code');
+              expect(queryText).toContain('existing_branch_id');
+              expect(queryText).toContain('distance_customer_to_existing_branch');
 
-              // Property: Values must be in multiples of 9 (complete records only)
-              expect(queryValues.length % 9).toBe(0);
+              // Property: Values must be in multiples of 12 (complete records only)
+              expect(queryValues.length % 12).toBe(0);
 
-              // Property: All field values must be defined and not null
-              queryValues.forEach((value) => {
-                expect(value).toBeDefined();
-                expect(value).not.toBeNull();
-              });
+              // Required columns (1-9) must be present in each record.
+              const recordCount = queryValues.length / 12;
+              for (let i = 0; i < recordCount; i += 1) {
+                const baseIndex = i * 12;
+                for (let j = 0; j < 9; j += 1) {
+                  expect(queryValues[baseIndex + j]).toBeDefined();
+                  expect(queryValues[baseIndex + j]).not.toBeNull();
+                }
+              }
             });
 
             // Property: Total records inserted equals input count
@@ -131,7 +138,7 @@ describe('MappingService Property-Based Tests', () => {
             
             // Mock successful database insert
             query.mockImplementation((queryText, values) => {
-              const rowCount = values.length / 9;
+              const rowCount = values.length / 12;
               return Promise.resolve({ rowCount });
             });
 
@@ -148,10 +155,10 @@ describe('MappingService Property-Based Tests', () => {
             // Property: The first value in each record must be the jobId
             query.mock.calls.forEach((call) => {
               const queryValues = call[1];
-              const recordCount = queryValues.length / 9;
+              const recordCount = queryValues.length / 12;
               
               for (let i = 0; i < recordCount; i++) {
-                const baseIndex = i * 9;
+                const baseIndex = i * 12;
                 // First value of each record is job_id
                 expect(queryValues[baseIndex]).toBe(jobId);
               }
@@ -161,10 +168,10 @@ describe('MappingService Property-Based Tests', () => {
             const allJobIds = [];
             query.mock.calls.forEach((call) => {
               const queryValues = call[1];
-              const recordCount = queryValues.length / 9;
+              const recordCount = queryValues.length / 12;
               
               for (let i = 0; i < recordCount; i++) {
-                const baseIndex = i * 9;
+                const baseIndex = i * 12;
                 allJobIds.push(queryValues[baseIndex]);
               }
             });

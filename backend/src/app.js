@@ -12,10 +12,14 @@ const branchRoutes = require('./routes/branches');
 const pocketRoutes = require('./routes/pocket');
 const nearestRoutes = require('./routes/nearest');
 const batchRoutes = require('./routes/batch');
+const territoriesRoutes = require('./routes/territories');
+const employeesRoutes = require('./routes/employees');
+const gridsRoutes = require('./routes/grids');
 const jobsRoutes = require('./routes/jobs');
 const templatesRoutes = require('./routes/templates');
 const healthRoutes = require('./routes/health');
 const customerMappingsRoutes = require('./routes/customerMappings');
+const adminRoutes = require('./routes/admin');
 
 // Import middleware
 const { errorHandler } = require('./middleware/errorHandler');
@@ -68,13 +72,35 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 
+// --- ORIGINAL BACKUP ---
+// // Rate limiting
+// const limiter = rateLimit({
+//   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
+//   max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '60', 10),
+//   message: 'Too many requests from this IP, please try again later.',
+//   standardHeaders: true,
+//   legacyHeaders: false,
+// });
+// app.use(`/api/${API_VERSION}/`, limiter);
 // Rate limiting
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '60', 10),
+  max: parseInt(
+    process.env.RATE_LIMIT_MAX_REQUESTS
+      || (process.env.NODE_ENV === 'production' ? '60' : '600'),
+    10
+  ),
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => {
+    if (process.env.NODE_ENV === 'production') {
+      return false;
+    }
+    const requestIp = String(req.ip || req.socket?.remoteAddress || '');
+    const isLocalRequest = requestIp.includes('127.0.0.1') || requestIp.includes('::1');
+    return isLocalRequest;
+  },
 });
 app.use(`/api/${API_VERSION}/`, limiter);
 
@@ -92,18 +118,53 @@ app.use(
 );
 
 // API routes
+// --- ORIGINAL BACKUP ---
+// app.use(`/api/${API_VERSION}/config`, configRoutes);
+// app.use(`/api/${API_VERSION}/branches`, branchRoutes);
+// app.use(`/api/${API_VERSION}/pocket`, pocketRoutes);
+// app.use(`/api/${API_VERSION}/nearest`, nearestRoutes);
+// app.use(`/api/${API_VERSION}/batch`, batchRoutes);
+// app.use(`/api/${API_VERSION}/territories`, territoriesRoutes);
+// app.use(`/api/${API_VERSION}/employees`, employeesRoutes);
+// app.use(`/api/${API_VERSION}/grids`, gridsRoutes);
+// app.use(`/api/${API_VERSION}/jobs`, jobsRoutes);
+// app.use(`/api/${API_VERSION}/templates`, templatesRoutes);
+// app.use(`/api/${API_VERSION}/customer-mappings`, customerMappingsRoutes);
+// app.use('/health', healthRoutes);
 app.use(`/api/${API_VERSION}/config`, configRoutes);
 app.use(`/api/${API_VERSION}/branches`, branchRoutes);
 app.use(`/api/${API_VERSION}/pocket`, pocketRoutes);
 app.use(`/api/${API_VERSION}/nearest`, nearestRoutes);
 app.use(`/api/${API_VERSION}/batch`, batchRoutes);
+app.use(`/api/${API_VERSION}/territories`, territoriesRoutes);
+app.use(`/api/${API_VERSION}/employees`, employeesRoutes);
+app.use(`/api/${API_VERSION}/grids`, gridsRoutes);
 app.use(`/api/${API_VERSION}/jobs`, jobsRoutes);
 app.use(`/api/${API_VERSION}/templates`, templatesRoutes);
 app.use(`/api/${API_VERSION}/customer-mappings`, customerMappingsRoutes);
+app.use(`/api/${API_VERSION}/admin`, adminRoutes);
 app.use('/health', healthRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
+  // --- ORIGINAL BACKUP ---
+  // res.json({
+  //   name: 'Location Pockets API',
+  //   version: API_VERSION,
+  //   status: 'running',
+  //   endpoints: {
+  //     config: `/api/${API_VERSION}/config`,
+  //     branches: `/api/${API_VERSION}/branches`,
+  //     pocket: `/api/${API_VERSION}/pocket`,
+  //     nearest: `/api/${API_VERSION}/nearest`,
+  //     batch: `/api/${API_VERSION}/batch`,
+  //     territories: `/api/${API_VERSION}/territories`,
+  //     employees: `/api/${API_VERSION}/employees`,
+  //     grids: `/api/${API_VERSION}/grids`,
+  //     customerMappings: `/api/${API_VERSION}/customer-mappings`,
+  //     health: '/health',
+  //   },
+  // });
   res.json({
     name: 'Location Pockets API',
     version: API_VERSION,
@@ -114,7 +175,11 @@ app.get('/', (req, res) => {
       pocket: `/api/${API_VERSION}/pocket`,
       nearest: `/api/${API_VERSION}/nearest`,
       batch: `/api/${API_VERSION}/batch`,
+      territories: `/api/${API_VERSION}/territories`,
+      employees: `/api/${API_VERSION}/employees`,
+      grids: `/api/${API_VERSION}/grids`,
       customerMappings: `/api/${API_VERSION}/customer-mappings`,
+      admin: `/api/${API_VERSION}/admin`,
       health: '/health',
     },
   });

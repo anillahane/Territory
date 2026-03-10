@@ -156,37 +156,78 @@ router.get(
 router.get(
   '/',
   asyncHandler(async (req, res) => {
-    const limit = parseInt(req.query.limit || '100', 10);
-    const offset = parseInt(req.query.offset || '0', 10);
-    const search = req.query.search || '';
+    const parsedLimit = Number.parseInt(req.query.limit || '100', 10);
+    const parsedOffset = Number.parseInt(req.query.offset || '0', 10);
+    const limit = Number.isFinite(parsedLimit) ? Math.min(500, Math.max(1, parsedLimit)) : 100;
+    const offset = Number.isFinite(parsedOffset) ? Math.max(0, parsedOffset) : 0;
+    const search = String(req.query.search || '').trim();
 
-    let queryText = `
+    const bboxRaw = String(req.query.bbox || '').trim();
+    let bboxFilter = null;
+    if (bboxRaw) {
+      const parts = bboxRaw.split(',').map((value) => Number(value.trim()));
+      if (
+        parts.length !== 4
+        || !parts.every((value) => Number.isFinite(value))
+      ) {
+        throw new AppError(
+          'Invalid bbox. Use "west,south,east,north" with numeric values.',
+          400,
+          'INVALID_BBOX'
+        );
+      }
+
+      const [west, south, east, north] = parts;
+      if (west < -180 || east > 180 || south < -90 || north > 90 || west >= east || south >= north) {
+        throw new AppError(
+          'Invalid bbox bounds. Ensure longitude is within [-180, 180], latitude within [-90, 90], and west<east, south<north.',
+          400,
+          'INVALID_BBOX_BOUNDS'
+        );
+      }
+
+      bboxFilter = { west, south, east, north };
+    }
+
+    const whereClauses = [];
+    const baseParams = [];
+
+    if (search) {
+      baseParams.push(`%${search}%`);
+      whereClauses.push(`(id ILIKE $${baseParams.length} OR city ILIKE $${baseParams.length} OR pocket_id ILIKE $${baseParams.length})`);
+    }
+
+    if (bboxFilter) {
+      baseParams.push(bboxFilter.west, bboxFilter.east, bboxFilter.south, bboxFilter.north);
+      const westIndex = baseParams.length - 3;
+      const eastIndex = baseParams.length - 2;
+      const southIndex = baseParams.length - 1;
+      const northIndex = baseParams.length;
+      whereClauses.push(`(lon BETWEEN $${westIndex} AND $${eastIndex} AND lat BETWEEN $${southIndex} AND $${northIndex})`);
+    }
+
+    const whereSql = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(' AND ')}` : '';
+
+    const dataParams = [...baseParams, limit, offset];
+    const limitIndex = dataParams.length - 1;
+    const offsetIndex = dataParams.length;
+    const queryText = `
       SELECT id, city, lat, lon, pocket_id, created_at, updated_at
       FROM branches
+      ${whereSql}
+      ORDER BY id
+      LIMIT $${limitIndex} OFFSET $${offsetIndex}
     `;
-    const params = [];
-
-    if (search) {
-      queryText += ` WHERE id ILIKE $1 OR city ILIKE $1 OR pocket_id ILIKE $1`;
-      params.push(`%${search}%`);
-      queryText += ` ORDER BY id LIMIT $2 OFFSET $3`;
-      params.push(limit, offset);
-    } else {
-      queryText += ` ORDER BY id LIMIT $1 OFFSET $2`;
-      params.push(limit, offset);
-    }
-
-    const result = await query(queryText, params);
+    const result = await query(queryText, dataParams);
 
     // Get total count
-    let countQuery = 'SELECT COUNT(*) FROM branches';
-    const countParams = [];
-    if (search) {
-      countQuery += ` WHERE id ILIKE $1 OR city ILIKE $1 OR pocket_id ILIKE $1`;
-      countParams.push(`%${search}%`);
-    }
-    const countResult = await query(countQuery, countParams);
-    const total = parseInt(countResult.rows[0].count, 10);
+    const countQuery = `
+      SELECT COUNT(*)::int AS total
+      FROM branches
+      ${whereSql}
+    `;
+    const countResult = await query(countQuery, baseParams);
+    const total = Number.parseInt(String(countResult.rows[0].total || '0'), 10);
 
     res.json({
       branches: result.rows.map((row) => ({

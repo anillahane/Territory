@@ -7,6 +7,9 @@ import Branches from './pages/Branches';
 import Calculator from './pages/Calculator';
 import BatchProcessing from './pages/BatchProcessing';
 import CustomerMappingView from './pages/CustomerMappingView';
+import EmployeeMapping from './pages/EmployeeMapping';
+import AdminTerritoryHealth from './pages/AdminTerritoryHealth';
+import GridCellsViewer from './pages/GridCellsViewer';
 import { useStore } from './store/useStore';
 
 function App() {
@@ -19,13 +22,29 @@ function App() {
   return (
     <Box sx={{ width: '100%', height: '100vh', overflow: 'hidden' }}>
       <Routes>
+        {/* --- ORIGINAL BACKUP --- */}
+        {/* <Route path="/" element={<Layout />}>
+          <Route index element={<Dashboard />} />
+          <Route path="config" element={<Configuration />} />
+          <Route path="branches" element={<Branches />} />
+          <Route path="calculator" element={<Calculator />} />
+          <Route path="batch" element={<BatchProcessing />} />
+          <Route path="employee-mapping" element={<EmployeeMapping />} />
+          <Route path="mappings" element={<CustomerMappingView />} />
+        </Route> */}
         <Route path="/" element={<Layout />}>
           <Route index element={<Dashboard />} />
           <Route path="config" element={<Configuration />} />
           <Route path="branches" element={<Branches />} />
           <Route path="calculator" element={<Calculator />} />
           <Route path="batch" element={<BatchProcessing />} />
+          <Route path="employee-mapping" element={<EmployeeMapping />} />
           <Route path="mappings" element={<CustomerMappingView />} />
+          {/* --- ORIGINAL BACKUP ---
+          <Route path="admin/territory-health" element={<AdminTerritoryHealth />} />
+          */}
+          <Route path="admin/territory-health" element={<AdminTerritoryHealth />} />
+          <Route path="admin/grid-cells" element={<GridCellsViewer />} />
         </Route>
       </Routes>
 

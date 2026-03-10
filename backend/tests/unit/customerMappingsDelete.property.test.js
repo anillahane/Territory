@@ -59,7 +59,12 @@ describe('Customer Mappings Deletion - Property Tests', () => {
   test('Property 21: Deletion Audit Trail - logs are created for all deletions', async () => {
     await fc.assert(
       fc.asyncProperty(
-        fc.date({ min: new Date('2020-01-01'), max: new Date('2026-12-31') }),
+        fc
+          .integer({
+            min: Date.parse('2020-01-01T00:00:00.000Z'),
+            max: Date.parse('2026-12-31T23:59:59.999Z'),
+          })
+          .map((timestamp) => new Date(timestamp)),
         fc.option(fc.integer({ min: 1, max: 1000 }), { nil: null }),
         fc.integer({ min: 0, max: 10000 }),
         async (olderThan, jobId, deletedCount) => {
@@ -72,19 +77,21 @@ describe('Customer Mappings Deletion - Property Tests', () => {
           const logger = require('../../src/config/logger');
           const infoSpy = jest.spyOn(logger, 'info');
 
-          await mappingService.deleteMappings(olderThan, jobId);
+          try {
+            await mappingService.deleteMappings(olderThan, jobId);
 
-          // Verify audit log was created
-          expect(infoSpy).toHaveBeenCalledWith(
-            'Customer mappings deleted',
-            expect.objectContaining({
-              olderThan: olderThan.toISOString(),
-              jobId: jobId || 'all jobs',
-              deletedCount,
-            })
-          );
-
-          infoSpy.mockRestore();
+            // Verify audit log was created
+            expect(infoSpy).toHaveBeenCalledWith(
+              'Customer mappings deleted',
+              expect.objectContaining({
+                olderThan: olderThan.toISOString(),
+                jobId: jobId || 'all jobs',
+                deletedCount,
+              })
+            );
+          } finally {
+            infoSpy.mockRestore();
+          }
         }
       ),
       { numRuns: 100 }
