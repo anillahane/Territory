@@ -1,353 +1,215 @@
-# Location Pockets System
+# Location Pockets Territory Platform
 
-A production-ready full-stack web application for converting geographic coordinates into hierarchical alphanumeric Pocket IDs and finding nearest branches on an interactive map.
+Last updated: 2026-03-10
 
-## 🎯 Project Status
+## Overview
+This project is a full-stack GIS platform for branch, pocket, customer, and employee territory management.
 
-**Overall Progress**: 45% Complete  
-**Current Phase**: Phase 2 - Frontend Foundation  
-**Last Updated**: 2026-02-28
+It supports:
+- Hierarchical pocket ID generation (500km -> 100km -> 20km -> 5km -> 1km)
+- Branch and customer pocket mapping
+- Auto/manual employee territory allocation
+- Admin health checks and repair workflows
+- Hybrid batch processing (Node.js + Python worker)
 
-### ✅ Completed
-- Backend API (90%) - All endpoints implemented
-- Geometry Module (100%) - Fully tested
-- Database Schema - PostgreSQL + PostGIS
-- Docker Setup - Development & Production
-- CI/CD Pipeline - GitHub Actions
-- Unit Tests - 100% coverage for geometry
-
-### 🚧 In Progress
-- Frontend Foundation (30%)
-- Integration Tests
-- API Documentation
-
-## 🚀 Features
-
-- 🗺️ **Interactive Map**: Leaflet-based map with grid overlay, branch markers, and customer dots
-- 📍 **Pocket ID Generation**: Convert lat/lon to compact alphanumeric codes (e.g., 7F-33-22-11-00-44)
-- 🔍 **Nearest Branch Finder**: Automatic spatial search using PostGIS with real-time highlighting
-- 📊 **Batch Processing**: Upload Excel files for bulk coordinate conversion with job queue
-- ⚙️ **Configurable Grid**: Customize origin, alphabet, and 5 hierarchical grid levels (500km to 1km)
-- 🔒 **Security**: Rate limiting, input validation, CORS, Helmet.js
-- 📈 **Monitoring**: Health checks, logging (Winston), error tracking
-- 🚀 **Production-Ready**: Docker, CI/CD, spatial indexing, scalability
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Load Balancer (Nginx)                  │
-└─────────────────────────────────────────────────────────────┘
-                              │
-              ┌───────────────┴───────────────┐
-              ▼                               ▼
-┌─────────────────────────┐      ┌─────────────────────────┐
-│   React Frontend         │      │  Node.js API Server     │
-│   - Material-UI          │      │  - Express              │
-│   - Leaflet Map          │      │  - 15 API Endpoints     │
-│   - Zustand Store        │      │  - Joi Validation       │
-└─────────────────────────┘      └─────────────────────────┘
-                                              │
-                                              ▼
-                                    ┌─────────────────────────┐
-                                    │  PostgreSQL + PostGIS    │
-                                    │  - Spatial Indexing      │
-                                    │  - Audit Trail           │
-                                    └─────────────────────────┘
-                                              │
-                                              ▼
-                                    ┌─────────────────────────┐
-                                    │  Redis + Bull Queue      │
-                                    │  - Batch Processing      │
-                                    └─────────────────────────┘
-```
-
-## 💻 Tech Stack
+## Tech Structure
 
 ### Frontend
-- **Framework**: React 18 + TypeScript + Vite
-- **UI Library**: Material-UI (MUI)
-- **State Management**: Zustand
-- **Mapping**: React-Leaflet + Leaflet.markercluster
-- **HTTP Client**: Axios
-- **Excel**: SheetJS (xlsx)
+- React 18 + TypeScript + Vite
+- Material UI
+- Zustand store
+- Axios API client
+- Map rendering with MapLibre GL (legacy Leaflet deps still present)
 
-### Backend
-- **Runtime**: Node.js 20 LTS
-- **Framework**: Express 4.18
-- **Database**: PostgreSQL 15 + PostGIS 3.3
-- **Cache/Queue**: Redis 7 + Bull
-- **Validation**: Joi
-- **Logging**: Winston + Morgan
-- **File Upload**: Multer
-- **Excel**: SheetJS (xlsx)
-- **Geodetic**: Proj4
+Main frontend folders:
+- `frontend/src/pages`
+- `frontend/src/components`
+- `frontend/src/services`
+- `frontend/src/store`
 
-### DevOps
-- **Containerization**: Docker + Docker Compose
-- **CI/CD**: GitHub Actions
-- **Web Server**: Nginx
-- **Testing**: Jest, Vitest, Cypress
-- **Monitoring**: Prometheus + Grafana (planned)
+### Backend API
+- Node.js + Express
+- Joi validation
+- Winston + Morgan logging
+- Bull queue integration
 
-## 🚀 Quick Start
+Main backend folders:
+- `backend/src/routes`
+- `backend/src/services`
+- `backend/src/utils`
+- `backend/src/workers`
+- `backend/src/migrations`
 
-### Option 1: Docker Compose (Recommended)
+Primary API route modules:
+- `config.js`
+- `branches.js`
+- `batch.js`
+- `territories.js`
+- `employees.js`
+- `grids.js`
+- `customerMappings.js`
+- `admin.js`
+- `jobs.js`
+- `health.js`
 
-```bash
-# Clone repository
-git clone <repository-url>
-cd location-pockets-system
+### Data and Queue Layer
+- PostgreSQL + PostGIS
+- Redis
+- Bull queue
 
-# Run quick start script
-chmod +x start.sh
-./start.sh
+### Python Worker
+- `backend-worker/worker.py`
+- Used for large batch uploads
+- Reads jobs from Redis list `python_batch_jobs`
 
-# Or manually
-docker-compose up -d
-docker-compose exec backend npm run migrate
+### Containers
+Defined in `docker-compose.yml`:
+- `postgres` (`localhost:5434` -> container `5432`)
+- `redis` (`localhost:6379`)
+- `backend`
+- `frontend`
+- `python-worker`
 
-# Access application
-# Frontend: http://localhost:5173
-# Backend: http://localhost:3000
-# Health: http://localhost:3000/health
+## Repository Structure
+
+```text
+Territory/
+  backend/
+    src/
+      app.js
+      routes/
+      services/
+      utils/
+      workers/
+      migrations/
+  backend-worker/
+    worker.py
+  frontend/
+    src/
+      App.tsx
+      pages/
+      components/
+      services/
+      store/
+  Files/
+  docker-compose.yml
+  start-all.bat
+  stop-all.bat
 ```
 
-### Option 2: Manual Setup
+## Run Instructions
 
-**Prerequisites**
-- Node.js 20 LTS
-- PostgreSQL 15 with PostGIS
-- Redis 7
+### Recommended (Windows, current team flow)
+1. Start Docker Desktop.
+2. From project root:
+   - `start-all.bat`
+3. Validate:
+   - Frontend: `http://localhost:5173`
+   - Backend health: `http://localhost:3000/health`
 
-**Backend**
+### Stop services
+- `stop-all.bat`
+
+### Manual start (if needed)
+1. Start infra:
+   - `docker-compose up -d postgres redis python-worker`
+2. Start backend:
+   - `cd backend`
+   - `node src/app.js`
+3. Start frontend:
+   - `cd frontend`
+   - `npm run dev`
+
+## Database Instructions
+
+### Run migrations
 ```bash
 cd backend
-npm install
-cp .env.example .env
-# Edit .env with your credentials
-npm run migrate
-npm run dev
+node src/migrations/run.js
 ```
 
-**Frontend**
-```bash
-cd frontend
-npm install
-cp .env.example .env
-npm run dev
-```
+### Important migration set currently in project
+- `001` initial schema
+- `003` customer mappings table
+- `006` persistent territory tables
+- `008` branch catchments backfill
+- `009` employee master + FK alignment
+- `010` cleanup legacy non-canonical pocket codes
+- `011` auto color
+- `012` tier-2 bbox + two-way sync fields
+- `013` grid level constraint fix
+- `014` rewrite legacy grid codes to canonical
 
-See [SETUP_GUIDE.md](SETUP_GUIDE.md) for detailed instructions.
+## Operational Data Sequence (Recommended)
+Use this sequence to avoid inconsistent territory states.
 
-## 📚 Documentation
+1. Confirm config:
+   - origin, alphabet, grid levels in `System Configuration`
+2. Upload branches (or validate existing branch coordinates)
+3. Run customer batch encode (replace existing if needed)
+4. Run employee allocation/repair for required branches
+5. Verify in Admin Territory Health
+6. Verify dashboard and employee mapping views
 
-### Getting Started
-- [📋 Project Plan](PROJECT_PLAN.md) - Complete 12-week development roadmap
-- [🔧 Setup Guide](SETUP_GUIDE.md) - Detailed setup instructions
-- [📊 Development Status](DEVELOPMENT_STATUS.md) - Current progress tracking
-- [📝 Implementation Summary](IMPLEMENTATION_SUMMARY.md) - What's been built
+## Admin Operations
 
-### API Documentation
-- **Base URL**: `http://localhost:3000/api/v1`
-- **Health Check**: `GET /health`
+### Territory health endpoint
+- `GET /api/v1/admin/territory-health`
 
-**Endpoints**:
-- Configuration: `GET/PUT /config`, `GET /config/history`
-- Branches: `GET/POST/PUT/DELETE /branches`, `POST /branches/upload`, `GET /branches/export`
-- Pocket ID: `POST /pocket/encode`, `POST /pocket/decode`, `POST /pocket/validate`
-- Nearest: `POST /nearest`, `POST /nearest/fallback`, `GET /nearest/within-pocket/:id`
-- Batch: `POST /batch/encode`, `GET /batch/status/:id`, `GET /batch/download/:id`
+Per branch fields include:
+- `is_grid_generated`
+- `needs_repair`
+- `repair_reason`
+- `assigned_pockets_count`
 
-## 🧪 Testing
+Current repair reason constants:
+- `MISSING_TIER2_GRID`
+- `MISSING_PERSISTED_5KM_LAYOUT`
+- `GHOST_DATA_DETECTED`
 
-### Backend Tests
-```bash
-cd backend
-npm run lint                # Lint backend source
-npm test                    # Run all tests (with coverage)
-npm run test:watch          # Watch mode
-npm run test:integration    # Integration tests
-```
+### Repair actions
+- Per-branch: "Repair Branch"
+- Bulk invalid: "Repair All Invalid Branches"
+- Global: "Run Global Territory Sync"
 
-**Current Coverage**: 100% for geometry module
+### Master tile viewer
+- `GET /api/v1/admin/grid-cells`
+- UI route: `/admin/grid-cells`
 
-### Frontend Tests
-```bash
-cd frontend
-npm run lint                # Lint frontend source
-npm run build               # Type-check and production build
-npm test                    # Run all tests
-npm run test:ui             # UI mode
-npm run test:coverage       # Coverage report
-```
+## Key API Areas
+- `POST /api/v1/batch/encode`
+- `GET /api/v1/batch/status/:jobId`
+- `GET /api/v1/batch/territories/:branchId`
+- `POST /api/v1/batch/territories/run-allocation/:branchId`
+- `PUT /api/v1/territories/assign-manual`
+- `GET /api/v1/customer-mappings`
+- `GET /api/v1/admin/territory-health`
+- `POST /api/v1/admin/batch-reallocate-all`
 
-### Known Issues
-- Full backend integration tests require PostgreSQL/PostGIS and Redis services to be running locally.
+## Troubleshooting
 
-## 📁 Project Structure
+### Internal Server Error on API calls
+Common cause: backend cannot reach Postgres configured at `localhost:5434`.
 
-```
-location-pockets-system/
-├── backend/                    # Node.js API (90% complete)
-│   ├── src/
-│   │   ├── config/            # Database, logger config
-│   │   ├── routes/            # API endpoints (15 routes)
-│   │   ├── middleware/        # Error handling, validation
-│   │   ├── utils/             # Geometry calculations
-│   │   ├── migrations/        # Database migrations
-│   │   └── app.js             # Express application
-│   ├── tests/
-│   │   └── unit/              # Unit tests (50+ cases)
-│   ├── package.json
-│   ├── Dockerfile
-│   └── jest.config.js
-├── frontend/                   # React App (30% complete)
-│   ├── src/
-│   │   ├── components/        # React components
-│   │   ├── pages/             # Page components
-│   │   ├── services/          # API client
-│   │   ├── store/             # Zustand store
-│   │   └── App.tsx
-│   ├── package.json
-│   ├── vite.config.ts
-│   └── Dockerfile
-├── .github/
-│   └── workflows/
-│       └── ci.yml             # CI/CD pipeline
-├── docker-compose.yml         # Development environment
-├── start.sh                   # Quick start script
-├── PROJECT_PLAN.md            # Development roadmap
-├── SETUP_GUIDE.md             # Setup instructions
-├── DEVELOPMENT_STATUS.md      # Progress tracking
-├── IMPLEMENTATION_SUMMARY.md  # Implementation details
-└── README.md                  # This file
-```
+Fix:
+1. Ensure Docker Desktop is running.
+2. Start DB + Redis:
+   - `docker-compose up -d postgres redis`
+3. Verify:
+   - `http://localhost:3000/health`
 
-## 🎯 Key Features Implemented
+### Batch job fails with file path errors
+If worker logs show mixed Windows/Linux paths, restart:
+- backend process
+- `python-worker` container
 
-### Backend (90% Complete)
-✅ Configuration API with audit trail  
-✅ Branch CRUD with Excel import/export  
-✅ Pocket ID encoding/decoding  
-✅ Nearest branch finder (PostGIS spatial queries)  
-✅ Batch processing with job queue  
-✅ Geometry calculations (100% tested)  
-✅ Security (rate limiting, validation, CORS)  
-✅ Logging and error handling  
-✅ Health checks  
+### 429 Too Many Requests
+Retry after short wait. In development, localhost traffic is relaxed, but burst requests can still trigger transient limits in some flows.
 
-### Frontend (30% Complete)
-✅ Project setup (React + TypeScript + Vite)  
-✅ Material-UI theme  
-✅ Routing structure  
-✅ API service layer  
-✅ State management (Zustand)  
-🚧 Page implementations (in progress)  
-⏳ Map integration (planned)  
+### Distance values look unrealistic
+Re-run batch encode with current config and verify latest completed `jobId` is the one used by UI.
 
-### DevOps (40% Complete)
-✅ Docker containerization  
-✅ Docker Compose for development  
-✅ CI/CD pipeline (GitHub Actions)  
-✅ Automated testing  
-🚧 Kubernetes manifests (planned)  
-⏳ Monitoring setup (planned)  
-
-## 📈 Performance Targets
-
-- **Nearest Branch API**: <300ms (p95) for 100,000 branches
-- **Grid Overlay**: <500ms initial, <200ms pan/zoom
-- **Batch Processing**: 10,000 coordinates in <120 seconds
-- **Concurrent Users**: 100 simultaneous
-- **Frontend Load**: <2 seconds (first contentful paint)
-- **Uptime**: 99.5%
-
-## 🔒 Security Features
-
-- ✅ Helmet.js for secure HTTP headers
-- ✅ CORS configuration
-- ✅ Rate limiting (60 req/min per IP)
-- ✅ Input validation (Joi)
-- ✅ SQL injection prevention (parameterized queries)
-- ✅ File upload size limits (10 MB)
-- ✅ Error handling with proper status codes
-- ✅ Environment variable management
-
-## 🛣️ Roadmap
-
-### Phase 1: Backend Foundation ✅ (90% Complete)
-- [x] Database schema and migrations
-- [x] All API endpoints
-- [x] Geometry calculations
-- [x] Unit tests
-- [ ] Integration tests
-- [ ] API documentation
-
-### Phase 2: Frontend Foundation 🚧 (30% Complete)
-- [x] Project setup
-- [x] Routing and layout
-- [ ] Configuration page
-- [ ] Branch management page
-- [ ] Component tests
-
-### Phase 3: Calculator & Reverse Lookup ⏳
-- [ ] Pocket ID calculator UI
-- [ ] Reverse lookup UI
-- [ ] E2E tests
-
-### Phase 4: Map Integration ⏳
-- [ ] Leaflet map setup
-- [ ] Grid overlay rendering
-- [ ] Branch markers with clustering
-- [ ] Nearest branch finder UI
-- [ ] Customer dots
-
-### Phase 5: Batch Processing & Polish ⏳
-- [ ] Batch upload UI
-- [ ] Progress tracking
-- [ ] UI polish
-- [ ] Performance testing
-
-### Phase 6: Deployment 🚧 (40% Complete)
-- [x] Docker setup
-- [x] CI/CD pipeline
-- [ ] Kubernetes configuration
-- [ ] Monitoring setup
-- [ ] Production deployment
-
-## 🤝 Contributing
-
-1. Check [DEVELOPMENT_STATUS.md](DEVELOPMENT_STATUS.md) for current progress
-2. Review [PROJECT_PLAN.md](PROJECT_PLAN.md) for planned features
-3. Follow the setup guide in [SETUP_GUIDE.md](SETUP_GUIDE.md)
-4. Write tests for new features
-5. Ensure linting passes: `npm run lint`
-6. Submit pull request
-
-## 📞 Support
-
-**Documentation**
-- [Setup Guide](SETUP_GUIDE.md)
-- [Project Plan](PROJECT_PLAN.md)
-- [Development Status](DEVELOPMENT_STATUS.md)
-- [Implementation Summary](IMPLEMENTATION_SUMMARY.md)
-
-**Issues**
-- Create an issue on GitHub
-- Check existing documentation first
-- Provide detailed reproduction steps
-
-## 📄 License
-
-Proprietary - All rights reserved
-
-## 👥 Team
-
-Development Team - [contact information]
-
----
-
-**Built with ❤️ using modern web technologies**
-
-*Last Updated: 2026-02-28*
+## Notes for Developers
+- Canonical pocket IDs are enforced and legacy `w...` codes are migrated/cleaned.
+- Keep config origin/alphabet changes controlled; they directly affect pocket assignment.
+- For large refactors, preserve backup blocks using `// --- ORIGINAL BACKUP ---` in JS/TS files as per project convention.

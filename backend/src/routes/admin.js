@@ -15,6 +15,11 @@ const PERSISTED_OPERATIONAL_LEVELS_METERS = [5000];
 const TIER2_GENERATION_RADIUS_METERS = 100000;
 const TERRITORY_VALIDATION_RADIUS_METERS = 50000;
 const DEFAULT_GLOBAL_REALLOCATION_LEVEL_METERS = 5000;
+const TERRITORY_REPAIR_REASON = Object.freeze({
+  MISSING_TIER2_GRID: 'MISSING_TIER2_GRID',
+  MISSING_PERSISTED_5KM_LAYOUT: 'MISSING_PERSISTED_5KM_LAYOUT',
+  GHOST_DATA_DETECTED: 'GHOST_DATA_DETECTED'
+});
 
 const toBoolean = (value) => value === true || value === 't' || value === 1 || value === '1';
 
@@ -110,6 +115,35 @@ router.get(
                   )
               ), 0) = COALESCE(array_length($1::int[], 1), 0)
             ) AS is_grid_generated,
+            (
+              NOT EXISTS (
+                SELECT 1
+                FROM branch_territories bt
+                WHERE bt.branch_id = active_branches.branch_id
+                  AND bt.level_m = ANY($4::int[])
+              )
+            ) AS missing_persisted_5km_layout,
+            (
+              EXISTS (
+                SELECT 1
+                FROM branch_territories bt
+                LEFT JOIN grid_cells gc
+                  ON gc.code = bt.grid_code
+                 AND gc.level_m = bt.level_m
+                WHERE bt.branch_id = active_branches.branch_id
+                  AND bt.level_m = ANY($4::int[])
+                  AND (
+                    gc.code IS NULL
+                    OR gc.geom IS NULL
+                    OR ST_IsEmpty(gc.geom)
+                    OR NOT ST_DWithin(
+                      gc.geom::geography,
+                      active_branches.branch_geom::geography,
+                      $3::double precision
+                    )
+                  )
+              )
+            ) AS ghost_data_detected,
             (
               NOT EXISTS (
                 SELECT 1
@@ -234,13 +268,42 @@ router.get(
       throw error;
     }
 
-    const branchSummaries = (healthResult.rows || []).map((row) => ({
-      branch_id: String(row.branch_id || ''),
-      branch_name: String(row.branch_name || ''),
-      is_grid_generated: toBoolean(row.is_grid_generated),
-      needs_repair: toBoolean(row.needs_repair),
-      assigned_pockets_count: Number(row.assigned_pockets_count || 0)
-    }));
+    // --- ORIGINAL BACKUP ---
+    // const branchSummaries = (healthResult.rows || []).map((row) => ({
+    //   branch_id: String(row.branch_id || ''),
+    //   branch_name: String(row.branch_name || ''),
+    //   is_grid_generated: toBoolean(row.is_grid_generated),
+    //   needs_repair: toBoolean(row.needs_repair),
+    //   assigned_pockets_count: Number(row.assigned_pockets_count || 0)
+    // }));
+    const branchSummaries = (healthResult.rows || []).map((row) => {
+      const isGridGenerated = toBoolean(row.is_grid_generated);
+      const missingTier2Grid = !isGridGenerated;
+      const missingPersistedLayout = toBoolean(row.missing_persisted_5km_layout);
+      const ghostDataDetected = toBoolean(row.ghost_data_detected);
+      const repairReason = [];
+
+      if (missingTier2Grid) {
+        repairReason.push(TERRITORY_REPAIR_REASON.MISSING_TIER2_GRID);
+      }
+      if (missingPersistedLayout) {
+        repairReason.push(TERRITORY_REPAIR_REASON.MISSING_PERSISTED_5KM_LAYOUT);
+      }
+      if (ghostDataDetected) {
+        repairReason.push(TERRITORY_REPAIR_REASON.GHOST_DATA_DETECTED);
+      }
+
+      const needsRepair = repairReason.length > 0 || toBoolean(row.needs_repair);
+
+      return {
+        branch_id: String(row.branch_id || ''),
+        branch_name: String(row.branch_name || ''),
+        is_grid_generated: isGridGenerated,
+        needs_repair: needsRepair,
+        repair_reason: needsRepair ? repairReason : null,
+        assigned_pockets_count: Number(row.assigned_pockets_count || 0)
+      };
+    });
 
     res.json({
       generatedAt: new Date().toISOString(),

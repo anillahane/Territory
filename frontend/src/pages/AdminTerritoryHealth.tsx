@@ -22,6 +22,28 @@ import { useStore } from '../store/useStore';
 
 const REPAIR_LEVEL_METERS = 5000;
 const REPAIR_TOLERANCE = 0.1;
+const REPAIR_REASON_LABELS: Record<string, string> = {
+  MISSING_TIER2_GRID: 'Missing Tier-2 Grid',
+  MISSING_PERSISTED_5KM_LAYOUT: 'Missing Persisted 5km Layout',
+  GHOST_DATA_DETECTED: 'Ghost Data Detected'
+};
+
+const normalizeRepairReasons = (
+  repairReason: AdminTerritoryHealthSummary['repair_reason']
+): string[] => {
+  if (!repairReason) {
+    return [];
+  }
+
+  if (Array.isArray(repairReason)) {
+    return repairReason
+      .map((reason) => String(reason || '').trim())
+      .filter(Boolean);
+  }
+
+  const singleReason = String(repairReason).trim();
+  return singleReason ? [singleReason] : [];
+};
 
 export default function AdminTerritoryHealth() {
   const { setError, setSuccess } = useStore();
@@ -262,6 +284,7 @@ export default function AdminTerritoryHealth() {
       <TableContainer component={Paper} sx={{ borderRadius: 2 }}>
         <Table size="small">
           <TableHead>
+            {/* --- ORIGINAL BACKUP ---
             <TableRow>
               <TableCell sx={{ fontWeight: 700 }}>Branch ID</TableCell>
               <TableCell sx={{ fontWeight: 700 }}>Branch Name</TableCell>
@@ -270,10 +293,21 @@ export default function AdminTerritoryHealth() {
               <TableCell sx={{ fontWeight: 700 }} align="right">Assigned Pockets</TableCell>
               <TableCell sx={{ fontWeight: 700 }} align="right">Action</TableCell>
             </TableRow>
+            */}
+            <TableRow>
+              <TableCell sx={{ fontWeight: 700 }}>Branch ID</TableCell>
+              <TableCell sx={{ fontWeight: 700 }}>Branch Name</TableCell>
+              <TableCell sx={{ fontWeight: 700 }}>Tier-2 Grid</TableCell>
+              <TableCell sx={{ fontWeight: 700 }}>Repair Status</TableCell>
+              <TableCell sx={{ fontWeight: 700 }}>Repair Reason</TableCell>
+              <TableCell sx={{ fontWeight: 700 }} align="right">Assigned Pockets</TableCell>
+              <TableCell sx={{ fontWeight: 700 }} align="right">Action</TableCell>
+            </TableRow>
           </TableHead>
           <TableBody>
             {rows.map((row) => {
               const rowRepairInProgress = repairingBranchId === row.branch_id;
+              const repairReasons = normalizeRepairReasons(row.repair_reason);
               return (
                 <TableRow
                   key={row.branch_id}
@@ -296,6 +330,25 @@ export default function AdminTerritoryHealth() {
                       color={row.needs_repair ? 'warning' : 'success'}
                       label={row.needs_repair ? 'Needs Repair' : 'Healthy'}
                     />
+                  </TableCell>
+                  <TableCell>
+                    {repairReasons.length > 0 ? (
+                      <Stack direction="row" spacing={0.5} sx={{ flexWrap: 'wrap' }} useFlexGap>
+                        {repairReasons.map((reason) => (
+                          <Chip
+                            key={`${row.branch_id}-${reason}`}
+                            size="small"
+                            variant="outlined"
+                            color="warning"
+                            label={REPAIR_REASON_LABELS[reason] || reason}
+                          />
+                        ))}
+                      </Stack>
+                    ) : (
+                      <Typography variant="body2" color="text.secondary">
+                        -
+                      </Typography>
+                    )}
                   </TableCell>
                   <TableCell align="right">{row.assigned_pockets_count}</TableCell>
                   <TableCell align="right">
@@ -339,7 +392,7 @@ export default function AdminTerritoryHealth() {
             })}
             {rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} align="center">
+                <TableCell colSpan={7} align="center">
                   <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
                     No branches found.
                   </Typography>

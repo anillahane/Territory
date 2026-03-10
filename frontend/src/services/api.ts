@@ -11,11 +11,26 @@ export type BranchTerritoriesResponse = {
   [key: string]: unknown;
 };
 
+export type AdminTerritoryRepairReason =
+  | 'MISSING_TIER2_GRID'
+  | 'MISSING_PERSISTED_5KM_LAYOUT'
+  | 'GHOST_DATA_DETECTED'
+  | string;
+
+// --- ORIGINAL BACKUP ---
+// export interface AdminTerritoryHealthSummary {
+//   branch_id: string;
+//   branch_name: string;
+//   is_grid_generated: boolean;
+//   needs_repair: boolean;
+//   assigned_pockets_count: number;
+// }
 export interface AdminTerritoryHealthSummary {
   branch_id: string;
   branch_name: string;
   is_grid_generated: boolean;
   needs_repair: boolean;
+  repair_reason?: AdminTerritoryRepairReason[] | null;
   assigned_pockets_count: number;
 }
 
