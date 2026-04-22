@@ -30,7 +30,7 @@ Statuses:
 
 | # | Status | Task | Scope | Change |
 | --- | --- | --- | --- | --- |
-| 11 | ⬜ | Split Dashboard God Component | `frontend/src/pages/Dashboard.tsx` → multiple files under `frontend/src/features/dashboard/` | Extract `MapContainer`, `GridOverlayLayer`, `BranchLayer`, `CustomerLayer`, `TerritoryLayer`, `MapControls`, `useMapInstance` hook. Debounce grid regeneration on pan/zoom. |
+| 11 | ✅ | Split Dashboard God Component ([PR #11](https://github.com/anillahane/Territory/pull/11)) | `frontend/src/pages/Dashboard.tsx` → multiple files under `frontend/src/features/dashboard/` | Extract `MapContainer`, `GridOverlayLayer`, `BranchLayer`, `CustomerLayer`, `TerritoryLayer`, `MapControls`, `useMapInstance` hook. Debounce grid regeneration on pan/zoom. |
 | 12 | ⬜ | DataState Component | new `frontend/src/components/DataState.tsx`, all page files under `frontend/src/pages/` | Wrap loading/empty/error states into one component. Removes duplicated `if (loading)... if (error)... if (empty)...` across pages. |
 | 13 | ⬜ | Service Layer Extraction | split `backend/src/routes/batch.js` into routes + `backend/src/services/BatchService.js`, `VoronoiService.js` | Routes become thin (`parse req -> call service -> respond`). Services are unit-testable and don't know about Express. |
 | 14 | ⬜ | Unified Job Status | new `backend/src/services/JobStatusService.js`, `backend/src/routes/jobs.js`, `backend/src/routes/batch.js`, frontend job pages | Consolidate to one authoritative state machine driven by the Postgres table; Bull state is an internal detail. |
