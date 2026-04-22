@@ -11,6 +11,8 @@ const { query } = require('../../src/config/database');
 jest.mock('../../src/config/database');
 jest.mock('../../src/config/logger');
 
+const VALUES_PER_ROW = 12;
+
 describe('MappingService Unit Tests', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -108,7 +110,7 @@ describe('MappingService Unit Tests', () => {
 
       // Mock successful database insert for each batch
       query.mockImplementation((queryText, values) => {
-        const rowCount = values.length / 9;
+        const rowCount = values.length / VALUES_PER_ROW;
         return Promise.resolve({ rowCount });
       });
 
@@ -122,9 +124,9 @@ describe('MappingService Unit Tests', () => {
       expect(query).toHaveBeenCalledTimes(3);
       
       // Verify batch sizes
-      const firstBatchSize = query.mock.calls[0][1].length / 9;
-      const secondBatchSize = query.mock.calls[1][1].length / 9;
-      const thirdBatchSize = query.mock.calls[2][1].length / 9;
+      const firstBatchSize = query.mock.calls[0][1].length / VALUES_PER_ROW;
+      const secondBatchSize = query.mock.calls[1][1].length / VALUES_PER_ROW;
+      const thirdBatchSize = query.mock.calls[2][1].length / VALUES_PER_ROW;
       
       expect(firstBatchSize).toBe(1000);
       expect(secondBatchSize).toBe(1000);
@@ -155,7 +157,7 @@ describe('MappingService Unit Tests', () => {
         callCount++;
         if (callCount === 1) {
           // First batch succeeds
-          const rowCount = values.length / 9;
+          const rowCount = values.length / VALUES_PER_ROW;
           return Promise.resolve({ rowCount });
         } else {
           // Second batch fails

@@ -68,7 +68,20 @@ describe('POST /api/v1/customer-mappings/batch', () => {
       errors: [],
     });
 
-    expect(mappingService.saveMappings).toHaveBeenCalledWith('job-1', requestBody.mappings);
+    expect(mappingService.saveMappings).toHaveBeenCalledWith('job-1', [
+      {
+        ...requestBody.mappings[0],
+        uploadedBranchCode: null,
+        existingBranchId: null,
+        distanceCustomerToExistingBranch: null,
+      },
+      {
+        ...requestBody.mappings[1],
+        uploadedBranchCode: null,
+        existingBranchId: null,
+        distanceCustomerToExistingBranch: null,
+      },
+    ]);
   });
 
   test('should reject request with missing jobId', async () => {

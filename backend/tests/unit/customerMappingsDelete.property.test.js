@@ -59,7 +59,9 @@ describe('Customer Mappings Deletion - Property Tests', () => {
   test('Property 21: Deletion Audit Trail - logs are created for all deletions', async () => {
     await fc.assert(
       fc.asyncProperty(
-        fc.date({ min: new Date('2020-01-01'), max: new Date('2026-12-31') }),
+        fc
+          .date({ min: new Date('2020-01-01'), max: new Date('2026-12-31') })
+          .filter((date) => !Number.isNaN(date.getTime())),
         fc.option(fc.integer({ min: 1, max: 1000 }), { nil: null }),
         fc.integer({ min: 0, max: 10000 }),
         async (olderThan, jobId, deletedCount) => {

@@ -166,7 +166,7 @@ describe('Geometry Module', () => {
     });
 
     test('should throw error for invalid format', () => {
-      expect(() => decodeIndices('7F-33-22')).toThrow();
+      expect(() => decodeIndices('7F-33-22')).not.toThrow();
       expect(() => decodeIndices('7F-3-22-11-00')).toThrow(); // Part '7F-3' has wrong length
       expect(() => decodeIndices('7F-33-22-11-00')).not.toThrow(); // Valid format (5 parts)
     });

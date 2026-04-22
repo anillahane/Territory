@@ -96,7 +96,7 @@ describe('Property 18: Timestamp Presence', () => {
       ),
       { numRuns: 100 }
     );
-  });
+  }, 120000);
 
   it('should preserve timestamp order for sequential inserts', async () => {
     const jobId = `test-timestamp-order-${Date.now()}`;

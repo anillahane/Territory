@@ -11,6 +11,9 @@ const { query } = require('../../src/config/database');
 jest.mock('../../src/config/database');
 jest.mock('../../src/config/logger');
 
+const VALUES_PER_ROW = 12;
+const REQUIRED_VALUES_PER_ROW = 9;
+
 describe('MappingService Property-Based Tests', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -49,7 +52,7 @@ describe('MappingService Property-Based Tests', () => {
             // Mock successful database insert - return the batch size for each call
             query.mockImplementation((queryText, values) => {
               // Calculate how many rows are being inserted based on values length
-              const rowCount = values.length / 9;
+              const rowCount = values.length / VALUES_PER_ROW;
               totalInserted += rowCount;
               return Promise.resolve({ rowCount });
             });
@@ -81,14 +84,18 @@ describe('MappingService Property-Based Tests', () => {
               expect(queryText).toContain('distance_pocket_to_branch');
               expect(queryText).toContain('distance_customer_to_branch');
 
-              // Property: Values must be in multiples of 9 (complete records only)
-              expect(queryValues.length % 9).toBe(0);
+              // Property: Values must be in multiples of 12 (complete records only)
+              expect(queryValues.length % VALUES_PER_ROW).toBe(0);
 
-              // Property: All field values must be defined and not null
-              queryValues.forEach((value) => {
-                expect(value).toBeDefined();
-                expect(value).not.toBeNull();
-              });
+              // Property: The required values for each record must be defined and not null.
+              for (let rowIndex = 0; rowIndex < queryValues.length; rowIndex += VALUES_PER_ROW) {
+                queryValues
+                  .slice(rowIndex, rowIndex + REQUIRED_VALUES_PER_ROW)
+                  .forEach((value) => {
+                    expect(value).toBeDefined();
+                    expect(value).not.toBeNull();
+                  });
+              }
             });
 
             // Property: Total records inserted equals input count
@@ -131,7 +138,7 @@ describe('MappingService Property-Based Tests', () => {
             
             // Mock successful database insert
             query.mockImplementation((queryText, values) => {
-              const rowCount = values.length / 9;
+              const rowCount = values.length / VALUES_PER_ROW;
               return Promise.resolve({ rowCount });
             });
 
@@ -148,10 +155,10 @@ describe('MappingService Property-Based Tests', () => {
             // Property: The first value in each record must be the jobId
             query.mock.calls.forEach((call) => {
               const queryValues = call[1];
-              const recordCount = queryValues.length / 9;
+              const recordCount = queryValues.length / VALUES_PER_ROW;
               
               for (let i = 0; i < recordCount; i++) {
-                const baseIndex = i * 9;
+                const baseIndex = i * VALUES_PER_ROW;
                 // First value of each record is job_id
                 expect(queryValues[baseIndex]).toBe(jobId);
               }
@@ -161,10 +168,10 @@ describe('MappingService Property-Based Tests', () => {
             const allJobIds = [];
             query.mock.calls.forEach((call) => {
               const queryValues = call[1];
-              const recordCount = queryValues.length / 9;
+              const recordCount = queryValues.length / VALUES_PER_ROW;
               
               for (let i = 0; i < recordCount; i++) {
-                const baseIndex = i * 9;
+                const baseIndex = i * VALUES_PER_ROW;
                 allJobIds.push(queryValues[baseIndex]);
               }
             });
