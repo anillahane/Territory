@@ -15,6 +15,7 @@ module.exports = {
     },
   },
   testMatch: ['**/tests/**/*.test.js'],
+  globalSetup: '<rootDir>/tests/globalSetup.js',
   setupFiles: ['<rootDir>/tests/setupEnv.js'],
   verbose: true,
 };
