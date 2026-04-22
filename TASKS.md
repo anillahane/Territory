@@ -24,7 +24,7 @@ Statuses:
 | 7 | ✅ | Territory Visualization Caching ([PR #7](https://github.com/anillahane/Territory/pull/7)) | `backend/src/routes/batch.js` (`GET /batch/territories/visualization`), new `backend/src/services/TerritoryCache.js` | Cache rendered Voronoi GeoJSON in Redis with a key derived from `{jobId, mode, branchIds, customerView, config.version}`. TTL 1h. Invalidate on new job or config change. |
 | 8 | ✅ | Frontend Route Lazy-Loading ([PR #8](https://github.com/anillahane/Territory/pull/8)) | `frontend/src/App.tsx`, `vite.config.ts` | `React.lazy` all 6 route pages; `Suspense` fallback; split vendor chunks for MUI and MapLibre. |
 | 9 | ✅ | Server-Side Pagination ([PR #9](https://github.com/anillahane/Territory/pull/9)) | `frontend/src/pages/Branches.tsx`, `backend/src/routes/branches.js` | Remove `limit: 1000` client-side fetch; switch to `@mui/x-data-grid` server-mode pagination (`paginationMode="server"`). Backend already supports `limit/offset`. |
-| 10 | ⬜ | SSE/WebSocket Replaces Polling | `backend/src/routes/jobs.js` (add SSE endpoint), `frontend/src/pages/BatchProcessing.tsx`, `frontend/src/pages/Jobs.tsx` | Replace 2-second `setInterval` polling with Server-Sent Events stream pushing job progress updates. Fall back to polling when `EventSource` unavailable. |
+| 10 | ✅ | SSE/WebSocket Replaces Polling ([PR #10](https://github.com/anillahane/Territory/pull/10)) | `backend/src/routes/jobs.js` (add SSE endpoint), `frontend/src/pages/BatchProcessing.tsx`, `frontend/src/pages/Jobs.tsx` | Replace 2-second `setInterval` polling with Server-Sent Events stream pushing job progress updates. Fall back to polling when `EventSource` unavailable. |
 
 ## P2 — Architecture & Maintainability
 
