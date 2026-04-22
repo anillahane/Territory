@@ -271,16 +271,67 @@ def build_mapping_upsert_statement(batch):
 
     return statement, params
 
-def persist_mappings_atomically(job_id, mappings, replace_existing=False):
+def collect_scoped_branch_ids(mappings):
+    """Collect branch IDs referenced by the uploaded file."""
+    return sorted({
+        str(mapping.get('existing_branch_id') or '').strip()
+        for mapping in mappings
+        if str(mapping.get('existing_branch_id') or '').strip()
+    })
+
+def build_scoped_delete_statement(branch_ids):
+    """Build a parameterized scoped delete for referenced branches."""
+    params = {}
+    placeholders = []
+
+    for index, branch_id in enumerate(branch_ids):
+        parameter_name = f"branch_id_{index}"
+        params[parameter_name] = branch_id
+        placeholders.append(f":{parameter_name}")
+
+    statement = text(f"""
+        DELETE FROM customer_pocket_mappings
+        WHERE COALESCE(existing_branch_id, nearest_branch_id) IN ({', '.join(placeholders)})
+    """)
+
+    return statement, params
+
+def resolve_replace_existing_scope(replace_existing, confirm_wipe_all, mappings):
+    """Resolve whether a replacement upload is scoped or global."""
+    if not replace_existing:
+        return 'none', []
+
+    if confirm_wipe_all:
+        return 'global', []
+
+    branch_ids = collect_scoped_branch_ids(mappings)
+    if not branch_ids:
+        raise ValueError(
+            'replaceExisting requires at least one valid branch_code mapped to an existing branch, '
+            'or confirmWipeAll=true for a global wipe'
+        )
+
+    return 'scoped', branch_ids
+
+def persist_mappings_atomically(job_id, mappings, replace_existing=False, confirm_wipe_all=False):
     """Persist mappings in one transaction with per-batch savepoints."""
     total_batches = math.ceil(len(mappings) / PERSIST_BATCH_SIZE) if mappings else 0
     persisted_count = 0
     replaced_mappings_count = 0
     errors = []
+    delete_mode, scoped_branch_ids = resolve_replace_existing_scope(
+        replace_existing,
+        confirm_wipe_all,
+        mappings,
+    )
 
     with db_engine.begin() as conn:
-        if replace_existing:
+        if delete_mode == 'global':
             delete_result = conn.execute(text("DELETE FROM customer_pocket_mappings"))
+            replaced_mappings_count = delete_result.rowcount if delete_result.rowcount is not None else 0
+        elif delete_mode == 'scoped':
+            delete_statement, delete_params = build_scoped_delete_statement(scoped_branch_ids)
+            delete_result = conn.execute(delete_statement, delete_params)
             replaced_mappings_count = delete_result.rowcount if delete_result.rowcount is not None else 0
 
         for offset in range(0, len(mappings), PERSIST_BATCH_SIZE):
@@ -308,7 +359,7 @@ def persist_mappings_atomically(job_id, mappings, replace_existing=False):
                 errors.append(error_message)
                 print(f"  Warning: {error_message}")
 
-    return persisted_count, replaced_mappings_count, errors
+    return persisted_count, replaced_mappings_count, errors, delete_mode
 
 def process_job(job_data):
     """Process a batch job"""
@@ -316,6 +367,7 @@ def process_job(job_data):
     file_path = job_data['filePath']
     config = job_data['config']
     replace_existing = parse_bool_flag(job_data.get('replaceExisting', False), False)
+    confirm_wipe_all = parse_bool_flag(job_data.get('confirmWipeAll', False), False)
     
     # Normalize file path to avoid cwd-dependent failures from manually requeued jobs.
     if not os.path.isabs(file_path):
@@ -510,9 +562,20 @@ def process_job(job_data):
         replaced_mappings_count = 0
         mapping_persistence_errors = []
         mappings_persisted = 0
+        wipe_scope = 'none'
         if all_mappings:
-            mappings_persisted, replaced_mappings_count, mapping_persistence_errors = (
-                persist_mappings_atomically(job_id, all_mappings, replace_existing=replace_existing)
+            (
+                mappings_persisted,
+                replaced_mappings_count,
+                mapping_persistence_errors,
+                wipe_scope,
+            ) = (
+                persist_mappings_atomically(
+                    job_id,
+                    all_mappings,
+                    replace_existing=replace_existing,
+                    confirm_wipe_all=confirm_wipe_all,
+                )
             )
             if mapping_persistence_errors:
                 print(f"  Warning: mapping persistence completed with {len(mapping_persistence_errors)} failed batch(es)")
@@ -525,8 +588,10 @@ def process_job(job_data):
             "totalAccounts": processed_count,
             "mappingsPersisted": mappings_persisted,
             "replaceExisting": bool(replace_existing),
+            "confirmWipeAll": bool(confirm_wipe_all),
             "replacedMappingsCount": int(replaced_mappings_count),
             "mappingPersistenceErrors": mapping_persistence_errors,
+            "wipeScope": wipe_scope,
             "territoryUrl": f"/api/v1/batch/territories/{job_id}",
             "worker": "python"
         }
@@ -562,6 +627,7 @@ def process_job(job_data):
             'mappingsPersisted': mappings_persisted,
             'replacedMappingsCount': int(replaced_mappings_count),
             'mappingPersistenceErrors': mapping_persistence_errors,
+            'wipeScope': wipe_scope,
             'buffer': None  # File saved to disk
         }
     
