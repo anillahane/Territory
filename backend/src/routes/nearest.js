@@ -1,10 +1,21 @@
 const express = require('express');
 const Joi = require('joi');
+const nearestService = require('../services/NearestService');
 const { query } = require('../config/database');
-const { haversineDistance } = require('../utils/geometry');
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
 
 const router = express.Router();
+
+const serializeNearestBranches = (branches) =>
+  branches.map((branch) => ({
+    id: branch.id,
+    city: branch.city,
+    lat: branch.lat,
+    lon: branch.lon,
+    pocketId: branch.pocketId,
+    distance: Math.round(branch.distance),
+    distanceKm: (branch.distance / 1000).toFixed(2),
+  }));
 
 // Validation schema
 const nearestSchema = Joi.object({
@@ -33,49 +44,12 @@ router.post(
     }
 
     const { lat, lon, limit, maxDistance } = value;
-
-    // Use PostGIS for spatial query
-    let queryText = `
-      SELECT 
-        id,
-        city,
-        lat,
-        lon,
-        pocket_id,
-        ST_Distance(
-          geom,
-          ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography
-        ) as distance
-      FROM branches
-    `;
-
-    const params = [lon, lat];
-
-    // Add distance filter if specified
-    if (maxDistance) {
-      queryText += ` WHERE ST_DWithin(
-        geom,
-        ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
-        $3
-      )`;
-      params.push(maxDistance);
-    }
-
-    queryText += ` ORDER BY distance LIMIT $${params.length + 1}`;
-    params.push(limit);
-
-    const result = await query(queryText, params);
-
-    // Format results
-    const branches = result.rows.map((row) => ({
-      id: row.id,
-      city: row.city,
-      lat: row.lat,
-      lon: row.lon,
-      pocketId: row.pocket_id,
-      distance: Math.round(row.distance), // meters
-      distanceKm: (row.distance / 1000).toFixed(2),
-    }));
+    const branches = await nearestService.findNearestBranches({
+      lat,
+      lon,
+      limit,
+      maxDistance: maxDistance || null,
+    });
 
     res.json({
       query: {
@@ -85,7 +59,7 @@ router.post(
         maxDistance,
       },
       count: branches.length,
-      branches,
+      branches: serializeNearestBranches(branches),
     });
   })
 );
@@ -109,34 +83,12 @@ router.post(
     }
 
     const { lat, lon, limit, maxDistance } = value;
-
-    // Get all branches (or use a reasonable limit)
-    const result = await query(
-      'SELECT id, city, lat, lon, pocket_id FROM branches LIMIT 10000'
-    );
-
-    // Calculate distances using Haversine
-    const branchesWithDistance = result.rows.map((branch) => {
-      const distance = haversineDistance(lat, lon, branch.lat, branch.lon);
-      return {
-        id: branch.id,
-        city: branch.city,
-        lat: branch.lat,
-        lon: branch.lon,
-        pocketId: branch.pocket_id,
-        distance: Math.round(distance),
-        distanceKm: (distance / 1000).toFixed(2),
-      };
+    const branches = await nearestService.findNearestBranches({
+      lat,
+      lon,
+      limit,
+      maxDistance: maxDistance || null,
     });
-
-    // Filter by max distance if specified
-    let filtered = branchesWithDistance;
-    if (maxDistance) {
-      filtered = branchesWithDistance.filter((b) => b.distance <= maxDistance);
-    }
-
-    // Sort by distance and limit
-    const nearest = filtered.sort((a, b) => a.distance - b.distance).slice(0, limit);
 
     res.json({
       query: {
@@ -145,9 +97,9 @@ router.post(
         limit,
         maxDistance,
       },
-      count: nearest.length,
-      branches: nearest,
-      warning: 'Using fallback calculation (Haversine). Results may be less accurate.',
+      count: branches.length,
+      branches: serializeNearestBranches(branches),
+      warning: 'Fallback endpoint is deprecated; returning indexed PostGIS nearest-branch results.',
     });
   })
 );
