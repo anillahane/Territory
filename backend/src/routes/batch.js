@@ -1,5 +1,4 @@
 const express = require('express');
-const multer = require('multer');
 const xlsx = require('xlsx');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
@@ -12,6 +11,7 @@ const logger = require('../config/logger');
 const { batchProcessQueue } = require('../config/queue');
 const mappingService = require('../services/MappingService');
 const branchFinderService = require('../services/BranchFinderService');
+const { createExcelUpload, validateUploadedWorkbook } = require('../utils/fileValidation');
 
 const router = express.Router();
 
@@ -36,16 +36,7 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// Configure multer with hybrid storage strategy
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => cb(null, `${uuidv4()}-${file.originalname}`)
-  }),
-  limits: {
-    fileSize: parseInt(process.env.MAX_FILE_SIZE_MB || '50', 10) * 1024 * 1024, // Increased to 50MB
-  },
-});
+const upload = createExcelUpload();
 
 // Threshold for switching to Python worker (rows)
 const PYTHON_WORKER_THRESHOLD = parseInt(process.env.PYTHON_WORKER_THRESHOLD || '5000', 10);
@@ -935,21 +926,20 @@ router.post(
   requireRole('admin'),
   upload.single('file'),
   asyncHandler(async (req, res) => {
-    console.log("1. Route hit, file uploaded to disk:", req.file?.path);
-    
     if (!req.file) {
       throw new AppError('No file uploaded', 400, 'NO_FILE');
     }
 
-    const fileName = req.file.originalname;
-    const filePath = req.file.path;
+    const { sanitizedFileName, rowCount } = await validateUploadedWorkbook(req.file);
+    const fileName = sanitizedFileName;
+    const filePath = path.join(uploadDir, `${uuidv4()}-${sanitizedFileName}`);
+    await fs.promises.writeFile(filePath, req.file.buffer);
     const fileSizeMB = req.file.size / (1024 * 1024);
     const replaceExisting = parseBooleanFlag(req.body?.replaceExisting, false);
-    
-    // We cannot use xlsx.read() here because large files will crash the Node.js event loop.
-    // Instead, we use file size as a fast, safe proxy for the Python worker threshold.
-    // 0.5 MB is approximately 5000 rows of standard location data.
-    const usePythonWorker = fileSizeMB > 0.5; 
+
+    // Validation already parsed the workbook to enforce the row cap.
+    // Keep the existing worker-routing threshold based on file size.
+    const usePythonWorker = fileSizeMB > 0.5;
 
     // Get current configuration
     const configResult = await query('SELECT * FROM config WHERE id = 1');
@@ -961,18 +951,17 @@ router.post(
 
     const jobId = uuidv4();
 
-    console.log("2. About to run DB insert...");
     // Create job in database (Setting total to 0, the worker will update it with exact count)
     await query(
       `INSERT INTO jobs (job_id, type, status, total, data)
        VALUES ($1, 'batch_encode', 'pending', 0, $2)`,
       [jobId, JSON.stringify({ 
         fileName,
+        rowCount,
         replaceExisting,
         worker: usePythonWorker ? 'python' : 'nodejs'
       })]
     );
-    console.log("3. DB insert finished. About to push to Redis...");
 
     if (usePythonWorker) {
       logger.info('Routing to Python worker (large file)', { jobId, fileSizeMB, fileName });
@@ -993,7 +982,6 @@ router.post(
           10000,
           'Timed out while queueing Python job'
         );
-        console.log("4. Raw Redis push finished using Bull's client.");
         logger.info('Python job queued successfully', { jobId });
       } catch (err) {
         logger.error('Failed to queue Python job', { error: err.message, stack: err.stack, jobId });
@@ -1021,6 +1009,7 @@ router.post(
         message: 'Large file uploaded successfully. Processing with optimized Python worker.',
         jobId,
         fileName,
+        rowCount,
         replaceExisting,
         worker: 'python',
         statusUrl: `/api/v1/batch/status/${jobId}`,
@@ -1069,6 +1058,7 @@ router.post(
         message: 'File uploaded successfully. Processing in background.',
         jobId,
         fileName,
+        rowCount,
         replaceExisting,
         worker: 'nodejs',
         statusUrl: `/api/v1/batch/status/${jobId}`,
