@@ -35,6 +35,7 @@ async function setupTestDatabase() {
       '003_create_customer_pocket_mappings.sql',
       '004_add_branch_impact_fields.sql',
       '005_create_users_table.sql',
+      '006_enforce_unique_customer_mapping.sql',
     ];
 
     for (const migrationFile of migrations) {

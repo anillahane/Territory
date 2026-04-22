@@ -5,7 +5,7 @@
 
 const fc = require('fast-check');
 const MappingService = require('../../src/services/MappingService');
-const { query } = require('../../src/config/database');
+const { query, transaction } = require('../../src/config/database');
 
 // Mock the database module
 jest.mock('../../src/config/database');
@@ -13,11 +13,22 @@ jest.mock('../../src/config/logger');
 
 const VALUES_PER_ROW = 12;
 const REQUIRED_VALUES_PER_ROW = 9;
+let transactionalQuery;
+
+const isTransactionControlQuery = (queryText) =>
+  /^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT)\b/.test(String(queryText).trim());
+
+const getUpsertCalls = () =>
+  transactionalQuery.mock.calls.filter(([queryText]) =>
+    String(queryText).includes('INSERT INTO customer_pocket_mappings')
+  );
 
 describe('MappingService Property-Based Tests', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.resetAllMocks();
+    transactionalQuery = jest.fn();
+    transaction.mockImplementation(async (callback) => callback({ query: transactionalQuery }));
   });
 
   /**
@@ -50,7 +61,11 @@ describe('MappingService Property-Based Tests', () => {
             let totalInserted = 0;
             
             // Mock successful database insert - return the batch size for each call
-            query.mockImplementation((queryText, values) => {
+            transactionalQuery.mockImplementation((queryText, values) => {
+              if (isTransactionControlQuery(queryText)) {
+                return Promise.resolve({ rowCount: 0 });
+              }
+
               // Calculate how many rows are being inserted based on values length
               const rowCount = values.length / VALUES_PER_ROW;
               totalInserted += rowCount;
@@ -66,10 +81,11 @@ describe('MappingService Property-Based Tests', () => {
             expect(result.errors).toHaveLength(0);
 
             // Property: Query should be called at least once
-            expect(query).toHaveBeenCalled();
+            const upsertCalls = getUpsertCalls();
+            expect(upsertCalls.length).toBeGreaterThan(0);
 
             // Property: All query calls must include all required field names
-            query.mock.calls.forEach((call) => {
+            upsertCalls.forEach((call) => {
               const queryText = call[0];
               const queryValues = call[1];
 
@@ -137,7 +153,11 @@ describe('MappingService Property-Based Tests', () => {
             jest.clearAllMocks();
             
             // Mock successful database insert
-            query.mockImplementation((queryText, values) => {
+            transactionalQuery.mockImplementation((queryText, values) => {
+              if (isTransactionControlQuery(queryText)) {
+                return Promise.resolve({ rowCount: 0 });
+              }
+
               const rowCount = values.length / VALUES_PER_ROW;
               return Promise.resolve({ rowCount });
             });
@@ -146,14 +166,15 @@ describe('MappingService Property-Based Tests', () => {
             await MappingService.saveMappings(jobId, mappings);
 
             // Property: Every database insert must include the job_id field
-            expect(query).toHaveBeenCalled();
-            query.mock.calls.forEach((call) => {
+            const upsertCalls = getUpsertCalls();
+            expect(upsertCalls.length).toBeGreaterThan(0);
+            upsertCalls.forEach((call) => {
               const queryText = call[0];
               expect(queryText).toContain('job_id');
             });
 
             // Property: The first value in each record must be the jobId
-            query.mock.calls.forEach((call) => {
+            upsertCalls.forEach((call) => {
               const queryValues = call[1];
               const recordCount = queryValues.length / VALUES_PER_ROW;
               
@@ -166,7 +187,7 @@ describe('MappingService Property-Based Tests', () => {
 
             // Property: All records for this batch have the same job ID
             const allJobIds = [];
-            query.mock.calls.forEach((call) => {
+            upsertCalls.forEach((call) => {
               const queryValues = call[1];
               const recordCount = queryValues.length / VALUES_PER_ROW;
               

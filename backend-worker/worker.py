@@ -22,6 +22,24 @@ UPLOAD_DIR = os.getenv('UPLOAD_DIR', '../backend/uploads')
 # Grid configuration
 METERS_PER_DEGREE_LAT = 111000
 GRID_LEVELS = [500000, 100000, 20000, 5000, 1000]
+PERSIST_BATCH_SIZE = 1000
+MAPPING_COLUMNS = (
+    'job_id',
+    'customer_id',
+    'customer_lat',
+    'customer_lon',
+    'pocket_id',
+    'distance_customer_to_pocket',
+    'nearest_branch_id',
+    'distance_pocket_to_branch',
+    'distance_customer_to_branch',
+    'uploaded_branch_code',
+    'existing_branch_id',
+    'distance_customer_to_existing_branch',
+)
+UPSERT_UPDATE_COLUMNS = tuple(
+    column for column in MAPPING_COLUMNS if column != 'customer_id'
+)
 
 # Initialize connections
 print(f"🔌 Connecting to Redis: {REDIS_URL}")
@@ -216,6 +234,81 @@ def find_nearest_branch_for_pocket(pocket_lat, pocket_lon, branches):
             }
     
     return nearest_branch
+
+def dedupe_mappings_batch(batch):
+    """Collapse duplicate customer IDs within a single upsert batch."""
+    deduped = {}
+    for mapping in batch:
+        deduped[str(mapping['customer_id'])] = mapping
+    return list(deduped.values())
+
+def build_mapping_upsert_statement(batch):
+    """Build a parameterized batch upsert statement for customer mappings."""
+    params = {}
+    values_sql = []
+
+    for index, mapping in enumerate(batch):
+        row_placeholders = []
+        for column in MAPPING_COLUMNS:
+            parameter_name = f"{column}_{index}"
+            row_placeholders.append(f":{parameter_name}")
+            params[parameter_name] = mapping.get(column)
+        values_sql.append(f"({', '.join(row_placeholders)})")
+
+    update_assignments = ',\n            '.join(
+        [f"{column} = EXCLUDED.{column}" for column in UPSERT_UPDATE_COLUMNS] +
+        ['created_at = CURRENT_TIMESTAMP']
+    )
+
+    statement = text(f"""
+        INSERT INTO customer_pocket_mappings (
+            {', '.join(MAPPING_COLUMNS)}
+        )
+        VALUES {', '.join(values_sql)}
+        ON CONFLICT (customer_id) DO UPDATE SET
+            {update_assignments}
+    """)
+
+    return statement, params
+
+def persist_mappings_atomically(job_id, mappings, replace_existing=False):
+    """Persist mappings in one transaction with per-batch savepoints."""
+    total_batches = math.ceil(len(mappings) / PERSIST_BATCH_SIZE) if mappings else 0
+    persisted_count = 0
+    replaced_mappings_count = 0
+    errors = []
+
+    with db_engine.begin() as conn:
+        if replace_existing:
+            delete_result = conn.execute(text("DELETE FROM customer_pocket_mappings"))
+            replaced_mappings_count = delete_result.rowcount if delete_result.rowcount is not None else 0
+
+        for offset in range(0, len(mappings), PERSIST_BATCH_SIZE):
+            batch_number = (offset // PERSIST_BATCH_SIZE) + 1
+            raw_batch = mappings[offset:offset + PERSIST_BATCH_SIZE]
+            batch = dedupe_mappings_batch(raw_batch)
+            savepoint = conn.begin_nested()
+
+            try:
+                statement, params = build_mapping_upsert_statement(batch)
+                result = conn.execute(statement, params)
+                savepoint.commit()
+                affected_rows = (
+                    result.rowcount if result.rowcount is not None and result.rowcount >= 0
+                    else len(batch)
+                )
+                persisted_count += affected_rows
+                print(
+                    f"  Saved batch {batch_number}/{total_batches}: "
+                    f"{affected_rows} mapping(s) ({len(batch)} unique customer IDs)"
+                )
+            except Exception as error:
+                savepoint.rollback()
+                error_message = f"Batch {batch_number}/{total_batches} failed: {error}"
+                errors.append(error_message)
+                print(f"  Warning: {error_message}")
+
+    return persisted_count, replaced_mappings_count, errors
 
 def process_job(job_data):
     """Process a batch job"""
@@ -413,26 +506,16 @@ def process_job(job_data):
         
         print(f"💾 Saving {len(all_mappings)} mappings to database...")
         
-        # Bulk insert mappings in small batches to avoid PostgreSQL parameter limit
+        # Persist mappings in one transaction while isolating bad chunks behind savepoints.
         replaced_mappings_count = 0
+        mapping_persistence_errors = []
+        mappings_persisted = 0
         if all_mappings:
-            if replace_existing:
-                with db_engine.connect() as conn:
-                    delete_result = conn.execute(text("DELETE FROM customer_pocket_mappings"))
-                    conn.commit()
-                    replaced_mappings_count = delete_result.rowcount if delete_result.rowcount is not None else 0
-            batch_size = 100
-            for i in range(0, len(all_mappings), batch_size):
-                batch = all_mappings[i:i + batch_size]
-                mappings_df = pd.DataFrame(batch)
-                mappings_df.to_sql(
-                    'customer_pocket_mappings',
-                    db_engine,
-                    if_exists='append',
-                    index=False
-                )
-                if (i + batch_size) % 1000 == 0:
-                    print(f"  Saved {min(i + batch_size, len(all_mappings))}/{len(all_mappings)} mappings...")
+            mappings_persisted, replaced_mappings_count, mapping_persistence_errors = (
+                persist_mappings_atomically(job_id, all_mappings, replace_existing=replace_existing)
+            )
+            if mapping_persistence_errors:
+                print(f"  Warning: mapping persistence completed with {len(mapping_persistence_errors)} failed batch(es)")
         
         # Finalize job
         stats = {
@@ -440,9 +523,10 @@ def process_job(job_data):
             "pocketStats": pocket_stats,
             "totalPockets": len(pocket_stats),
             "totalAccounts": processed_count,
-            "mappingsPersisted": len(all_mappings),
+            "mappingsPersisted": mappings_persisted,
             "replaceExisting": bool(replace_existing),
             "replacedMappingsCount": int(replaced_mappings_count),
+            "mappingPersistenceErrors": mapping_persistence_errors,
             "territoryUrl": f"/api/v1/batch/territories/{job_id}",
             "worker": "python"
         }
@@ -469,14 +553,15 @@ def process_job(job_data):
         print(f"✅ Job {job_id} completed successfully")
         print(f"   Processed: {processed_count} rows")
         print(f"   Unique pockets: {len(pocket_stats)}")
-        print(f"   Mappings saved: {len(all_mappings)}")
+        print(f"   Mappings saved: {mappings_persisted}")
         
         return {
             'jobId': job_id,
             'total': processed_count,
             'pocketStats': pocket_stats,
-            'mappingsPersisted': len(all_mappings),
+            'mappingsPersisted': mappings_persisted,
             'replacedMappingsCount': int(replaced_mappings_count),
+            'mappingPersistenceErrors': mapping_persistence_errors,
             'buffer': None  # File saved to disk
         }
     
