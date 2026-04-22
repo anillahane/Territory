@@ -32,6 +32,7 @@ import {
 import { DataGrid, GridColDef, GridPaginationModel } from '@mui/x-data-grid';
 import { useStore } from '../store/useStore';
 import api from '../services/api';
+import DataState from '../components/DataState';
 
 interface Branch {
   id: string;
@@ -61,6 +62,7 @@ export default function Branches() {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [totalBranches, setTotalBranches] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [openDialog, setOpenDialog] = useState(false);
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
   const [formData, setFormData] = useState({
@@ -85,6 +87,7 @@ export default function Branches() {
 
     const fetchBranches = async () => {
       setLoading(true);
+      setLoadError(null);
       try {
         const data = await api.getBranches({
           limit: paginationModel.pageSize,
@@ -112,13 +115,16 @@ export default function Branches() {
 
         setBranches(normalizedBranches);
         setTotalBranches(total);
+        setLoadError(null);
       } catch (error: any) {
         if (!isActive) {
           return;
         }
 
         console.error('Failed to load branches:', error);
-        setError(error.message || 'Failed to load branches');
+        const errorMessage = error.message || 'Failed to load branches';
+        setLoadError(errorMessage);
+        setError(errorMessage);
         setBranches([]);
         setTotalBranches(0);
       } finally {
@@ -134,6 +140,14 @@ export default function Branches() {
       isActive = false;
     };
   }, [paginationModel.page, paginationModel.pageSize, reloadToken, setError]);
+
+  const handleReloadBranches = () => {
+    setReloadToken((currentToken) => currentToken + 1);
+  };
+
+  const showBranchLoadingState = loading && branches.length === 0;
+  const showBranchErrorState = !loading && Boolean(loadError) && branches.length === 0;
+  const showBranchEmptyState = !loading && !loadError && totalBranches === 0;
 
   const handleAdd = () => {
     setEditingBranch(null);
@@ -450,7 +464,7 @@ export default function Branches() {
         <Box display="flex" gap={1}>
           <Tooltip title="Refresh">
             <IconButton
-              onClick={() => setReloadToken((currentToken) => currentToken + 1)}
+              onClick={handleReloadBranches}
               disabled={loading}
             >
               <RefreshIcon />
@@ -484,7 +498,7 @@ export default function Branches() {
         </Box>
       </Box>
 
-      {totalBranches === 0 && !loading && (
+      {showBranchEmptyState && (
         <Alert severity="info" sx={{ mb: 2 }}>
           <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
             Getting Started with Branches
@@ -498,44 +512,54 @@ export default function Branches() {
       )}
 
       <Paper sx={{ height: 'calc(100vh - 250px)', width: '100%' }}>
-        {!loading && totalBranches === 0 ? (
-          <Box
-            sx={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              height: '100%',
-              p: 4,
-            }}
-          >
-            <Business sx={{ fontSize: 80, color: 'text.secondary', mb: 2 }} />
-            <Typography variant="h6" color="text.secondary" gutterBottom>
-              No Branches Found
-            </Typography>
-            <Typography variant="body2" color="text.secondary" align="center" sx={{ mb: 3, maxWidth: 500 }}>
-              Get started by adding your first branch manually or upload multiple branches from an Excel file.
-            </Typography>
-            <Box sx={{ display: 'flex', gap: 2 }}>
-              <Button
-                variant="outlined"
-                startIcon={<DownloadIcon />}
-                onClick={handleDownloadTemplate}
-              >
-                Download Template
+        {showBranchLoadingState ? (
+          <DataState
+            variant="loading"
+            title="Loading branches"
+            description="Fetching branch locations and their Pocket IDs."
+            minHeight="100%"
+          />
+        ) : showBranchErrorState ? (
+          <DataState
+            variant="error"
+            title="Unable to load branches"
+            description={loadError}
+            minHeight="100%"
+            action={
+              <Button variant="outlined" startIcon={<RefreshIcon />} onClick={handleReloadBranches}>
+                Try Again
               </Button>
-              <Button
-                variant="outlined"
-                startIcon={<UploadIcon />}
-                onClick={() => setUploadDialogOpen(true)}
-              >
-                Upload Excel
-              </Button>
-              <Button variant="contained" startIcon={<AddIcon />} onClick={handleAdd}>
-                Add First Branch
-              </Button>
-            </Box>
-          </Box>
+            }
+          />
+        ) : showBranchEmptyState ? (
+          <DataState
+            variant="empty"
+            title="No Branches Found"
+            description="Get started by adding your first branch manually or upload multiple branches from an Excel file."
+            icon={<Business sx={{ fontSize: 40 }} />}
+            minHeight="100%"
+            action={
+              <>
+                <Button
+                  variant="outlined"
+                  startIcon={<DownloadIcon />}
+                  onClick={handleDownloadTemplate}
+                >
+                  Download Template
+                </Button>
+                <Button
+                  variant="outlined"
+                  startIcon={<UploadIcon />}
+                  onClick={() => setUploadDialogOpen(true)}
+                >
+                  Upload Excel
+                </Button>
+                <Button variant="contained" startIcon={<AddIcon />} onClick={handleAdd}>
+                  Add First Branch
+                </Button>
+              </>
+            }
+          />
         ) : (
           <DataGrid
             rows={branches}
