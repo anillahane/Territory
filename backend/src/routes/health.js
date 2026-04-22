@@ -1,5 +1,5 @@
 const express = require('express');
-const { pool } = require('../config/database');
+const { getDatabaseHealth, query } = require('../config/database');
 const logger = require('../config/logger');
 
 const router = express.Router();
@@ -17,27 +17,47 @@ router.get('/', async (req, res) => {
   };
 
   try {
-    // Check database connection
-    const dbResult = await pool.query('SELECT NOW()');
+    const dbResult = await query('SELECT NOW() AS now');
+    const postgisResult = await query('SELECT PostGIS_Version() AS version');
+    const databaseHealth = getDatabaseHealth();
+
     health.database = {
-      status: 'connected',
+      status: databaseHealth.status,
       timestamp: dbResult.rows[0].now,
+      recoveryInProgress: databaseHealth.recoveryInProgress,
+      recoveryAttempts: databaseHealth.recoveryAttempts,
+      lastHealthyAt: databaseHealth.lastHealthyAt,
+      lastRecoveryAt: databaseHealth.lastRecoveryAt,
+      lastError: databaseHealth.lastError,
+      lastErrorCode: databaseHealth.lastErrorCode,
+      lastErrorAt: databaseHealth.lastErrorAt,
     };
 
-    // Check PostGIS extension
-    const postgisResult = await pool.query('SELECT PostGIS_Version()');
     health.postgis = {
       status: 'available',
-      version: postgisResult.rows[0].postgis_version,
+      version: postgisResult.rows[0].version,
     };
 
     res.status(200).json(health);
   } catch (error) {
-    logger.error('Health check failed:', error);
+    const databaseHealth = getDatabaseHealth();
+
+    logger.error('Health check failed', {
+      error: error.message,
+      databaseStatus: databaseHealth.status,
+      recoveryInProgress: databaseHealth.recoveryInProgress,
+    });
     health.status = 'error';
     health.database = {
-      status: 'disconnected',
+      status: databaseHealth.status === 'connected' ? 'disconnected' : databaseHealth.status,
       error: error.message,
+      recoveryInProgress: databaseHealth.recoveryInProgress,
+      recoveryAttempts: databaseHealth.recoveryAttempts,
+      lastHealthyAt: databaseHealth.lastHealthyAt,
+      lastRecoveryAt: databaseHealth.lastRecoveryAt,
+      lastError: databaseHealth.lastError,
+      lastErrorCode: databaseHealth.lastErrorCode,
+      lastErrorAt: databaseHealth.lastErrorAt,
     };
     res.status(503).json(health);
   }

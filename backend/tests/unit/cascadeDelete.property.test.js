@@ -13,6 +13,9 @@ const {
   teardownTestDatabase,
 } = require('../integration/setup');
 
+const getExpectedPersistedCount = (mappings) =>
+  new Set(mappings.map(({ customerId }) => String(customerId))).size;
+
 const ensureTestBranches = async () => {
   await query(`
     INSERT INTO branches (id, city, lat, lon, pocket_id)
@@ -63,6 +66,7 @@ describe('Property 20: Cascade Deletion Integrity', () => {
         ),
         async (mappings) => {
           const jobId = `test-cascade-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          const expectedPersistedCount = getExpectedPersistedCount(mappings);
 
           // Create test job
           await query(
@@ -79,7 +83,7 @@ describe('Property 20: Cascade Deletion Integrity', () => {
             [jobId]
           );
           const countBefore = parseInt(beforeDelete.rows[0].count, 10);
-          expect(countBefore).toBe(mappings.length);
+          expect(countBefore).toBe(expectedPersistedCount);
 
           // Delete the job (should CASCADE delete mappings)
           await query('DELETE FROM jobs WHERE job_id = $1', [jobId]);
