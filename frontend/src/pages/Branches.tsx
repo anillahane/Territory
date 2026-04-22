@@ -20,6 +20,7 @@ import {
   Radio,
   RadioGroup,
 } from '@mui/material';
+import { useQuery } from '@tanstack/react-query';
 import {
   Add as AddIcon,
   Edit as EditIcon,
@@ -31,7 +32,7 @@ import {
 } from '@mui/icons-material';
 import { DataGrid, GridColDef, GridPaginationModel } from '@mui/x-data-grid';
 import { useStore } from '../store/useStore';
-import api from '../services/api';
+import api, { queryKeys } from '../services/api';
 import DataState from '../components/DataState';
 
 interface Branch {
@@ -59,10 +60,6 @@ const normalizeBranches = (branchesData: unknown): Branch[] =>
 
 export default function Branches() {
   const { setError, setSuccess } = useStore();
-  const [branches, setBranches] = useState<Branch[]>([]);
-  const [totalBranches, setTotalBranches] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [openDialog, setOpenDialog] = useState(false);
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
   const [formData, setFormData] = useState({
@@ -76,78 +73,53 @@ export default function Branches() {
   const [uploadMode, setUploadMode] = useState<'overwrite' | 'add'>('overwrite');
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [reloadToken, setReloadToken] = useState(0);
   const [paginationModel, setPaginationModel] = useState<GridPaginationModel>({
     page: 0,
     pageSize: 25,
   });
 
+  const branchesQuery = useQuery({
+    queryKey: queryKeys.branches({
+      limit: paginationModel.pageSize,
+      offset: paginationModel.page * paginationModel.pageSize,
+    }),
+    queryFn: async () => {
+      const data = await api.getBranches({
+        limit: paginationModel.pageSize,
+        offset: paginationModel.page * paginationModel.pageSize,
+      });
+      const branchesData = data.branches || data.data || data;
+      const normalizedBranches = normalizeBranches(branchesData);
+      return {
+        branches: normalizedBranches,
+        total: Number(data.pagination?.total ?? normalizedBranches.length),
+      };
+    },
+    placeholderData: (previousData) => previousData,
+  });
+
+  const branches = branchesQuery.data?.branches ?? [];
+  const totalBranches = branchesQuery.data?.total ?? 0;
+  const loadError = branchesQuery.error instanceof Error ? branchesQuery.error.message : null;
+  const showBranchLoadingState = branchesQuery.isLoading && branches.length === 0;
+  const showBranchErrorState = branchesQuery.isError && branches.length === 0;
+  const showBranchEmptyState = !branchesQuery.isLoading && !branchesQuery.isError && totalBranches === 0;
+
   useEffect(() => {
-    let isActive = true;
-
-    const fetchBranches = async () => {
-      setLoading(true);
-      setLoadError(null);
-      try {
-        const data = await api.getBranches({
-          limit: paginationModel.pageSize,
-          offset: paginationModel.page * paginationModel.pageSize,
-        });
-        console.log('Branches API response:', data);
-        const branchesData = data.branches || data.data || data;
-        const normalizedBranches = normalizeBranches(branchesData);
-        const total = Number(data.pagination?.total ?? normalizedBranches.length);
-
-        if (!isActive) {
-          return;
-        }
-
-        if (normalizedBranches.length === 0 && total > 0 && paginationModel.page > 0) {
-          const lastPage = Math.max(0, Math.ceil(total / paginationModel.pageSize) - 1);
-          if (lastPage !== paginationModel.page) {
-            setPaginationModel((currentModel) => ({
-              ...currentModel,
-              page: lastPage,
-            }));
-            return;
-          }
-        }
-
-        setBranches(normalizedBranches);
-        setTotalBranches(total);
-        setLoadError(null);
-      } catch (error: any) {
-        if (!isActive) {
-          return;
-        }
-
-        console.error('Failed to load branches:', error);
-        const errorMessage = error.message || 'Failed to load branches';
-        setLoadError(errorMessage);
-        setError(errorMessage);
-        setBranches([]);
-        setTotalBranches(0);
-      } finally {
-        if (isActive) {
-          setLoading(false);
-        }
+    if (branches.length === 0 && totalBranches > 0 && paginationModel.page > 0) {
+      const lastPage = Math.max(0, Math.ceil(totalBranches / paginationModel.pageSize) - 1);
+      if (lastPage !== paginationModel.page) {
+        setPaginationModel((currentModel) => ({
+          ...currentModel,
+          page: lastPage,
+        }));
       }
-    };
-
-    void fetchBranches();
-
-    return () => {
-      isActive = false;
-    };
-  }, [paginationModel.page, paginationModel.pageSize, reloadToken, setError]);
+    }
+  }, [branches.length, paginationModel.page, paginationModel.pageSize, totalBranches]);
 
   const handleReloadBranches = () => {
-    setReloadToken((currentToken) => currentToken + 1);
+    void branchesQuery.refetch();
   };
-
-  const showBranchLoadingState = loading && branches.length === 0;
-  const showBranchErrorState = !loading && Boolean(loadError) && branches.length === 0;
-  const showBranchEmptyState = !loading && !loadError && totalBranches === 0;
 
   const handleAdd = () => {
     setEditingBranch(null);
@@ -179,7 +151,14 @@ export default function Branches() {
     try {
       await api.deleteBranch(id);
       setSuccess('Branch deleted successfully');
-      setReloadToken((currentToken) => currentToken + 1);
+      if (paginationModel.page === 0) {
+        await branchesQuery.refetch();
+      } else {
+        setPaginationModel((currentModel) => ({
+          ...currentModel,
+          page: 0,
+        }));
+      }
     } catch (error: any) {
       setError(error.message || 'Failed to delete branch');
     }
@@ -226,7 +205,14 @@ export default function Branches() {
         setSuccess('Branch created successfully');
       }
       setOpenDialog(false);
-      setReloadToken((currentToken) => currentToken + 1);
+      if (paginationModel.page === 0) {
+        await branchesQuery.refetch();
+      } else {
+        setPaginationModel((currentModel) => ({
+          ...currentModel,
+          page: 0,
+        }));
+      }
     } catch (error: any) {
       setError(error.message || 'Failed to save branch');
     }
@@ -325,7 +311,7 @@ export default function Branches() {
               setError(`${errors} row(s) were skipped due validation errors.`);
             }
             if (paginationModel.page === 0) {
-              setReloadToken((currentToken) => currentToken + 1);
+              await branchesQuery.refetch();
             } else {
               setPaginationModel((currentModel) => ({
                 ...currentModel,
@@ -468,7 +454,7 @@ export default function Branches() {
             <IconButton
               aria-label="Refresh branches"
               onClick={handleReloadBranches}
-              disabled={loading}
+              disabled={branchesQuery.isFetching}
             >
               <RefreshIcon />
             </IconButton>
@@ -567,7 +553,7 @@ export default function Branches() {
           <DataGrid
             rows={branches}
             columns={columns}
-            loading={loading}
+            loading={branchesQuery.isFetching}
             pagination
             paginationMode="server"
             paginationModel={paginationModel}

@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Box } from '@mui/material';
+import { useQuery } from '@tanstack/react-query';
 import { useStore } from '../store/useStore';
-import api from '../services/api';
+import api, { queryKeys } from '../services/api';
 import { MapContainer } from '../features/dashboard/components/MapContainer';
 import { MapControls } from '../features/dashboard/components/MapControls';
 import {
@@ -41,11 +42,9 @@ export default function Dashboard() {
   const [territoryBranchOptions, setTerritoryBranchOptions] = useState<TerritoryBranchOption[]>([]);
   const [selectedTerritoryBranchIds, setSelectedTerritoryBranchIds] = useState<string[]>([]);
   const [territorySummary, setTerritorySummary] = useState<TerritorySummary | null>(null);
-  const [territoryLoading, setTerritoryLoading] = useState(false);
-  const [territoryError, setTerritoryError] = useState<string | null>(null);
+  const [territoryValidationError, setTerritoryValidationError] = useState<string | null>(null);
   const [showTerritoryCustomers, setShowTerritoryCustomers] = useState(true);
   const [showOtherBranches, setShowOtherBranches] = useState(false);
-  const territoryRequestCounterRef = useRef(0);
 
   const findNearestBranch = (lat: number, lng: number) => {
     console.debug('Nearest branch lookup pending API integration:', { lat, lng });
@@ -63,80 +62,60 @@ export default function Dashboard() {
     selectedGridLevels,
     onMapClick: findNearestBranch,
     onMapReady: (mapInstance) => {
-      void loadBranchMarkers(mapInstance, showBranches, showOtherBranches);
       ensureTerritoryLayers(mapInstance, showTerritoryCustomers);
-      void loadTerritoryVisualization(territoryMode, selectedTerritoryBranchIds, territoryCustomerView, mapInstance);
+      if (showBranches && showOtherBranches && branchMarkersQuery.data) {
+        void loadBranchMarkers(mapInstance, showBranches, showOtherBranches, branchMarkersQuery.data);
+      }
     },
   });
 
-  const loadTerritoryVisualization = async (
-    mode: TerritoryMode,
-    branchIds: string[],
-    customerView: TerritoryCustomerView,
-    mapInstance = mapRef.current
-  ) => {
-    if (!mapInstance || !mapInstance.isStyleLoaded()) return;
+  const branchMarkersQuery = useQuery({
+    queryKey: queryKeys.branches({ limit: 5000, offset: 0 }),
+    queryFn: () => api.getBranches({ limit: 5000, offset: 0 }),
+    enabled: showBranches && showOtherBranches,
+    placeholderData: (previousData) => previousData,
+  });
 
-    const requestId = territoryRequestCounterRef.current + 1;
-    territoryRequestCounterRef.current = requestId;
+  const territoryVisualizationQuery = useQuery({
+    queryKey: queryKeys.territoryVisualization({
+      mode: territoryMode,
+      branchIds: selectedTerritoryBranchIds,
+      customerView: territoryCustomerView,
+    }),
+    queryFn: () => api.getTerritoryVisualization({
+      mode: territoryMode,
+      branchIds: selectedTerritoryBranchIds.length > 0 ? selectedTerritoryBranchIds : undefined,
+      customerView: territoryCustomerView,
+    }) as Promise<TerritoryVisualizationResponse>,
+    placeholderData: (previousData) => previousData,
+  });
 
-    setTerritoryLoading(true);
-    setTerritoryError(null);
-
-    try {
-      const payload = await api.getTerritoryVisualization({
-        mode,
-        branchIds: branchIds.length > 0 ? branchIds : undefined,
-        customerView
-      }) as TerritoryVisualizationResponse;
-
-      if (!mapRef.current || territoryRequestCounterRef.current !== requestId) return;
-
-      applyTerritoryVisualization(mapRef.current, payload, showTerritoryCustomers);
-
-      setTerritoryBranchOptions(payload.availableBranches || []);
-      setTerritorySummary(payload.summary || null);
-
-      const responseSelectedIds = (payload.selectedBranchIds || []).map(String).slice(0, MAX_TERRITORY_BRANCHES);
-      if (!hasSameIds(responseSelectedIds, selectedTerritoryBranchIds)) {
-        setSelectedTerritoryBranchIds(responseSelectedIds);
-      }
-    } catch (error) {
-      if (territoryRequestCounterRef.current !== requestId) return;
-
-      const message = error instanceof Error ? error.message : 'Failed to load territory visualization';
-      setTerritoryError(message);
-      setTerritorySummary(null);
-      if (mapRef.current) {
-        clearTerritoryVisualization(mapRef.current);
-      }
-    } finally {
-      if (territoryRequestCounterRef.current === requestId) {
-        setTerritoryLoading(false);
-      }
-    }
-  };
+  const territoryError =
+    territoryValidationError
+    || (territoryVisualizationQuery.error instanceof Error
+      ? territoryVisualizationQuery.error.message
+      : null);
+  const territoryLoading = territoryVisualizationQuery.isFetching;
 
   const handleTerritoryModeChange = (nextMode: TerritoryMode) => {
     setTerritoryMode(nextMode);
     setSelectedTerritoryBranchIds([]);
-    void loadTerritoryVisualization(nextMode, [], territoryCustomerView);
+    setTerritoryValidationError(null);
   };
 
   const handleTerritoryCustomerViewChange = (nextCustomerView: TerritoryCustomerView) => {
     setTerritoryCustomerView(nextCustomerView);
-    void loadTerritoryVisualization(territoryMode, selectedTerritoryBranchIds, nextCustomerView);
+    setTerritoryValidationError(null);
   };
 
   const handleTerritoryBranchChange = (nextBranchIds: string[]) => {
     if (nextBranchIds.length > MAX_TERRITORY_BRANCHES) {
-      setTerritoryError(`Select up to ${MAX_TERRITORY_BRANCHES} branches only.`);
+      setTerritoryValidationError(`Select up to ${MAX_TERRITORY_BRANCHES} branches only.`);
       return;
     }
 
-    setTerritoryError(null);
+    setTerritoryValidationError(null);
     setSelectedTerritoryBranchIds(nextBranchIds);
-    void loadTerritoryVisualization(territoryMode, nextBranchIds, territoryCustomerView);
   };
 
   useEffect(() => {
@@ -144,10 +123,41 @@ export default function Dashboard() {
 
     setBranchLayerVisibility(mapRef.current, showBranches && showOtherBranches);
 
-    if (showBranches && showOtherBranches) {
-      void loadBranchMarkers(mapRef.current, showBranches, showOtherBranches);
+    if (showBranches && showOtherBranches && branchMarkersQuery.data) {
+      void loadBranchMarkers(mapRef.current, showBranches, showOtherBranches, branchMarkersQuery.data);
     }
-  }, [mapRef, showBranches, showOtherBranches]);
+  }, [branchMarkersQuery.data, mapRef, showBranches, showOtherBranches]);
+
+  useEffect(() => {
+    if (!mapRef.current || !mapRef.current.isStyleLoaded()) {
+      return;
+    }
+
+    if (territoryVisualizationQuery.data) {
+      applyTerritoryVisualization(mapRef.current, territoryVisualizationQuery.data, showTerritoryCustomers);
+      setTerritoryBranchOptions(territoryVisualizationQuery.data.availableBranches || []);
+      setTerritorySummary(territoryVisualizationQuery.data.summary || null);
+
+      const responseSelectedIds = (territoryVisualizationQuery.data.selectedBranchIds || [])
+        .map(String)
+        .slice(0, MAX_TERRITORY_BRANCHES);
+      if (!hasSameIds(responseSelectedIds, selectedTerritoryBranchIds)) {
+        setSelectedTerritoryBranchIds(responseSelectedIds);
+      }
+      return;
+    }
+
+    if (territoryVisualizationQuery.isError) {
+      clearTerritoryVisualization(mapRef.current);
+      setTerritorySummary(null);
+    }
+  }, [
+    mapRef,
+    selectedTerritoryBranchIds,
+    showTerritoryCustomers,
+    territoryVisualizationQuery.data,
+    territoryVisualizationQuery.isError,
+  ]);
 
   useEffect(() => {
     if (!mapRef.current) return;

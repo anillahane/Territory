@@ -56,7 +56,8 @@ const ensureBranchLayer = (mapInstance: Map, visible: boolean) => {
 export const loadBranchMarkers = async (
   mapInstance: Map,
   showBranches: boolean,
-  showOtherBranches: boolean
+  showOtherBranches: boolean,
+  branchResponse?: unknown
 ) => {
   if (!mapInstance.isStyleLoaded()) return;
 
@@ -64,7 +65,7 @@ export const loadBranchMarkers = async (
   ensureBranchLayer(mapInstance, isVisible);
 
   try {
-    const response = await api.getBranches({ limit: 5000, offset: 0 });
+    const response = branchResponse ?? await api.getBranches({ limit: 5000, offset: 0 });
     const rawCandidate = response?.branches ?? response?.data ?? response;
     const rawBranches = Array.isArray(rawCandidate)
       ? rawCandidate

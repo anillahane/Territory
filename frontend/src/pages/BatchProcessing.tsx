@@ -36,8 +36,9 @@ import {
   BarChart as BarChartIcon,
   Map as MapIcon,
 } from '@mui/icons-material';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useStore } from '../store/useStore';
-import api from '../services/api';
+import api, { queryKeys, type JobsStreamPayload } from '../services/api';
 import DataState from '../components/DataState';
 import { formatIndiaDateTime } from '../utils/datetime';
 
@@ -63,14 +64,12 @@ const filterBatchJobs = (jobs: Job[]) =>
 
 export default function BatchProcessing() {
   const { setError, setSuccess } = useStore();
+  const queryClient = useQueryClient();
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [replaceExisting, setReplaceExisting] = useState(false);
-  const [jobs, setJobs] = useState<Job[]>([]);
-  const [showHistory, setShowHistory] = useState(false);
-  const [loadingJobs, setLoadingJobs] = useState(false);
-  const [jobHistoryError, setJobHistoryError] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(true);
   const [selectedJobStats, setSelectedJobStats] = useState<Job | null>(null);
   const [statsDialogOpen, setStatsDialogOpen] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null); // Track currently processing job
@@ -78,50 +77,45 @@ export default function BatchProcessing() {
   const streamCleanupRef = useRef<(() => void) | null>(null);
   const pollingIntervalRef = useRef<number | null>(null);
 
-  const loadJobHistory = useCallback(async () => {
-    console.log('loadJobHistory: Starting...');
-    setLoadingJobs(true);
-    setJobHistoryError(null);
-    try {
-      console.log('loadJobHistory: Calling API...');
+  const jobsQueryKey = queryKeys.jobs({
+    limit: 20,
+    type: 'batch-process',
+  });
+
+  const jobsQuery = useQuery({
+    queryKey: jobsQueryKey,
+    queryFn: async () => {
       const response = await api.listJobs({
         limit: 20,
         type: 'batch-process',
       });
-      console.log('loadJobHistory: API response:', response);
-
       const allJobs = (response.jobs || response || []) as Job[];
-
-      console.log('loadJobHistory: All jobs:', allJobs);
-
       const batchJobs = filterBatchJobs(allJobs);
+      return {
+        jobs: batchJobs,
+        total: batchJobs.length,
+      };
+    },
+    placeholderData: (previousData) => previousData,
+  });
 
-      console.log('loadJobHistory: Filtered batch jobs:', batchJobs);
-      setJobs(batchJobs);
-    } catch (error: any) {
-      console.error('loadJobHistory: Failed to load job history:', error);
-      console.error('loadJobHistory: Error details:', {
-        message: error.message,
-        response: error.response?.data,
-        status: error.response?.status
-      });
-      const errorMessage = 'Failed to load job history.';
-      setJobHistoryError(errorMessage);
-      setError(errorMessage);
-      setJobs([]);
-    } finally {
-      console.log('loadJobHistory: Complete, setting loadingJobs to false');
-      setLoadingJobs(false);
-    }
-  }, [setError]);
+  const jobs = jobsQuery.data?.jobs ?? [];
+  const loadingJobs = jobsQuery.isLoading;
+  const jobHistoryError = jobsQuery.error ? 'Failed to load job history.' : null;
+
+  const loadJobHistory = useCallback(async () => {
+    await jobsQuery.refetch();
+  }, [jobsQuery.refetch]);
+
+  const setJobHistoryCache = useCallback((payload: Pick<JobsStreamPayload, 'jobs'>) => {
+    const batchJobs = filterBatchJobs((payload.jobs || []) as Job[]);
+    queryClient.setQueryData(jobsQueryKey, {
+      jobs: batchJobs,
+      total: batchJobs.length,
+    });
+  }, [jobsQueryKey, queryClient]);
 
   const showInitialJobsState = loadingJobs && jobs.length === 0 && !jobHistoryError;
-
-  useEffect(() => {
-    console.log('BatchProcessing component mounted');
-    setShowHistory(true);
-    void loadJobHistory();
-  }, [loadJobHistory]);
 
   useEffect(() => {
     return () => {
@@ -186,8 +180,7 @@ export default function BatchProcessing() {
               return;
             }
 
-            setJobs(filterBatchJobs((payload.jobs || []) as Job[]));
-            setLoadingJobs(false);
+            setJobHistoryCache(payload);
           },
           onError: (error) => {
             if (disposed) {
@@ -242,7 +235,7 @@ export default function BatchProcessing() {
       stopJobsStream();
       stopFallbackPolling();
     };
-  }, [activeJobId, loadJobHistory]);
+  }, [activeJobId, loadJobHistory, setJobHistoryCache]);
 
   useEffect(() => {
     if (activeJobId && jobs.length > 0) {
@@ -483,7 +476,7 @@ export default function BatchProcessing() {
                 <IconButton
                   aria-label="Refresh job history"
                   onClick={() => void loadJobHistory()}
-                  disabled={loadingJobs}
+                  disabled={jobsQuery.isFetching}
                 >
                   <RefreshIcon />
                 </IconButton>
@@ -639,7 +632,7 @@ export default function BatchProcessing() {
               title="Unable to load job history"
               description={jobHistoryError}
               minHeight={240}
-              action={
+          action={
                 <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => void loadJobHistory()}>
                   Try Again
                 </Button>

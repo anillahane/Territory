@@ -1,7 +1,7 @@
 // Customer Mapping View Container
 // Requirements: 2.1, 3.1, 4.4, 4.5
 
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import {
   Box,
   Typography,
@@ -17,25 +17,23 @@ import {
   TableRow,
   Paper
 } from '@mui/material';
+import { useQuery } from '@tanstack/react-query';
 import { Assessment, People, LocationOn, Business, Refresh as RefreshIcon } from '@mui/icons-material';
 import CustomerMappingTable from '../components/CustomerMappingTable';
 import FilterPanel from '../components/FilterPanel';
 import DataState from '../components/DataState';
 import customerMappingApi from '../services/customerMappingApi';
 import {
-  CustomerMapping,
   FilterState,
   PaginationState,
   ApiError,
   MappingImpactStats
 } from '../types/customerMapping';
 import { useStore } from '../store/useStore';
-import api from '../services/api';
+import api, { queryKeys } from '../services/api';
 
 export default function CustomerMappingView() {
-  const { setError, setSuccess } = useStore();
-
-  const [mappings, setMappings] = useState<CustomerMapping[]>([]);
+  const { setSuccess } = useStore();
   const [filters, setFilters] = useState<FilterState>({
     jobId: '',
     customerId: '',
@@ -47,16 +45,13 @@ export default function CustomerMappingView() {
     totalRecords: 0,
     totalPages: 0,
   });
-  const [loading, setLoading] = useState(false);
-  const [jobs, setJobs] = useState<Array<{ id: string; name: string }>>([]);
-  const [localError, setLocalError] = useState<string | null>(null);
-  const [stats, setStats] = useState({
+  const emptyStats = {
     uniqueCustomers: 0,
     uniquePockets: 0,
     uniqueBranches: 0,
     avgDistance: 0,
-  });
-  const [impactStats, setImpactStats] = useState<MappingImpactStats>({
+  };
+  const emptyImpactStats: MappingImpactStats = {
     comparableAccounts: 0,
     sameBranchAccounts: 0,
     differentBranchAccounts: 0,
@@ -76,90 +71,45 @@ export default function CustomerMappingView() {
     differentBranchAvgChangedDistance: 0,
     sameBranchAvgImpact: 0,
     differentBranchAvgImpact: 0,
+  };
+
+  const mappingParams = {
+    page: pagination.page,
+    pageSize: pagination.pageSize,
+    ...(filters.jobId && { jobId: filters.jobId }),
+    ...(filters.customerId && { customerId: filters.customerId }),
+    ...(filters.pocketId && { pocketId: filters.pocketId }),
+  };
+
+  const jobsQuery = useQuery({
+    queryKey: queryKeys.jobs({ limit: 100 }),
+    queryFn: async () => {
+      const response = await api.listJobs({ limit: 100 });
+      return response.jobs.map((job: any) => ({
+        id: job.jobId,
+        name: `${job.type} - ${new Date(job.createdAt).toLocaleDateString()}`,
+      }));
+    },
   });
 
-  // Fetch available jobs for filter dropdown
-  useEffect(() => {
-    const fetchJobs = async () => {
-      try {
-        const response = await api.listJobs({ limit: 100 });
-        const jobList = response.jobs.map((job: any) => ({
-          id: job.jobId,
-          name: `${job.type} - ${new Date(job.createdAt).toLocaleDateString()}`,
-        }));
-        setJobs(jobList);
-      } catch (error) {
-        console.error('Failed to fetch jobs:', error);
-      }
-    };
-    fetchJobs();
-  }, []);
+  const mappingsQuery = useQuery({
+    queryKey: ['customer-mappings', mappingParams],
+    queryFn: () => customerMappingApi.fetchMappings(mappingParams),
+    placeholderData: (previousData) => previousData,
+  });
 
-  // Fetch mappings when filters or pagination change
-  const fetchMappings = useCallback(async () => {
-    setLoading(true);
-    setLocalError(null);
-
-    try {
-      const params = {
-        page: pagination.page,
-        pageSize: pagination.pageSize,
-        ...(filters.jobId && { jobId: filters.jobId }),
-        ...(filters.customerId && { customerId: filters.customerId }),
-        ...(filters.pocketId && { pocketId: filters.pocketId }),
-      };
-
-      const response = await customerMappingApi.fetchMappings(params);
-
-      setMappings(response.data);
-      setPagination({
-        page: response.pagination.page,
-        pageSize: response.pagination.pageSize,
-        totalRecords: response.pagination.totalRecords,
-        totalPages: response.pagination.totalPages,
-      });
-
-      setStats({
-        uniqueCustomers: response.stats?.uniqueCustomers || 0,
-        uniquePockets: response.stats?.uniquePockets || 0,
-        uniqueBranches: response.stats?.uniqueBranches || 0,
-        avgDistance: response.stats?.avgDistance || 0,
-      });
-      setImpactStats(response.stats?.impact || {
-        comparableAccounts: 0,
-        sameBranchAccounts: 0,
-        differentBranchAccounts: 0,
-        sameBranchCount: 0,
-        differentBranchCount: 0,
-        totalBranchCount: 0,
-        avgExistingBranchDistance: 0,
-        avgRevisedBranchDistance: 0,
-        avgDistanceReduction: 0,
-        totalDistanceReduction: 0,
-        improvedAccounts: 0,
-        unchangedDistanceAccounts: 0,
-        worsenedAccounts: 0,
-        sameBranchAvgOriginalDistance: 0,
-        sameBranchAvgChangedDistance: 0,
-        differentBranchAvgOriginalDistance: 0,
-        differentBranchAvgChangedDistance: 0,
-        sameBranchAvgImpact: 0,
-        differentBranchAvgImpact: 0,
-      });
-    } catch (error) {
-      const apiError = error as ApiError;
-      const errorMessage = apiError.message || 'Failed to fetch customer mappings';
-      setLocalError(errorMessage);
-      setError(errorMessage);
-    } finally {
-      setLoading(false);
-    }
-  }, [filters, pagination.page, pagination.pageSize, setError]);
-
-  // Fetch mappings on mount and when dependencies change
-  useEffect(() => {
-    fetchMappings();
-  }, [fetchMappings]);
+  const mappings = mappingsQuery.data?.data ?? [];
+  const resolvedPagination = mappingsQuery.data?.pagination ?? {
+    page: pagination.page,
+    pageSize: pagination.pageSize,
+    totalRecords: 0,
+    totalPages: 0,
+  };
+  const stats = mappingsQuery.data?.stats ?? emptyStats;
+  const impactStats = mappingsQuery.data?.stats?.impact ?? emptyImpactStats;
+  const localError = mappingsQuery.error
+    ? ((mappingsQuery.error as ApiError).message || 'Failed to fetch customer mappings')
+    : null;
 
   const handleFilterChange = useCallback((newFilters: FilterState) => {
     setFilters(newFilters);
@@ -411,7 +361,7 @@ export default function CustomerMappingView() {
 
       <FilterPanel
         filters={filters}
-        jobs={jobs}
+        jobs={jobsQuery.data ?? []}
         onFilterChange={handleFilterChange}
         onClearFilters={handleClearFilters}
       />
@@ -423,19 +373,19 @@ export default function CustomerMappingView() {
           description={localError}
           minHeight={400}
           action={
-            <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => void fetchMappings()}>
+            <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => void mappingsQuery.refetch()}>
               Try Again
             </Button>
           }
         />
-      ) : loading && mappings.length === 0 ? (
+      ) : mappingsQuery.isLoading && mappings.length === 0 ? (
         <DataState
           variant="loading"
           title="Loading customer mappings"
           description="Fetching mappings, impact metrics, and pagination details."
           minHeight={400}
         />
-      ) : !loading && mappings.length === 0 ? (
+      ) : !mappingsQuery.isLoading && mappings.length === 0 ? (
         <DataState
           variant="empty"
           title="No customer mappings found"
@@ -445,8 +395,8 @@ export default function CustomerMappingView() {
       ) : (
         <CustomerMappingTable
           mappings={mappings}
-          pagination={pagination}
-          loading={loading}
+          pagination={resolvedPagination}
+          loading={mappingsQuery.isFetching}
           onPageChange={handlePageChange}
           onPageSizeChange={handlePageSizeChange}
         />
