@@ -11,6 +11,7 @@ const logger = require('../config/logger');
 const { batchProcessQueue } = require('../config/queue');
 const mappingService = require('../services/MappingService');
 const branchFinderService = require('../services/BranchFinderService');
+const territoryCache = require('../services/TerritoryCache');
 const { createExcelUpload, validateUploadedWorkbook } = require('../utils/fileValidation');
 
 const router = express.Router();
@@ -1329,6 +1330,34 @@ router.get(
       }
     }
 
+    const configResult = await query(
+      'SELECT version, origin_lat, origin_lon, alphabet FROM config WHERE id = 1'
+    );
+    if (configResult.rows.length === 0) {
+      throw new AppError('System configuration not found', 500, 'CONFIG_NOT_FOUND');
+    }
+
+    const configRow = configResult.rows[0];
+    const configVersion = Number(configRow.version);
+
+    await territoryCache.invalidateVisualizationCacheIfNeeded({
+      latestJobId: requestedJobId ? null : effectiveJobId,
+      configVersion
+    });
+
+    const cacheKey = territoryCache.buildVisualizationCacheKey({
+      jobId: effectiveJobId,
+      mode,
+      branchIds: requestedBranchIds,
+      customerView,
+      configVersion
+    });
+    const cachedVisualization = await territoryCache.getCachedVisualization(cacheKey);
+    if (cachedVisualization) {
+      res.json(cachedVisualization);
+      return;
+    }
+
     const branchesResult = await query(
       'SELECT id, city, lat, lon FROM branches ORDER BY id'
     );
@@ -1402,15 +1431,10 @@ router.get(
     });
 
     if (mode !== TERRITORY_VISUALIZATION_MODE.EXISTING_CUSTOMERS) {
-      const configResult = await query('SELECT * FROM config WHERE id = 1');
-      if (configResult.rows.length === 0) {
-        throw new AppError('System configuration not found', 500, 'CONFIG_NOT_FOUND');
-      }
-
       const config = {
-        originLat: configResult.rows[0].origin_lat,
-        originLon: configResult.rows[0].origin_lon,
-        alphabet: configResult.rows[0].alphabet
+        originLat: configRow.origin_lat,
+        originLon: configRow.origin_lon,
+        alphabet: configRow.alphabet
       };
 
       pocketDataById.forEach((pocketData) => {
@@ -1704,7 +1728,7 @@ router.get(
       features: activeCustomerFeatures
     };
 
-    res.json({
+    const responsePayload = {
       jobId: effectiveJobId,
       mode,
       modeLabel: getTerritoryModeLabel(mode),
@@ -1731,7 +1755,11 @@ router.get(
       branches,
       points,
       customers
-    });
+    };
+
+    await territoryCache.cacheVisualizationResponse(cacheKey, responsePayload);
+
+    res.json(responsePayload);
   })
 );
 
