@@ -1,15 +1,44 @@
+import { lazy, Suspense, type ComponentType, type LazyExoticComponent } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { Box, Snackbar, Alert } from '@mui/material';
+import { Box, Snackbar, Alert, CircularProgress, Stack, Typography } from '@mui/material';
 import Layout from './components/Layout';
 import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
-import Configuration from './pages/Configuration';
-import Branches from './pages/Branches';
-import Calculator from './pages/Calculator';
-import BatchProcessing from './pages/BatchProcessing';
-import CustomerMappingView from './pages/CustomerMappingView';
 import { useStore } from './store/useStore';
 import { isAuthenticated } from './services/api';
+
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Configuration = lazy(() => import('./pages/Configuration'));
+const Branches = lazy(() => import('./pages/Branches'));
+const Calculator = lazy(() => import('./pages/Calculator'));
+const BatchProcessing = lazy(() => import('./pages/BatchProcessing'));
+const CustomerMappingView = lazy(() => import('./pages/CustomerMappingView'));
+
+function RouteLoadingFallback() {
+  return (
+    <Stack
+      alignItems="center"
+      justifyContent="center"
+      spacing={2}
+      sx={{
+        minHeight: 'calc(100vh - 64px)',
+        px: 3,
+      }}
+    >
+      <CircularProgress size={32} />
+      <Typography color="text.secondary" variant="body2">
+        Loading page...
+      </Typography>
+    </Stack>
+  );
+}
+
+const renderLazyRoute = (
+  PageComponent: LazyExoticComponent<ComponentType>
+) => (
+  <Suspense fallback={<RouteLoadingFallback />}>
+    <PageComponent />
+  </Suspense>
+);
 
 function ProtectedAppShell() {
   if (!isAuthenticated()) {
@@ -34,12 +63,12 @@ function App() {
           element={isAuthenticated() ? <Navigate to="/" replace /> : <Login />}
         />
         <Route path="/" element={<ProtectedAppShell />}>
-          <Route index element={<Dashboard />} />
-          <Route path="config" element={<Configuration />} />
-          <Route path="branches" element={<Branches />} />
-          <Route path="calculator" element={<Calculator />} />
-          <Route path="batch" element={<BatchProcessing />} />
-          <Route path="mappings" element={<CustomerMappingView />} />
+          <Route index element={renderLazyRoute(Dashboard)} />
+          <Route path="config" element={renderLazyRoute(Configuration)} />
+          <Route path="branches" element={renderLazyRoute(Branches)} />
+          <Route path="calculator" element={renderLazyRoute(Calculator)} />
+          <Route path="batch" element={renderLazyRoute(BatchProcessing)} />
+          <Route path="mappings" element={renderLazyRoute(CustomerMappingView)} />
         </Route>
       </Routes>
 
