@@ -9,6 +9,7 @@ const logger = require('../config/logger');
 const { batchProcessQueue } = require('../config/queue');
 const mappingService = require('./MappingService');
 const branchFinderService = require('./BranchFinderService');
+const jobStatusService = require('./JobStatusService');
 const { validateUploadedWorkbook } = require('../utils/fileValidation');
 
 const uploadDir = path.join(__dirname, '../../uploads');
@@ -181,19 +182,6 @@ const extractCompletedQueueBuffer = async (bullJob, jobId) => {
   };
 };
 
-const buildStatusPayload = (job) => ({
-  jobId: job.job_id,
-  type: job.type,
-  status: job.status,
-  progress: job.progress,
-  total: job.total,
-  resultUrl: job.result_url,
-  error: job.error,
-  createdAt: job.created_at,
-  updatedAt: job.updated_at,
-  completedAt: job.completed_at,
-});
-
 const createBatchEncodeJob = async ({ file, body = {} }) => {
   if (!file) {
     throw new AppError('No file uploaded', 400, 'NO_FILE');
@@ -211,20 +199,18 @@ const createBatchEncodeJob = async ({ file, body = {} }) => {
   const config = await getCurrentConfig();
   const jobId = uuidv4();
 
-  await query(
-    `INSERT INTO jobs (job_id, type, status, total, data)
-     VALUES ($1, 'batch_encode', 'pending', 0, $2)`,
-    [
-      jobId,
-      JSON.stringify({
-        fileName,
-        rowCount,
-        replaceExisting,
-        confirmWipeAll,
-        worker: usePythonWorker ? 'python' : 'nodejs',
-      }),
-    ]
-  );
+  await jobStatusService.createJob({
+    jobId,
+    type: 'batch_encode',
+    total: 0,
+    data: {
+      fileName,
+      rowCount,
+      replaceExisting,
+      confirmWipeAll,
+      worker: usePythonWorker ? 'python' : 'nodejs',
+    },
+  });
 
   if (usePythonWorker) {
     logger.info('Routing to Python worker (large file)', { jobId, fileSizeMB, fileName });
@@ -253,9 +239,9 @@ const createBatchEncodeJob = async ({ file, body = {} }) => {
       });
       removeUploadedFile(filePath, { jobId });
 
-      await query(
-        `UPDATE jobs SET status = 'failed', error = $1 WHERE job_id = $2`,
-        [`Failed to queue job to Python worker: ${error.message}`, jobId]
+      await jobStatusService.markJobFailed(
+        jobId,
+        `Failed to queue job to Python worker: ${error.message}`
       );
 
       throw new AppError('Failed to queue job to Python worker', 500, 'REDIS_PUSH_ERROR');
@@ -299,9 +285,9 @@ const createBatchEncodeJob = async ({ file, body = {} }) => {
     });
     removeUploadedFile(filePath, { jobId });
 
-    await query(
-      `UPDATE jobs SET status = 'failed', error = $1 WHERE job_id = $2`,
-      [`Failed to queue job to Node.js worker: ${error.message}`, jobId]
+    await jobStatusService.markJobFailed(
+      jobId,
+      `Failed to queue job to Node.js worker: ${error.message}`
     );
 
     throw new AppError('Failed to queue job to Node.js worker', 500, 'QUEUE_PUSH_ERROR');
@@ -323,12 +309,7 @@ const createBatchEncodeJob = async ({ file, body = {} }) => {
 };
 
 const getBatchStatus = async (jobId) => {
-  const result = await query('SELECT * FROM jobs WHERE job_id = $1', [jobId]);
-  if (result.rows.length === 0) {
-    throw new AppError('Job not found', 404, 'JOB_NOT_FOUND');
-  }
-
-  return buildStatusPayload(result.rows[0]);
+  return jobStatusService.getJobStatus(jobId);
 };
 
 const getDownloadPayload = async (jobId) => {
@@ -378,6 +359,21 @@ const processBatchQueueJob = async (job) => {
     confirmWipeAll = false,
   } = job.data;
   let rows = data;
+  let lastPersistedProgress = -1;
+
+  const persistProgress = async (progressValue, total = rows?.length) => {
+    const normalizedProgress = Math.max(0, Math.min(100, Math.floor(progressValue)));
+    if (normalizedProgress === lastPersistedProgress) {
+      return;
+    }
+
+    lastPersistedProgress = normalizedProgress;
+    job.progress(normalizedProgress);
+    await jobStatusService.updateJobProgress(jobId, {
+      progress: normalizedProgress,
+      total,
+    });
+  };
 
   if (!rows) {
     if (!filePath || !fs.existsSync(filePath)) {
@@ -390,8 +386,6 @@ const processBatchQueueJob = async (job) => {
     if (rows.length === 0) {
       throw new Error('Excel file is empty');
     }
-
-    await query('UPDATE jobs SET total = $1 WHERE job_id = $2', [rows.length, jobId]);
   }
 
   logger.info('Processing batch job (Node.js worker)', { jobId, rows: rows.length });
@@ -404,6 +398,10 @@ const processBatchQueueJob = async (job) => {
   const branchLookupForExisting = new Map();
 
   try {
+    await jobStatusService.markJobActive(jobId, {
+      total: rows.length,
+    });
+
     const branchesForExistingResult = await query('SELECT id, lat, lon FROM branches');
     branchesForExistingResult.rows.forEach((row) => {
       const id = String(row.id);
@@ -420,7 +418,7 @@ const processBatchQueueJob = async (job) => {
       const row = rows[i];
 
       try {
-        job.progress(Math.floor((i / rows.length) * 100));
+        await persistProgress((i / rows.length) * 100, rows.length);
 
         const lat = toNumber(getFirstDefinedValue(row, [
           'canon_lat',
@@ -658,30 +656,21 @@ const processBatchQueueJob = async (job) => {
       }
     }
 
-    await query(
-      `UPDATE jobs
-       SET status = 'completed',
-           progress = 100,
-           completed_at = CURRENT_TIMESTAMP,
-           result_url = $1,
-           data = $2
-       WHERE job_id = $3`,
-      [
-        `/api/v1/batch/download/${jobId}`,
-        JSON.stringify({
-          fileName: fileName || job.data.fileName,
-          pocketStats,
-          totalPockets: Object.keys(pocketStats).length,
-          totalAccounts: rows.length - errors.length,
-          mappingsPersisted,
-          replaceExisting: Boolean(replaceExisting),
-          replacedMappingsCount,
-          territoryUrl: `/api/v1/batch/territories/${jobId}`,
-          worker: 'nodejs',
-        }),
-        jobId,
-      ]
-    );
+    await jobStatusService.markJobCompleted(jobId, {
+      resultUrl: `/api/v1/batch/download/${jobId}`,
+      total: rows.length,
+      data: {
+        fileName: fileName || job.data.fileName,
+        pocketStats,
+        totalPockets: Object.keys(pocketStats).length,
+        totalAccounts: rows.length - errors.length,
+        mappingsPersisted,
+        replaceExisting: Boolean(replaceExisting),
+        replacedMappingsCount,
+        territoryUrl: `/api/v1/batch/territories/${jobId}`,
+        worker: 'nodejs',
+      },
+    });
 
     logger.info('Batch job completed (Node.js worker)', {
       jobId,
@@ -705,6 +694,7 @@ const processBatchQueueJob = async (job) => {
     };
   } catch (error) {
     removeUploadedFile(filePath, { jobId });
+    await jobStatusService.markJobFailed(jobId, error.message);
     throw error;
   }
 };
@@ -712,13 +702,7 @@ const processBatchQueueJob = async (job) => {
 const handleBatchQueueFailure = async (job, err) => {
   logger.error('Batch job failed', { jobId: job.data.jobId, error: err.message });
 
-  await query(
-    `UPDATE jobs
-     SET status = 'failed',
-         error = $1
-     WHERE job_id = $2`,
-    [err.message, job.data.jobId]
-  );
+  await jobStatusService.markJobFailed(job.data.jobId, err.message);
 };
 
 module.exports = {

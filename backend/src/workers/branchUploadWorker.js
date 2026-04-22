@@ -3,6 +3,7 @@ const { query, transaction } = require('../config/database');
 const { encodePocketId } = require('../utils/geometry');
 const logger = require('../config/logger');
 const { branchUploadQueue } = require('../config/queue');
+const jobStatusService = require('../services/JobStatusService');
 
 function ensureBuffer(input) {
   if (Buffer.isBuffer(input)) {
@@ -131,8 +132,18 @@ async function processBranchUpload(job) {
       throw new Error('Excel file is empty');
     }
 
+    await jobStatusService.markJobActive(job.id, {
+      total: rowsWithSheet.length,
+      data: {
+        fileName,
+        uploadMode,
+        confirmWipeAll,
+      },
+    });
+
     // Update progress: parsing complete
     await job.progress(10);
+    await jobStatusService.updateJobProgress(job.id, { progress: 10, total: rowsWithSheet.length });
 
     // Get current configuration
     const configResult = await query('SELECT * FROM config WHERE id = 1');
@@ -182,6 +193,7 @@ async function processBranchUpload(job) {
       if (i % 10 === 0) {
         const progress = 10 + Math.floor((i / totalRows) * 70); // 10-80%
         await job.progress(progress);
+        await jobStatusService.updateJobProgress(job.id, { progress, total: totalRows });
       }
     }
 
@@ -194,6 +206,7 @@ async function processBranchUpload(job) {
 
     // Update progress: validation complete
     await job.progress(80);
+    await jobStatusService.updateJobProgress(job.id, { progress: 80, total: totalRows });
 
     const overwriteScope = resolveBranchOverwriteScope(uploadMode, confirmWipeAll, branches);
 
@@ -277,6 +290,7 @@ async function processBranchUpload(job) {
         if (i % 10 === 0) {
           const progress = 80 + Math.floor((i / totalBranches) * 20); // 80-100%
           await job.progress(progress);
+          await jobStatusService.updateJobProgress(job.id, { progress, total: totalRows });
         }
       }
 
@@ -287,9 +301,6 @@ async function processBranchUpload(job) {
         skippedExisting,
       };
     });
-
-    // Final progress
-    await job.progress(100);
 
     const summary = {
       mode: uploadMode,
@@ -302,6 +313,22 @@ async function processBranchUpload(job) {
       duplicatesInFile: duplicateRows,
       errors: errors.length,
     };
+
+    // Final progress
+    await job.progress(100);
+    await jobStatusService.markJobCompleted(job.id, {
+      total: totalRows,
+      data: {
+        fileName,
+        uploadMode,
+        confirmWipeAll,
+        result: {
+          success: true,
+          summary,
+          errors: errors.length > 0 ? errors : undefined,
+        },
+      },
+    });
 
     logger.info('Branch upload completed', {
       jobId: job.id,
@@ -319,6 +346,13 @@ async function processBranchUpload(job) {
       jobId: job.id,
       fileName,
       error: error.message,
+    });
+    await jobStatusService.markJobFailed(job.id, error.message, {
+      data: {
+        fileName,
+        uploadMode,
+        confirmWipeAll,
+      },
     });
     throw error;
   }

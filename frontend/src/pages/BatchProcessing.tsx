@@ -60,19 +60,6 @@ interface Job {
 const filterBatchJobs = (jobs: Job[]) =>
   jobs.filter((job) => job.type === 'batch-process' || job.type === 'batch-processing');
 
-const mergeLiveJobIntoHistory = (jobs: Job[], liveJob: Job) =>
-  jobs.map((job) =>
-    job.jobId === liveJob.jobId
-      ? {
-          ...job,
-          status: liveJob.status,
-          progress: liveJob.progress,
-          finishedAt: liveJob.finishedAt || job.finishedAt,
-          error: liveJob.error ?? job.error ?? null,
-        }
-      : job
-  );
-
 export default function BatchProcessing() {
   const { setError, setSuccess } = useStore();
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
@@ -90,7 +77,7 @@ export default function BatchProcessing() {
   const streamCleanupRef = useRef<(() => void) | null>(null);
   const pollingIntervalRef = useRef<number | null>(null);
 
-  const loadJobHistory = useCallback(async (liveJobId: string | null = activeJobId) => {
+  const loadJobHistory = useCallback(async () => {
     console.log('loadJobHistory: Starting...');
     setLoadingJobs(true);
     setJobHistoryError(null);
@@ -102,16 +89,7 @@ export default function BatchProcessing() {
       });
       console.log('loadJobHistory: API response:', response);
 
-      let allJobs = (response.jobs || response || []) as Job[];
-
-      if (liveJobId) {
-        try {
-          const liveJob = await api.getJobStatus(liveJobId);
-          allJobs = mergeLiveJobIntoHistory(allJobs, liveJob as Job);
-        } catch (liveJobError) {
-          console.warn('Failed to hydrate live job state:', liveJobError);
-        }
-      }
+      const allJobs = (response.jobs || response || []) as Job[];
 
       console.log('loadJobHistory: All jobs:', allJobs);
 
@@ -126,7 +104,7 @@ export default function BatchProcessing() {
         response: error.response?.data,
         status: error.response?.status
       });
-      const errorMessage = 'Failed to load job history. Redis may not be running.';
+      const errorMessage = 'Failed to load job history.';
       setJobHistoryError(errorMessage);
       setError(errorMessage);
       setJobs([]);
@@ -134,7 +112,7 @@ export default function BatchProcessing() {
       console.log('loadJobHistory: Complete, setting loadingJobs to false');
       setLoadingJobs(false);
     }
-  }, [activeJobId, setError]);
+  }, [setError]);
 
   const showInitialJobsState = loadingJobs && jobs.length === 0 && !jobHistoryError;
 
@@ -178,14 +156,14 @@ export default function BatchProcessing() {
     const startFallbackPolling = async () => {
       stopFallbackPolling();
       setLiveUpdateMode('polling');
-      await loadJobHistory(activeJobId);
+      await loadJobHistory();
 
       if (!activeJobId || disposed) {
         return;
       }
 
       pollingIntervalRef.current = window.setInterval(() => {
-        void loadJobHistory(activeJobId);
+        void loadJobHistory();
       }, 2000);
     };
 
@@ -197,7 +175,6 @@ export default function BatchProcessing() {
         const cleanup = await api.subscribeToJobsStream({
           type: 'batch-process',
           limit: 20,
-          activeJobId,
           onOpen: () => {
             if (!disposed) {
               setLiveUpdateMode('stream');
@@ -335,7 +312,7 @@ export default function BatchProcessing() {
         // Show history and track the active job for live updates
         setShowHistory(true);
         setActiveJobId(response.jobId);
-        void loadJobHistory(response.jobId);
+        void loadJobHistory();
       } else {
         // Unexpected response format
         console.error('Unexpected response:', response);
@@ -396,7 +373,7 @@ export default function BatchProcessing() {
       await api.retryJob(jobId);
       setSuccess('Job queued for retry');
       setActiveJobId(jobId);
-      void loadJobHistory(jobId);
+      void loadJobHistory();
     } catch (error: any) {
       setError(error.message || 'Failed to retry job');
     }
@@ -487,7 +464,7 @@ export default function BatchProcessing() {
         return 'error';
       case 'active':
         return 'info';
-      case 'waiting':
+      case 'pending':
         return 'warning';
       default:
         return 'default';
@@ -624,7 +601,7 @@ export default function BatchProcessing() {
       {/* Active Job Status Card */}
       {activeJobId && jobs.length > 0 && (() => {
         const activeJob = jobs.find(j => j.jobId === activeJobId);
-        if (activeJob && (activeJob.status === 'active' || activeJob.status === 'waiting')) {
+        if (activeJob && (activeJob.status === 'active' || activeJob.status === 'pending')) {
           return (
             <Card sx={{ mb: 3, borderLeft: '4px solid #1976d2' }}>
               <CardContent>
@@ -645,7 +622,7 @@ export default function BatchProcessing() {
                       </Typography>
                     </Box>
                     <Typography variant="body2" color="text.secondary">
-                      {activeJob.status === 'waiting' ? 'Waiting to start...' : `Processing ${activeJob.data?.totalAccounts || 0} records...`}
+                      {activeJob.status === 'pending' ? 'Queued to start...' : `Processing ${activeJob.data?.totalAccounts || 0} records...`}
                     </Typography>
                   </Box>
                   <Chip
