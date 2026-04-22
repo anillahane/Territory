@@ -5,18 +5,29 @@
  */
 
 const MappingService = require('../../src/services/MappingService');
-const { query } = require('../../src/config/database');
+const { query, transaction } = require('../../src/config/database');
 
 // Mock the database module
 jest.mock('../../src/config/database');
 jest.mock('../../src/config/logger');
 
 const VALUES_PER_ROW = 12;
+let transactionalQuery;
+
+const isTransactionControlQuery = (queryText) =>
+  /^(SAVEPOINT|RELEASE SAVEPOINT|ROLLBACK TO SAVEPOINT)\b/.test(String(queryText).trim());
+
+const getUpsertCalls = () =>
+  transactionalQuery.mock.calls.filter(([queryText]) =>
+    String(queryText).includes('INSERT INTO customer_pocket_mappings')
+  );
 
 describe('MappingService Unit Tests', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.resetAllMocks();
+    transactionalQuery = jest.fn();
+    transaction.mockImplementation(async (callback) => callback({ query: transactionalQuery }));
   });
 
   describe('saveMappings', () => {
@@ -49,15 +60,21 @@ describe('MappingService Unit Tests', () => {
         },
       ];
 
-      // Mock successful database insert
-      query.mockResolvedValue({ rowCount: 2 });
+      transactionalQuery.mockImplementation((queryText) => {
+        if (isTransactionControlQuery(queryText)) {
+          return Promise.resolve({ rowCount: 0 });
+        }
+
+        return Promise.resolve({ rowCount: 2 });
+      });
 
       const result = await MappingService.saveMappings(jobId, mappings);
 
       expect(result.success).toBe(true);
       expect(result.insertedCount).toBe(2);
       expect(result.errors).toHaveLength(0);
-      expect(query).toHaveBeenCalledTimes(1);
+      expect(getUpsertCalls()).toHaveLength(1);
+      expect(transaction).toHaveBeenCalledTimes(1);
     });
 
     /**
@@ -79,8 +96,13 @@ describe('MappingService Unit Tests', () => {
         },
       ];
 
-      // Mock database failure
-      query.mockRejectedValue(new Error('Database connection failed'));
+      transactionalQuery.mockImplementation((queryText) => {
+        if (isTransactionControlQuery(queryText)) {
+          return Promise.resolve({ rowCount: 0 });
+        }
+
+        return Promise.reject(new Error('Database connection failed'));
+      });
 
       const result = await MappingService.saveMappings(jobId, mappings);
 
@@ -108,8 +130,11 @@ describe('MappingService Unit Tests', () => {
         distanceCustomerToBranch: 300.0 + i,
       }));
 
-      // Mock successful database insert for each batch
-      query.mockImplementation((queryText, values) => {
+      transactionalQuery.mockImplementation((queryText, values) => {
+        if (isTransactionControlQuery(queryText)) {
+          return Promise.resolve({ rowCount: 0 });
+        }
+
         const rowCount = values.length / VALUES_PER_ROW;
         return Promise.resolve({ rowCount });
       });
@@ -121,12 +146,13 @@ describe('MappingService Unit Tests', () => {
       expect(result.errors).toHaveLength(0);
       
       // Should be called 3 times: 1000 + 1000 + 500
-      expect(query).toHaveBeenCalledTimes(3);
+      const upsertCalls = getUpsertCalls();
+      expect(upsertCalls).toHaveLength(3);
       
       // Verify batch sizes
-      const firstBatchSize = query.mock.calls[0][1].length / VALUES_PER_ROW;
-      const secondBatchSize = query.mock.calls[1][1].length / VALUES_PER_ROW;
-      const thirdBatchSize = query.mock.calls[2][1].length / VALUES_PER_ROW;
+      const firstBatchSize = upsertCalls[0][1].length / VALUES_PER_ROW;
+      const secondBatchSize = upsertCalls[1][1].length / VALUES_PER_ROW;
+      const thirdBatchSize = upsertCalls[2][1].length / VALUES_PER_ROW;
       
       expect(firstBatchSize).toBe(1000);
       expect(secondBatchSize).toBe(1000);
@@ -153,7 +179,11 @@ describe('MappingService Unit Tests', () => {
 
       // Mock: first batch succeeds, second batch fails
       let callCount = 0;
-      query.mockImplementation((queryText, values) => {
+      transactionalQuery.mockImplementation((queryText, values) => {
+        if (isTransactionControlQuery(queryText)) {
+          return Promise.resolve({ rowCount: 0 });
+        }
+
         callCount++;
         if (callCount === 1) {
           // First batch succeeds
@@ -171,7 +201,7 @@ describe('MappingService Unit Tests', () => {
       expect(result.insertedCount).toBe(1000); // Only first batch succeeded
       expect(result.errors).toHaveLength(1);
       expect(result.errors[0]).toContain('Constraint violation');
-      expect(query).toHaveBeenCalledTimes(2);
+      expect(getUpsertCalls()).toHaveLength(2);
     });
 
     /**
@@ -187,7 +217,7 @@ describe('MappingService Unit Tests', () => {
       expect(result.success).toBe(true);
       expect(result.insertedCount).toBe(0);
       expect(result.errors).toHaveLength(0);
-      expect(query).not.toHaveBeenCalled();
+      expect(transaction).not.toHaveBeenCalled();
     });
 
     /**
@@ -219,13 +249,18 @@ describe('MappingService Unit Tests', () => {
         },
       ];
 
-      query.mockResolvedValue({ rowCount: 1 });
+      transactionalQuery.mockImplementation((queryText, values) => {
+        if (isTransactionControlQuery(queryText)) {
+          return Promise.resolve({ rowCount: 0 });
+        }
+
+        return Promise.resolve({ rowCount: values.length / VALUES_PER_ROW });
+      });
 
       await MappingService.saveMappings(jobId, mappings);
 
       // Verify that the query uses parameterized values
-      expect(query).toHaveBeenCalled();
-      const queryCall = query.mock.calls[0];
+      const queryCall = getUpsertCalls()[0];
       const queryText = queryCall[0];
       const queryValues = queryCall[1];
 
@@ -233,6 +268,51 @@ describe('MappingService Unit Tests', () => {
       expect(queryText).not.toContain("'; DROP TABLE");
       // The malicious string should be in the values array (safely parameterized)
       expect(queryValues).toContain("'; DROP TABLE customer_pocket_mappings; --");
+    });
+
+    test('should keep the latest mapping when a batch repeats customer IDs', async () => {
+      const jobId = 333;
+      const mappings = [
+        {
+          customerId: 'CUST001',
+          customerLat: 40.7128,
+          customerLon: -74.0060,
+          pocketId: 'OLD',
+          distanceCustomerToPocket: 150.5,
+          nearestBranchId: 'BR001',
+          distancePocketToBranch: 500.0,
+          distanceCustomerToBranch: 650.5,
+        },
+        {
+          customerId: 'CUST001',
+          customerLat: 41.0000,
+          customerLon: -73.5000,
+          pocketId: 'NEW',
+          distanceCustomerToPocket: 99.9,
+          nearestBranchId: 'BR002',
+          distancePocketToBranch: 333.0,
+          distanceCustomerToBranch: 432.9,
+        },
+      ];
+
+      transactionalQuery.mockImplementation((queryText, values) => {
+        if (isTransactionControlQuery(queryText)) {
+          return Promise.resolve({ rowCount: 0 });
+        }
+
+        return Promise.resolve({ rowCount: values.length / VALUES_PER_ROW });
+      });
+
+      const result = await MappingService.saveMappings(jobId, mappings);
+
+      expect(result.success).toBe(true);
+      expect(result.insertedCount).toBe(1);
+
+      const upsertCall = getUpsertCalls()[0];
+      expect(upsertCall[1].length / VALUES_PER_ROW).toBe(1);
+      expect(upsertCall[1][1]).toBe('CUST001');
+      expect(upsertCall[1][4]).toBe('NEW');
+      expect(upsertCall[1][6]).toBe('BR002');
     });
   });
 

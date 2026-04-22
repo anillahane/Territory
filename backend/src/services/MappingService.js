@@ -6,6 +6,38 @@
 const { query, transaction } = require('../config/database');
 const logger = require('../config/logger');
 
+const BATCH_SIZE = 1000;
+const VALUES_PER_ROW = 12;
+const UPSERT_COLUMNS = Object.freeze([
+  'job_id',
+  'customer_id',
+  'customer_lat',
+  'customer_lon',
+  'pocket_id',
+  'distance_customer_to_pocket',
+  'nearest_branch_id',
+  'distance_pocket_to_branch',
+  'distance_customer_to_branch',
+  'uploaded_branch_code',
+  'existing_branch_id',
+  'distance_customer_to_existing_branch',
+]);
+const UPSERT_UPDATE_COLUMNS = Object.freeze(
+  UPSERT_COLUMNS.filter((column) => column !== 'customer_id')
+);
+
+const buildSavepointName = (batchNumber) => `mapping_batch_${batchNumber}`;
+
+const dedupeBatchByCustomerId = (batch) => {
+  const deduped = new Map();
+
+  batch.forEach((mapping) => {
+    deduped.set(String(mapping.customerId), mapping);
+  });
+
+  return Array.from(deduped.values());
+};
+
 class MappingService {
   /**
    * Save customer-to-pocket mappings in bulk
@@ -33,9 +65,9 @@ class MappingService {
       return { success: true, insertedCount: 0, errors: [] };
     }
 
-    const BATCH_SIZE = 1000;
     let totalInserted = 0;
     const errors = [];
+    const totalBatches = Math.ceil(mappings.length / BATCH_SIZE);
 
     logger.info('Starting bulk mapping insert', {
       jobId,
@@ -43,39 +75,46 @@ class MappingService {
       batchSize: BATCH_SIZE,
     });
 
-    // Process mappings in batches of 1000
-    for (let i = 0; i < mappings.length; i += BATCH_SIZE) {
-      const batch = mappings.slice(i, i + BATCH_SIZE);
-      const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
-      const totalBatches = Math.ceil(mappings.length / BATCH_SIZE);
+    await transaction(async (client) => {
+      for (let i = 0; i < mappings.length; i += BATCH_SIZE) {
+        const rawBatch = mappings.slice(i, i + BATCH_SIZE);
+        const batch = dedupeBatchByCustomerId(rawBatch);
+        const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+        const savepointName = buildSavepointName(batchNumber);
 
-      try {
-        const insertedCount = await this._insertBatch(jobId, batch);
-        totalInserted += insertedCount;
-        
-        logger.debug('Batch insert successful', {
-          jobId,
-          batchNumber,
-          totalBatches,
-          batchSize: batch.length,
-          insertedCount,
-        });
-      } catch (error) {
-        const errorMsg = `Batch ${batchNumber}/${totalBatches} failed: ${error.message}`;
-        logger.error('Batch insert failed', {
-          jobId,
-          batchNumber,
-          totalBatches,
-          batchSize: batch.length,
-          error: error.message,
-          stack: error.stack,
-        });
-        errors.push(errorMsg);
+        await client.query(`SAVEPOINT ${savepointName}`);
 
-        // Continue processing remaining batches
-        continue;
+        try {
+          const insertedCount = await this._insertBatch(client, jobId, batch);
+          totalInserted += insertedCount;
+          await client.query(`RELEASE SAVEPOINT ${savepointName}`);
+
+          logger.debug('Batch insert successful', {
+            jobId,
+            batchNumber,
+            totalBatches,
+            batchSize: rawBatch.length,
+            upsertedCount: insertedCount,
+            dedupedCount: batch.length,
+          });
+        } catch (error) {
+          await client.query(`ROLLBACK TO SAVEPOINT ${savepointName}`);
+          await client.query(`RELEASE SAVEPOINT ${savepointName}`);
+
+          const errorMsg = `Batch ${batchNumber}/${totalBatches} failed: ${error.message}`;
+          logger.error('Batch insert failed', {
+            jobId,
+            batchNumber,
+            totalBatches,
+            batchSize: rawBatch.length,
+            dedupedCount: batch.length,
+            error: error.message,
+            stack: error.stack,
+          });
+          errors.push(errorMsg);
+        }
       }
-    }
+    });
 
     const success = errors.length === 0;
     
@@ -431,17 +470,22 @@ class MappingService {
   /**
    * Insert a single batch of mappings using parameterized query
    * @private
+   * @param {Object} client - Transaction client
    * @param {string} jobId - The batch job UUID
    * @param {Array<Object>} batch - Batch of mapping objects
    * @returns {Promise<number>} Number of records inserted
    */
-  async _insertBatch(jobId, batch) {
+  async _insertBatch(client, jobId, batch) {
     // Build parameterized query for bulk insert
     const values = [];
     const placeholders = [];
+    const updateAssignments = UPSERT_UPDATE_COLUMNS
+      .map((column) => `${column} = EXCLUDED.${column}`)
+      .concat('created_at = CURRENT_TIMESTAMP')
+      .join(',\n        ');
     
     batch.forEach((mapping, index) => {
-      const baseIndex = index * 12; // 12 columns per row
+      const baseIndex = index * VALUES_PER_ROW;
       
       // Add values for this row
       values.push(
@@ -480,24 +524,15 @@ class MappingService {
 
     const queryText = `
       INSERT INTO customer_pocket_mappings (
-        job_id,
-        customer_id,
-        customer_lat,
-        customer_lon,
-        pocket_id,
-        distance_customer_to_pocket,
-        nearest_branch_id,
-        distance_pocket_to_branch,
-        distance_customer_to_branch,
-        uploaded_branch_code,
-        existing_branch_id,
-        distance_customer_to_existing_branch
+        ${UPSERT_COLUMNS.join(',\n        ')}
       )
       VALUES ${placeholders.join(', ')}
+      ON CONFLICT (customer_id) DO UPDATE SET
+        ${updateAssignments}
     `;
 
     try {
-      const result = await query(queryText, values);
+      const result = await client.query(queryText, values);
       return result.rowCount;
     } catch (error) {
       // Log detailed error information
