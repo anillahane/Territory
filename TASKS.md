@@ -41,7 +41,7 @@ Statuses:
 
 | # | Status | Task | Scope | Change |
 | --- | --- | --- | --- | --- |
-| 17 | ⬜ | TanStack Query Migration | `frontend/src/services/api.ts`, all page files; `frontend/src/App.tsx` | Replace ad-hoc `useEffect + useState` fetching with TanStack Query hooks. |
+| 17 | ✅ | TanStack Query Migration ([PR #17](https://github.com/anillahane/Territory/pull/17)) | `frontend/src/services/api.ts`, all page files; `frontend/src/App.tsx` | Replace ad-hoc `useEffect + useState` fetching with TanStack Query hooks. |
 | 18 | ⬜ | OpenTelemetry + Sentry | `backend/src/app.js`, new `backend/src/utils/tracing.js`, `backend-worker/worker.py`, `frontend/src/main.tsx` | Auto-instrument Express/pg/ioredis/axios. Send traces to OTLP collector; errors to Sentry. Frontend: browser SDK with session replay. |
 | 19 | ⬜ | BullMQ + Bull Board | migrate `backend/src/config/queue.js` from bull to bullmq; mount Bull Board UI at `/admin/queues` | BullMQ is the maintained successor; Bull Board gives an admin UI for job inspection/retry. |
 | 20 | ⬜ | Frontend Testing | add Vitest + React Testing Library; create `frontend/src/**/__tests__/*.test.tsx` | Initial coverage for stores (`useStore` slices), utils (`datetime`, `validation`), and critical components (`Dashboard` compose, `BatchProcessing` upload flow). |
