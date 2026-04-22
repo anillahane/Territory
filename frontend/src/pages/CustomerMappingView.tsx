@@ -5,11 +5,10 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   Box,
   Typography,
-  Alert,
   Card,
   CardContent,
   Grid,
-  CircularProgress,
+  Button,
   Table,
   TableBody,
   TableCell,
@@ -18,9 +17,10 @@ import {
   TableRow,
   Paper
 } from '@mui/material';
-import { Assessment, People, LocationOn, Business } from '@mui/icons-material';
+import { Assessment, People, LocationOn, Business, Refresh as RefreshIcon } from '@mui/icons-material';
 import CustomerMappingTable from '../components/CustomerMappingTable';
 import FilterPanel from '../components/FilterPanel';
+import DataState from '../components/DataState';
 import customerMappingApi from '../services/customerMappingApi';
 import {
   CustomerMapping,
@@ -205,12 +205,6 @@ export default function CustomerMappingView() {
           View and analyze customer-to-pocket assignments from batch processing operations.
         </Typography>
       </Box>
-
-      {localError && (
-        <Alert severity="error" sx={{ mb: 3 }} onClose={() => setLocalError(null)}>
-          {localError}
-        </Alert>
-      )}
 
       {/* Statistics Cards */}
       <Grid container spacing={2} sx={{ mb: 3 }}>
@@ -422,10 +416,32 @@ export default function CustomerMappingView() {
         onClearFilters={handleClearFilters}
       />
 
-      {loading && mappings.length === 0 ? (
-        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 400 }}>
-          <CircularProgress size={60} />
-        </Box>
+      {localError ? (
+        <DataState
+          variant="error"
+          title="Unable to load customer mappings"
+          description={localError}
+          minHeight={400}
+          action={
+            <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => void fetchMappings()}>
+              Try Again
+            </Button>
+          }
+        />
+      ) : loading && mappings.length === 0 ? (
+        <DataState
+          variant="loading"
+          title="Loading customer mappings"
+          description="Fetching mappings, impact metrics, and pagination details."
+          minHeight={400}
+        />
+      ) : !loading && mappings.length === 0 ? (
+        <DataState
+          variant="empty"
+          title="No customer mappings found"
+          description="Try adjusting your filters or upload a batch file to create mappings."
+          minHeight={400}
+        />
       ) : (
         <CustomerMappingTable
           mappings={mappings}

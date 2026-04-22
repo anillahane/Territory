@@ -11,9 +11,10 @@ import {
   Divider,
   Chip,
 } from '@mui/material';
-import { Save as SaveIcon, History as HistoryIcon } from '@mui/icons-material';
+import { Save as SaveIcon, History as HistoryIcon, Refresh as RefreshIcon } from '@mui/icons-material';
 import { useStore } from '../store/useStore';
 import api from '../services/api';
+import DataState from '../components/DataState';
 
 interface Config {
   originLat: number;
@@ -41,6 +42,7 @@ export default function Configuration() {
     alphabet: '0123456789ABCDEFGHJKLMNPQRSTUV',
   });
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [history, setHistory] = useState<ConfigHistory[]>([]);
   const [showHistory, setShowHistory] = useState(false);
@@ -52,6 +54,7 @@ export default function Configuration() {
 
   const loadConfig = async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const data = await api.getConfig();
       // Handle both response formats
@@ -61,9 +64,12 @@ export default function Configuration() {
         originLon: configData.originLon,
         alphabet: configData.alphabet,
       });
+      setLoadError(null);
     } catch (error: any) {
       console.error('Failed to load configuration:', error);
-      setError(error.message || 'Failed to load configuration');
+      const errorMessage = error.message || 'Failed to load configuration';
+      setLoadError(errorMessage);
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -146,32 +152,56 @@ export default function Configuration() {
     }
   };
 
-  if (loading) {
-    return (
-      <Box sx={{ width: '100%', height: '100%', p: 3 }}>
-        <Typography variant="h4" gutterBottom>
+  const pageHeader = (
+    <Box sx={{ mb: 3 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+        <Typography variant="h4" gutterBottom sx={{ fontWeight: 700, color: '#991B1B', mb: 0 }}>
           System Configuration
         </Typography>
-        <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
-          <CircularProgress />
-        </Box>
+        <Chip label="ADMIN ONLY" color="error" size="small" sx={{ fontWeight: 700 }} />
+      </Box>
+      <Typography variant="body1" color="text.secondary">
+        Configure the core mathematical foundation for Pocket ID generation
+      </Typography>
+    </Box>
+  );
+
+  if (loading) {
+    return (
+      <Box sx={{ width: '100%', height: '100%', p: 3, overflow: 'auto', bgcolor: '#FEF2F2' }}>
+        {pageHeader}
+        <DataState
+          variant="loading"
+          title="Loading system configuration"
+          description="Fetching the active grid origin and alphabet settings."
+          minHeight={400}
+        />
+      </Box>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <Box sx={{ width: '100%', height: '100%', p: 3, overflow: 'auto', bgcolor: '#FEF2F2' }}>
+        {pageHeader}
+        <DataState
+          variant="error"
+          title="Unable to load configuration"
+          description={loadError}
+          minHeight={400}
+          action={
+            <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => void loadConfig()}>
+              Try Again
+            </Button>
+          }
+        />
       </Box>
     );
   }
 
   return (
     <Box sx={{ width: '100%', height: '100%', p: 3, overflow: 'auto', bgcolor: '#FEF2F2' }}>
-      <Box sx={{ mb: 3 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-          <Typography variant="h4" gutterBottom sx={{ fontWeight: 700, color: '#991B1B', mb: 0 }}>
-            System Configuration
-          </Typography>
-          <Chip label="ADMIN ONLY" color="error" size="small" sx={{ fontWeight: 700 }} />
-        </Box>
-        <Typography variant="body1" color="text.secondary">
-          Configure the core mathematical foundation for Pocket ID generation
-        </Typography>
-      </Box>
+      {pageHeader}
 
       <Alert severity="error" sx={{ mb: 3 }}>
         <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>

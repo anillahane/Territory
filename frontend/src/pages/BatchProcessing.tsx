@@ -38,6 +38,7 @@ import {
 } from '@mui/icons-material';
 import { useStore } from '../store/useStore';
 import api from '../services/api';
+import DataState from '../components/DataState';
 
 interface Job {
   jobId: string;
@@ -81,6 +82,7 @@ export default function BatchProcessing() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [loadingJobs, setLoadingJobs] = useState(false);
+  const [jobHistoryError, setJobHistoryError] = useState<string | null>(null);
   const [selectedJobStats, setSelectedJobStats] = useState<Job | null>(null);
   const [statsDialogOpen, setStatsDialogOpen] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null); // Track currently processing job
@@ -91,6 +93,7 @@ export default function BatchProcessing() {
   const loadJobHistory = useCallback(async (liveJobId: string | null = activeJobId) => {
     console.log('loadJobHistory: Starting...');
     setLoadingJobs(true);
+    setJobHistoryError(null);
     try {
       console.log('loadJobHistory: Calling API...');
       const response = await api.listJobs({
@@ -123,13 +126,17 @@ export default function BatchProcessing() {
         response: error.response?.data,
         status: error.response?.status
       });
-      setError('Failed to load job history. Redis may not be running.');
+      const errorMessage = 'Failed to load job history. Redis may not be running.';
+      setJobHistoryError(errorMessage);
+      setError(errorMessage);
       setJobs([]);
     } finally {
       console.log('loadJobHistory: Complete, setting loadingJobs to false');
       setLoadingJobs(false);
     }
   }, [activeJobId, setError]);
+
+  const showInitialJobsState = loadingJobs && jobs.length === 0 && !jobHistoryError;
 
   useEffect(() => {
     console.log('BatchProcessing component mounted');
@@ -489,16 +496,16 @@ export default function BatchProcessing() {
 
   return (
     <Box sx={{ width: '100%', height: '100%', p: 3 }}>
-      {loadingJobs && jobs.length === 0 && (
-        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '200px' }}>
-          <CircularProgress />
-          <Typography variant="body2" sx={{ ml: 2 }}>
-            Loading batch processing module...
-          </Typography>
-        </Box>
+      {showInitialJobsState && (
+        <DataState
+          variant="loading"
+          title="Loading batch processing module"
+          description="Fetching recent jobs and reconnecting live updates."
+          minHeight={200}
+        />
       )}
       
-      {!loadingJobs || jobs.length > 0 ? (
+      {!showInitialJobsState ? (
         <>
           <Box display="flex" justifyContent="space-between" alignItems="center" mb={3}>
             <Box>
@@ -660,48 +667,50 @@ export default function BatchProcessing() {
           <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
             <Typography variant="h6">Job History</Typography>
           </Box>
-          <TableContainer>
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableCell>File Name</TableCell>
-                  <TableCell>Status</TableCell>
-                  <TableCell>Progress</TableCell>
-                  <TableCell>Records</TableCell>
-                  <TableCell>Created</TableCell>
-                  <TableCell>Actions</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {loadingJobs && jobs.length === 0 ? (
+          {jobHistoryError ? (
+            <DataState
+              variant="error"
+              title="Unable to load job history"
+              description={jobHistoryError}
+              minHeight={240}
+              action={
+                <Button variant="outlined" startIcon={<RefreshIcon />} onClick={() => void loadJobHistory()}>
+                  Try Again
+                </Button>
+              }
+            />
+          ) : loadingJobs && jobs.length === 0 ? (
+            <DataState
+              variant="loading"
+              title="Loading job history"
+              description="Fetching recent batch processing runs."
+              minHeight={240}
+            />
+          ) : jobs.length === 0 ? (
+            <DataState
+              variant="empty"
+              title="No job history available"
+              description="Job history will appear here after you process files."
+              minHeight={240}
+            />
+          ) : (
+            <TableContainer>
+              <Table>
+                <TableHead>
                   <TableRow>
-                    <TableCell colSpan={6} align="center">
-                      <Box sx={{ py: 3, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 2 }}>
-                        <CircularProgress size={24} />
-                        <Typography variant="body2" color="text.secondary">
-                          Loading job history...
-                        </Typography>
-                      </Box>
-                    </TableCell>
+                    <TableCell>File Name</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>Progress</TableCell>
+                    <TableCell>Records</TableCell>
+                    <TableCell>Created</TableCell>
+                    <TableCell>Actions</TableCell>
                   </TableRow>
-                ) : jobs.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={6} align="center">
-                      <Box sx={{ py: 3 }}>
-                        <Typography variant="body2" color="text.secondary" gutterBottom>
-                          No job history available
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          Job history will appear here after you process files.
-                        </Typography>
-                      </Box>
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  jobs.map((job) => {
+                </TableHead>
+                <TableBody>
+                  {jobs.map((job) => {
                     const isActiveJob = job.jobId === activeJobId;
                     return (
-                    <TableRow 
+                    <TableRow
                       key={job.jobId}
                       sx={{
                         backgroundColor: isActiveJob ? 'rgba(25, 118, 210, 0.08)' : 'transparent',
@@ -820,11 +829,11 @@ export default function BatchProcessing() {
                       </TableCell>
                     </TableRow>
                   );
-                  })
-                )}
-              </TableBody>
-            </Table>
-          </TableContainer>
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
         </Paper>
       )}
 
