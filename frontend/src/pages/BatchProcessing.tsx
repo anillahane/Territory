@@ -480,7 +480,11 @@ export default function BatchProcessing() {
             </Box>
             <Box display="flex" gap={1}>
               <Tooltip title="Refresh History">
-                <IconButton onClick={() => void loadJobHistory()} disabled={loadingJobs}>
+                <IconButton
+                  aria-label="Refresh job history"
+                  onClick={() => void loadJobHistory()}
+                  disabled={loadingJobs}
+                >
                   <RefreshIcon />
                 </IconButton>
               </Tooltip>
@@ -728,6 +732,7 @@ export default function BatchProcessing() {
                           {job.status === 'completed' && job.data?.pocketStats && (
                             <Tooltip title="View Statistics">
                               <IconButton
+                                aria-label={`View statistics for ${job.data?.fileName || job.jobId}`}
                                 size="small"
                                 onClick={() => handleViewStats(job)}
                                 color="info"
@@ -740,6 +745,7 @@ export default function BatchProcessing() {
                             <>
                               <Tooltip title="View Mappings">
                               <IconButton
+                                aria-label={`View mappings for ${job.data?.fileName || job.jobId}`}
                                 size="small"
                                 onClick={() => window.location.href = '/mappings'}
                                 color="secondary"
@@ -749,6 +755,7 @@ export default function BatchProcessing() {
                               </Tooltip>
                               <Tooltip title="Download Results">
                                 <IconButton
+                                  aria-label={`Download results for ${job.data?.fileName || job.jobId}`}
                                   size="small"
                                   onClick={() => handleDownloadJob(job.jobId)}
                                   color="primary"
@@ -758,6 +765,7 @@ export default function BatchProcessing() {
                               </Tooltip>
                               <Tooltip title="Download Territories (Voronoi)">
                                 <IconButton
+                                  aria-label={`Download territories for ${job.data?.fileName || job.jobId}`}
                                   size="small"
                                   onClick={() => handleDownloadTerritories(job.jobId)}
                                   color="success"
@@ -770,6 +778,7 @@ export default function BatchProcessing() {
                           {job.status === 'failed' && (
                             <Tooltip title="Retry">
                               <IconButton
+                                aria-label={`Retry ${job.data?.fileName || job.jobId}`}
                                 size="small"
                                 onClick={() => handleRetryJob(job.jobId)}
                                 color="warning"
@@ -780,6 +789,7 @@ export default function BatchProcessing() {
                           )}
                           <Tooltip title="Delete">
                             <IconButton
+                              aria-label={`Delete ${job.data?.fileName || job.jobId}`}
                               size="small"
                               onClick={() => handleDeleteJob(job.jobId)}
                               color="error"
@@ -801,6 +811,8 @@ export default function BatchProcessing() {
 
       {/* Upload Dialog */}
       <Dialog
+        aria-describedby="batch-upload-dialog-description"
+        aria-labelledby="batch-upload-dialog-title"
         open={uploadDialogOpen}
         onClose={() => {
           if (uploading) {
@@ -812,10 +824,10 @@ export default function BatchProcessing() {
         maxWidth="sm"
         fullWidth
       >
-        <DialogTitle>Upload File for Batch Processing</DialogTitle>
+        <DialogTitle id="batch-upload-dialog-title">Upload File for Batch Processing</DialogTitle>
         <DialogContent>
           <Box sx={{ pt: 2 }}>
-            <Alert severity="info" sx={{ mb: 2 }}>
+            <Alert id="batch-upload-dialog-description" severity="info" sx={{ mb: 2 }}>
               Excel file should contain columns: <strong>lan</strong> (Customer ID), <strong>canon_lat</strong> (Latitude), <strong>canon_long</strong> (Longitude), <strong>branch_code</strong>
               <br />
               (Column names are case-insensitive. Also accepts: Latitude/latitude/Lat/lat and Longitude/longitude/Lon/lon)
@@ -828,18 +840,21 @@ export default function BatchProcessing() {
 
             {!uploading && (
               <>
-                <input
-                  type="file"
-                  accept=".xlsx,.xls"
-                  onChange={handleFileSelect}
-                  style={{ display: 'none' }}
-                  id="batch-file-upload"
-                />
-                <label htmlFor="batch-file-upload">
-                  <Button variant="outlined" component="span" fullWidth>
-                    Select Excel File
-                  </Button>
-                </label>
+                <Button
+                  variant="outlined"
+                  component="label"
+                  fullWidth
+                  autoFocus
+                >
+                  Select Excel File
+                  <input
+                    hidden
+                    type="file"
+                    accept=".xlsx,.xls"
+                    onChange={handleFileSelect}
+                    id="batch-file-upload"
+                  />
+                </Button>
                 {selectedFile && (
                   <Typography variant="body2" sx={{ mt: 2 }}>
                     Selected: {selectedFile.name}
@@ -864,7 +879,11 @@ export default function BatchProcessing() {
             )}
 
             {uploading && (
-              <Box sx={{ mt: 2, display: 'flex', alignItems: 'center', gap: 2 }}>
+              <Box
+                role="status"
+                aria-live="polite"
+                sx={{ mt: 2, display: 'flex', alignItems: 'center', gap: 2 }}
+              >
                 <CircularProgress size={24} />
                 <Typography variant="body2">
                   Uploading and parsing file...
@@ -896,12 +915,14 @@ export default function BatchProcessing() {
 
       {/* Statistics Dialog */}
       <Dialog
+        aria-describedby="batch-stats-dialog-description"
+        aria-labelledby="batch-stats-dialog-title"
         open={statsDialogOpen}
         onClose={() => setStatsDialogOpen(false)}
         maxWidth="md"
         fullWidth
       >
-        <DialogTitle>
+        <DialogTitle id="batch-stats-dialog-title">
           Pocket Statistics
           {selectedJobStats?.data?.fileName && (
             <Typography variant="caption" display="block" color="text.secondary">
@@ -910,6 +931,9 @@ export default function BatchProcessing() {
           )}
         </DialogTitle>
         <DialogContent>
+          <Typography id="batch-stats-dialog-description" variant="body2" color="text.secondary" sx={{ pt: 2 }}>
+            Review the processed account totals and per-pocket distribution for the selected batch job.
+          </Typography>
           {selectedJobStats?.data?.pocketStats && (
             <Box sx={{ pt: 2 }}>
               <Grid container spacing={2} sx={{ mb: 3 }}>
@@ -986,7 +1010,7 @@ export default function BatchProcessing() {
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setStatsDialogOpen(false)}>Close</Button>
+          <Button autoFocus onClick={() => setStatsDialogOpen(false)}>Close</Button>
         </DialogActions>
       </Dialog>
         </>

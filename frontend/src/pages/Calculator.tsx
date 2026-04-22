@@ -255,6 +255,7 @@ export default function Calculator() {
                   </Typography>
                   <Tooltip title="Copy Pocket ID">
                     <IconButton
+                      aria-label="Copy Pocket ID"
                       size="small"
                       onClick={() => handleCopy(encodeResult.pocketId)}
                     >
@@ -313,6 +314,7 @@ export default function Calculator() {
                   />
                   <Tooltip title="Copy coordinates">
                     <IconButton
+                      aria-label="Copy center coordinates"
                       size="small"
                       onClick={() =>
                         handleCopy(`${decodeResult.centerLat}, ${decodeResult.centerLon}`)

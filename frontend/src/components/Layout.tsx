@@ -133,7 +133,7 @@ export default function Layout() {
               <Typography
                 sx={{
                   fontSize: '9px',
-                  color: '#94A3B8',
+                  color: '#475569',
                   letterSpacing: '1px',
                   textTransform: 'uppercase',
                   whiteSpace: 'nowrap',
@@ -146,6 +146,7 @@ export default function Layout() {
             </Box>
           )}
           <IconButton
+            aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
             onClick={toggleSidebar}
             size="small"
             sx={{
@@ -219,23 +220,28 @@ export default function Layout() {
               }}
             >
               <Box
-                onClick={() => setMapLegendExpanded((prev) => !prev)}
                 sx={{
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
-                  cursor: 'pointer',
                   mb: mapLegendExpanded ? 0.75 : 0
                 }}
               >
                 <Typography sx={{ fontSize: '11px', fontWeight: 700, color: '#0F172A' }}>
                   Map Legend
                 </Typography>
-                <IconButton size="small" sx={{ p: 0.2, color: '#64748B' }}>
+                <IconButton
+                  aria-controls="dashboard-map-legend-content"
+                  aria-expanded={mapLegendExpanded}
+                  aria-label={mapLegendExpanded ? 'Collapse map legend' : 'Expand map legend'}
+                  onClick={() => setMapLegendExpanded((prev) => !prev)}
+                  size="small"
+                  sx={{ p: 0.2, color: '#64748B' }}
+                >
                   {mapLegendExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
                 </IconButton>
               </Box>
-              <Collapse in={mapLegendExpanded} timeout="auto" unmountOnExit>
+              <Collapse id="dashboard-map-legend-content" in={mapLegendExpanded} timeout="auto" unmountOnExit>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.6 }}>
                 <Box
                   sx={{
