@@ -4,7 +4,12 @@
 
 const request = require('supertest');
 const app = require('../../src/app');
-const { setupTestDatabase, cleanupTestData, teardownTestDatabase } = require('./setup');
+const {
+  setupTestDatabase,
+  cleanupTestData,
+  teardownTestDatabase,
+  createAuthHeaders,
+} = require('./setup');
 
 describe('Configuration API Integration Tests', () => {
   beforeAll(async () => {
@@ -23,6 +28,7 @@ describe('Configuration API Integration Tests', () => {
     test('should return default configuration', async () => {
       const response = await request(app)
         .get('/api/v1/config')
+        .set(createAuthHeaders('admin'))
         .expect(200);
 
       expect(response.body).toHaveProperty('originLat');
@@ -42,6 +48,7 @@ describe('Configuration API Integration Tests', () => {
 
       const response = await request(app)
         .put('/api/v1/config')
+        .set(createAuthHeaders('admin'))
         .send(newConfig)
         .expect(200);
 
@@ -60,6 +67,7 @@ describe('Configuration API Integration Tests', () => {
 
       await request(app)
         .put('/api/v1/config')
+        .set(createAuthHeaders('admin'))
         .send(invalidConfig)
         .expect(400);
     });
@@ -73,6 +81,7 @@ describe('Configuration API Integration Tests', () => {
 
       await request(app)
         .put('/api/v1/config')
+        .set(createAuthHeaders('admin'))
         .send(invalidConfig)
         .expect(400);
     });
@@ -83,6 +92,7 @@ describe('Configuration API Integration Tests', () => {
       // First, update config to create history
       await request(app)
         .put('/api/v1/config')
+        .set(createAuthHeaders('admin'))
         .send({
           originLat: 12.9716,
           originLon: 77.5946,
@@ -91,6 +101,7 @@ describe('Configuration API Integration Tests', () => {
 
       const response = await request(app)
         .get('/api/v1/config/history')
+        .set(createAuthHeaders('admin'))
         .expect(200);
 
       const history = response.body.history || response.body;

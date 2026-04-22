@@ -42,6 +42,12 @@ services:
     environment:
       NODE_ENV: development
       PORT: 3000
+      JWT_SECRET: ${JWT_SECRET:-development-only-jwt-secret}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-7d}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@example.com}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-Admin123!}
+      BOOTSTRAP_ADMIN_ROLE: ${BOOTSTRAP_ADMIN_ROLE:-admin}
       DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: location_pockets

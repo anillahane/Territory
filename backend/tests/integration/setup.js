@@ -7,6 +7,7 @@ require('dotenv').config();
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
+const { issueAccessToken } = require('../../src/middleware/auth');
 
 // Test database configuration
 const testDbConfig = {
@@ -33,6 +34,7 @@ async function setupTestDatabase() {
       '002_add_jobs_data_column.sql',
       '003_create_customer_pocket_mappings.sql',
       '004_add_branch_impact_fields.sql',
+      '005_create_users_table.sql',
     ];
 
     for (const migrationFile of migrations) {
@@ -57,6 +59,7 @@ async function cleanupTestData() {
     await pool.query('TRUNCATE TABLE branches CASCADE;');
     await pool.query('TRUNCATE TABLE jobs RESTART IDENTITY CASCADE;');
     await pool.query('TRUNCATE TABLE config_audit RESTART IDENTITY CASCADE;');
+    await pool.query('TRUNCATE TABLE users RESTART IDENTITY CASCADE;');
     await pool.query(`
       UPDATE config
       SET
@@ -89,9 +92,22 @@ function getPool() {
   return pool;
 }
 
+function createAuthHeaders(role = 'admin') {
+  const token = issueAccessToken({
+    id: `test-${role}`,
+    email: `${role}@example.com`,
+    role,
+  });
+
+  return {
+    Authorization: `Bearer ${token}`,
+  };
+}
+
 module.exports = {
   setupTestDatabase,
   cleanupTestData,
   teardownTestDatabase,
   getPool,
+  createAuthHeaders,
 };

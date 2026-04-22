@@ -4,7 +4,12 @@
 
 const request = require('supertest');
 const app = require('../../src/app');
-const { setupTestDatabase, cleanupTestData, teardownTestDatabase } = require('./setup');
+const {
+  setupTestDatabase,
+  cleanupTestData,
+  teardownTestDatabase,
+  createAuthHeaders,
+} = require('./setup');
 
 describe('Pocket ID API Integration Tests', () => {
   beforeAll(async () => {
@@ -23,6 +28,7 @@ describe('Pocket ID API Integration Tests', () => {
     test('should encode coordinates to Pocket ID', async () => {
       const response = await request(app)
         .post('/api/v1/pocket/encode')
+        .set(createAuthHeaders('viewer'))
         .send({
           latitude: 12.9716,
           longitude: 77.5946,
@@ -38,6 +44,7 @@ describe('Pocket ID API Integration Tests', () => {
     test('should reject invalid coordinates', async () => {
       await request(app)
         .post('/api/v1/pocket/encode')
+        .set(createAuthHeaders('viewer'))
         .send({
           latitude: 100, // Invalid
           longitude: 77.5946,
@@ -51,6 +58,7 @@ describe('Pocket ID API Integration Tests', () => {
       // First encode
       const encodeResponse = await request(app)
         .post('/api/v1/pocket/encode')
+        .set(createAuthHeaders('viewer'))
         .send({
           latitude: 12.9716,
           longitude: 77.5946,
@@ -61,6 +69,7 @@ describe('Pocket ID API Integration Tests', () => {
       // Then decode
       const response = await request(app)
         .post('/api/v1/pocket/decode')
+        .set(createAuthHeaders('viewer'))
         .send({ pocketId })
         .expect(200);
 
@@ -74,6 +83,7 @@ describe('Pocket ID API Integration Tests', () => {
     test('should reject invalid Pocket ID format', async () => {
       await request(app)
         .post('/api/v1/pocket/decode')
+        .set(createAuthHeaders('viewer'))
         .send({ pocketId: 'INVALID' })
         .expect(400);
     });
@@ -83,6 +93,7 @@ describe('Pocket ID API Integration Tests', () => {
     test('should validate correct Pocket ID', async () => {
       const response = await request(app)
         .post('/api/v1/pocket/validate')
+        .set(createAuthHeaders('viewer'))
         .send({ pocketId: '00-00-00-00-00' })
         .expect(200);
 
@@ -92,6 +103,7 @@ describe('Pocket ID API Integration Tests', () => {
     test('should reject invalid Pocket ID', async () => {
       const response = await request(app)
         .post('/api/v1/pocket/validate')
+        .set(createAuthHeaders('viewer'))
         .send({ pocketId: 'INVALID' })
         .expect(200);
 
@@ -108,6 +120,7 @@ describe('Pocket ID API Integration Tests', () => {
       // Encode
       const encodeResponse = await request(app)
         .post('/api/v1/pocket/encode')
+        .set(createAuthHeaders('viewer'))
         .send({
           latitude: originalLat,
           longitude: originalLon,
@@ -116,6 +129,7 @@ describe('Pocket ID API Integration Tests', () => {
       // Decode
       const decodeResponse = await request(app)
         .post('/api/v1/pocket/decode')
+        .set(createAuthHeaders('viewer'))
         .send({ pocketId: encodeResponse.body.pocketId });
 
       // Should be within 1km (finest grid level)
