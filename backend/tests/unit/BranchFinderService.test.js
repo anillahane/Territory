@@ -19,7 +19,7 @@ const { query } = require('../../src/config/database');
 
 describe('BranchFinderService - Unit Tests', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    jest.resetAllMocks();
   });
 
   describe('findNearestBranch with known branch locations', () => {
