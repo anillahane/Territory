@@ -20,7 +20,7 @@ Statuses:
 
 | # | Status | Task | Scope | Change |
 | --- | --- | --- | --- | --- |
-| 6 | ⬜ | PostGIS Nearest-Branch | `backend/src/routes/nearest.js`, `backend/src/services/NearestService.js` | Replace JS Haversine loop (`O(N×M)`) with `ORDER BY branches.geom <-> ST_MakePoint($lon,$lat)::geography LIMIT k`. GIST index already exists. |
+| 6 | ✅ | PostGIS Nearest-Branch ([PR #6](https://github.com/anillahane/Territory/pull/6)) | `backend/src/routes/nearest.js`, `backend/src/services/NearestService.js` | Replace JS Haversine loop (`O(N×M)`) with `ORDER BY branches.geom <-> ST_MakePoint($lon,$lat)::geography LIMIT k`. GIST index already exists. |
 | 7 | ⬜ | Territory Visualization Caching | `backend/src/routes/batch.js` (`GET /batch/territories/visualization`), new `backend/src/services/TerritoryCache.js` | Cache rendered Voronoi GeoJSON in Redis with a key derived from `{jobId, mode, branchIds, customerView, config.version}`. TTL 1h. Invalidate on new job or config change. |
 | 8 | ⬜ | Frontend Route Lazy-Loading | `frontend/src/App.tsx`, `vite.config.ts` | `React.lazy` all 6 route pages; `Suspense` fallback; split vendor chunks for MUI and MapLibre. |
 | 9 | ⬜ | Server-Side Pagination | `frontend/src/pages/Branches.tsx`, `backend/src/routes/branches.js` | Remove `limit: 1000` client-side fetch; switch to `@mui/x-data-grid` server-mode pagination (`paginationMode="server"`). Backend already supports `limit/offset`. |
