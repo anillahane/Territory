@@ -337,7 +337,7 @@ export default function Branches() {
             setUploading(false);
             setUploadProgress(0);
             setError(status.error || 'Upload failed');
-          } else if (status.status === 'active') {
+          } else if (status.status === 'active' || status.status === 'pending') {
             console.log('Job is active, progress:', progress);
           } else {
             console.log('Job status:', status.status);

@@ -7,6 +7,7 @@ const { encodePocketId } = require('../utils/geometry');
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
 const { branchUploadQueue } = require('../config/queue');
 const logger = require('../config/logger');
+const jobStatusService = require('../services/JobStatusService');
 const { createExcelUpload, validateUploadedWorkbook } = require('../utils/fileValidation');
 
 const router = express.Router();
@@ -67,6 +68,18 @@ router.post(
     // Generate unique job ID
     const jobId = uuidv4();
 
+    await jobStatusService.createJob({
+      jobId,
+      type: 'branch_upload',
+      total: rowCount,
+      data: {
+        fileName: sanitizedFileName,
+        rowCount,
+        uploadMode,
+        confirmWipeAll: allowGlobalWipe,
+      },
+    });
+
     let job;
     try {
       // Add job to queue
@@ -86,6 +99,10 @@ router.post(
         error: error.message,
         fileName: sanitizedFileName,
       });
+      await jobStatusService.markJobFailed(
+        jobId,
+        'Upload queue is unavailable. Verify Redis service is running and try again.'
+      );
       throw new AppError(
         'Upload queue is unavailable. Verify Redis service is running and try again.',
         503,
@@ -106,7 +123,7 @@ router.post(
     res.status(202).json({
       message: 'Upload queued for processing',
       jobId: job.id,
-      status: 'queued',
+      status: 'pending',
       fileName: sanitizedFileName,
       rowCount,
       uploadMode,
