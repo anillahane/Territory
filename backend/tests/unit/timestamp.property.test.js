@@ -8,6 +8,10 @@
 const fc = require('fast-check');
 const { query } = require('../../src/config/database');
 const mappingService = require('../../src/services/MappingService');
+const {
+  setupTestDatabase,
+  teardownTestDatabase,
+} = require('../integration/setup');
 
 const ensureTestBranches = async () => {
   await query(`
@@ -28,6 +32,7 @@ const ensureTestBranches = async () => {
 describe('Property 18: Timestamp Presence', () => {
 
   beforeAll(async () => {
+    await setupTestDatabase();
     await ensureTestBranches();
     // Clean up test data
     await query('DELETE FROM customer_pocket_mappings WHERE job_id LIKE $1', ['test-timestamp-%']);
@@ -38,6 +43,7 @@ describe('Property 18: Timestamp Presence', () => {
     // Clean up test data
     await query('DELETE FROM customer_pocket_mappings WHERE job_id LIKE $1', ['test-timestamp-%']);
     await query('DELETE FROM jobs WHERE job_id LIKE $1', ['test-timestamp-%']);
+    await teardownTestDatabase();
   });
 
   it('should ensure all mappings have valid created_at timestamps', async () => {

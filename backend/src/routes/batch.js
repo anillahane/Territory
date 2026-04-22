@@ -7,6 +7,7 @@ const fs = require('fs');
 const { query } = require('../config/database');
 const { encodePocketId, decodePocketId, findNearestPocket, haversineDistance } = require('../utils/geometry');
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
+const { requireRole } = require('../middleware/auth');
 const logger = require('../config/logger');
 const { batchProcessQueue } = require('../config/queue');
 const mappingService = require('../services/MappingService');
@@ -931,6 +932,7 @@ batchQueue.on('failed', async (job, err) => {
  */
 router.post(
   '/encode',
+  requireRole('admin'),
   upload.single('file'),
   asyncHandler(async (req, res) => {
     console.log("1. Route hit, file uploaded to disk:", req.file?.path);

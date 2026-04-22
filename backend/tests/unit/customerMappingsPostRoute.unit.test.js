@@ -11,6 +11,10 @@ jest.mock('../../src/services/MappingService');
 const createTestApp = () => {
   const app = express();
   app.use(express.json());
+  app.use((req, _res, next) => {
+    req.user = { role: 'admin' };
+    next();
+  });
   app.use('/api/v1/customer-mappings', customerMappingsRoutes);
   app.use(errorHandler);
   return app;

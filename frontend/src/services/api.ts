@@ -1,9 +1,55 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api/v1';
+const AUTH_STORAGE_KEY = 'territory-auth';
+
+export type AuthUser = {
+  id: string;
+  email: string;
+  role: 'admin' | 'editor' | 'viewer';
+};
+
+export type AuthSession = {
+  accessToken: string;
+  refreshToken: string;
+  user: AuthUser;
+};
+
+const readStoredSession = (): AuthSession | null => {
+  const rawValue = window.localStorage.getItem(AUTH_STORAGE_KEY);
+  if (!rawValue) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(rawValue) as AuthSession;
+  } catch {
+    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    return null;
+  }
+};
+
+export const getStoredSession = (): AuthSession | null => readStoredSession();
+
+export const setStoredSession = (session: AuthSession) => {
+  window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
+};
+
+export const clearStoredSession = () => {
+  window.localStorage.removeItem(AUTH_STORAGE_KEY);
+};
+
+export const isAuthenticated = () => Boolean(readStoredSession()?.accessToken);
+
+const redirectToLogin = () => {
+  if (window.location.pathname !== '/login') {
+    window.location.assign('/login');
+  }
+};
 
 class ApiService {
   private client: AxiosInstance;
+  private refreshPromise: Promise<AuthSession> | null = null;
 
   constructor() {
     this.client = axios.create({
@@ -14,7 +60,11 @@ class ApiService {
     // Request interceptor
     this.client.interceptors.request.use(
       (config) => {
-        // Add any auth tokens here if needed
+        const session = readStoredSession();
+        if (session?.accessToken) {
+          config.headers = config.headers || {};
+          config.headers.Authorization = `Bearer ${session.accessToken}`;
+        }
         return config;
       },
       (error) => Promise.reject(error)
@@ -23,13 +73,41 @@ class ApiService {
     // Response interceptor
     this.client.interceptors.response.use(
       (response) => response,
-      (error: AxiosError) => {
+      async (error: AxiosError) => {
         const responseData = error.response?.data as Record<string, any> | undefined;
+        const responseStatus = error.response?.status;
+        const originalRequest = error.config as (typeof error.config & { _retry?: boolean }) | undefined;
         const errorMessage =
           responseData?.error ||
           responseData?.message ||
           error.message ||
           'Request failed';
+
+        if (responseStatus === 401 && originalRequest && !originalRequest._retry) {
+          const existingSession = readStoredSession();
+          if (existingSession?.refreshToken) {
+            try {
+              originalRequest._retry = true;
+              if (!this.refreshPromise) {
+                this.refreshPromise = this.refreshAuth(existingSession.refreshToken)
+                  .finally(() => {
+                    this.refreshPromise = null;
+                  });
+              }
+
+              const refreshedSession = await this.refreshPromise;
+              originalRequest.headers = originalRequest.headers || {};
+              originalRequest.headers.Authorization = `Bearer ${refreshedSession.accessToken}`;
+              return this.client(originalRequest);
+            } catch {
+              clearStoredSession();
+              redirectToLogin();
+            }
+          } else {
+            clearStoredSession();
+            redirectToLogin();
+          }
+        }
 
         if (error.response) {
           // Server responded with error
@@ -45,7 +123,7 @@ class ApiService {
           details?: unknown;
           originalError?: AxiosError;
         };
-        normalizedError.status = error.response?.status;
+        normalizedError.status = responseStatus;
         normalizedError.code = (responseData?.code as string | undefined) || error.code;
         normalizedError.details = responseData?.details;
         normalizedError.originalError = error;
@@ -53,6 +131,22 @@ class ApiService {
         return Promise.reject(normalizedError);
       }
     );
+  }
+
+  async login(email: string, password: string) {
+    const response = await this.client.post('/auth/login', { email, password });
+    const session = response.data as AuthSession;
+    setStoredSession(session);
+    return session;
+  }
+
+  async refreshAuth(refreshToken: string) {
+    const response = await axios.post(`${API_URL}/auth/refresh`, { refreshToken }, {
+      timeout: 120000,
+    });
+    const session = response.data as AuthSession;
+    setStoredSession(session);
+    return session;
   }
 
   // Configuration endpoints

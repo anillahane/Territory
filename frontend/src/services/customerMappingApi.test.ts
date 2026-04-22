@@ -2,26 +2,33 @@
 // Requirements: 2.1
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import axios from 'axios';
+
+const mockAxiosInstance = vi.hoisted(() => ({
+  get: vi.fn(),
+  interceptors: {
+    response: {
+      use: vi.fn(),
+    },
+  },
+}));
+
+const mockedAxios = vi.hoisted(() => ({
+  create: vi.fn(() => mockAxiosInstance),
+  isAxiosError: vi.fn(),
+}));
+
+vi.mock('axios', () => ({
+  default: mockedAxios,
+}));
+
 import customerMappingApi from './customerMappingApi';
 
-vi.mock('axios');
-const mockedAxios = axios as any;
-
 describe('CustomerMappingApiService', () => {
-  let mockCreate: any;
-
   beforeEach(() => {
-    mockCreate = {
-      get: vi.fn(),
-      interceptors: {
-        response: {
-          use: vi.fn(),
-        },
-      },
-    };
-    mockedAxios.create.mockReturnValue(mockCreate);
-    mockedAxios.isAxiosError = vi.fn();
+    mockAxiosInstance.get.mockReset();
+    mockAxiosInstance.interceptors.response.use.mockReset();
+    mockedAxios.create.mockClear();
+    mockedAxios.isAxiosError.mockReset();
   });
 
   afterEach(() => {
@@ -57,16 +64,22 @@ describe('CustomerMappingApiService', () => {
         },
       };
 
-      mockCreate.get.mockResolvedValue(mockResponse);
+      mockAxiosInstance.get.mockResolvedValue(mockResponse);
 
       const result = await customerMappingApi.fetchMappings();
 
-      expect(mockCreate.get).toHaveBeenCalledWith('/customer-mappings', {
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/customer-mappings', {
         params: {},
       });
-      expect(result).toEqual(mockResponse.data);
       expect(result.data).toHaveLength(1);
       expect(result.pagination.totalRecords).toBe(1);
+      expect(result.data[0]).toMatchObject({
+        id: 1,
+        job_id: 'job-123',
+        customer_id: 'cust-1',
+        nearest_branch_id: 'branch-1',
+        branch_name: 'Branch A',
+      });
     });
 
     it('should fetch mappings with all filter parameters', async () => {
@@ -82,7 +95,7 @@ describe('CustomerMappingApiService', () => {
         },
       };
 
-      mockCreate.get.mockResolvedValue(mockResponse);
+      mockAxiosInstance.get.mockResolvedValue(mockResponse);
 
       const params = {
         page: 2,
@@ -94,7 +107,7 @@ describe('CustomerMappingApiService', () => {
 
       await customerMappingApi.fetchMappings(params);
 
-      expect(mockCreate.get).toHaveBeenCalledWith('/customer-mappings', {
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/customer-mappings', {
         params: {
           page: 2,
           pageSize: 50,
@@ -113,7 +126,7 @@ describe('CustomerMappingApiService', () => {
         },
       };
 
-      mockCreate.get.mockRejectedValue(mockError);
+      mockAxiosInstance.get.mockRejectedValue(mockError);
       mockedAxios.isAxiosError.mockReturnValue(true);
 
       await expect(customerMappingApi.fetchMappings()).rejects.toMatchObject({
@@ -128,7 +141,7 @@ describe('CustomerMappingApiService', () => {
         message: 'Network Error',
       };
 
-      mockCreate.get.mockRejectedValue(mockError);
+      mockAxiosInstance.get.mockRejectedValue(mockError);
       mockedAxios.isAxiosError.mockReturnValue(true);
 
       await expect(customerMappingApi.fetchMappings()).rejects.toMatchObject({
@@ -156,14 +169,14 @@ describe('CustomerMappingApiService', () => {
         },
       };
 
-      mockCreate.get
+      mockAxiosInstance.get
         .mockRejectedValueOnce(mockError)
         .mockRejectedValueOnce(mockError)
         .mockResolvedValueOnce(mockSuccess);
 
       const result = await customerMappingApi.fetchMappings();
 
-      expect(mockCreate.get).toHaveBeenCalledTimes(3);
+      expect(mockAxiosInstance.get).toHaveBeenCalledTimes(3);
       expect(result).toEqual(mockSuccess.data);
     });
 
@@ -175,7 +188,7 @@ describe('CustomerMappingApiService', () => {
         },
       };
 
-      mockCreate.get.mockRejectedValue(mockError);
+      mockAxiosInstance.get.mockRejectedValue(mockError);
       mockedAxios.isAxiosError.mockReturnValue(true);
 
       await expect(customerMappingApi.fetchMappings()).rejects.toMatchObject({
@@ -183,7 +196,7 @@ describe('CustomerMappingApiService', () => {
         status: 404,
       });
 
-      expect(mockCreate.get).toHaveBeenCalledTimes(1);
+      expect(mockAxiosInstance.get).toHaveBeenCalledTimes(1);
     });
 
     it('should throw error for invalid response structure', async () => {
@@ -194,7 +207,7 @@ describe('CustomerMappingApiService', () => {
         },
       };
 
-      mockCreate.get.mockResolvedValue(mockResponse);
+      mockAxiosInstance.get.mockResolvedValue(mockResponse);
 
       await expect(customerMappingApi.fetchMappings()).rejects.toThrow(
         'Invalid API response structure'
@@ -214,7 +227,7 @@ describe('CustomerMappingApiService', () => {
         },
       };
 
-      mockCreate.get.mockResolvedValue(mockResponse);
+      mockAxiosInstance.get.mockResolvedValue(mockResponse);
 
       await customerMappingApi.fetchMappings({
         jobId: 'job-123',
@@ -222,7 +235,7 @@ describe('CustomerMappingApiService', () => {
         pocketId: undefined,
       });
 
-      expect(mockCreate.get).toHaveBeenCalledWith('/customer-mappings', {
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('/customer-mappings', {
         params: {
           jobId: 'job-123',
         },

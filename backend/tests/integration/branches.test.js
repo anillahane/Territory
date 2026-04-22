@@ -4,7 +4,12 @@
 
 const request = require('supertest');
 const app = require('../../src/app');
-const { setupTestDatabase, cleanupTestData, teardownTestDatabase } = require('./setup');
+const {
+  setupTestDatabase,
+  cleanupTestData,
+  teardownTestDatabase,
+  createAuthHeaders,
+} = require('./setup');
 
 describe('Branches API Integration Tests', () => {
   beforeAll(async () => {
@@ -30,6 +35,7 @@ describe('Branches API Integration Tests', () => {
 
       const response = await request(app)
         .post('/api/v1/branches')
+        .set(createAuthHeaders('admin'))
         .send(branch)
         .expect(201);
 
@@ -53,12 +59,14 @@ describe('Branches API Integration Tests', () => {
       // Create first branch
       await request(app)
         .post('/api/v1/branches')
+        .set(createAuthHeaders('admin'))
         .send(branch)
         .expect(201);
 
       // Try to create duplicate
       await request(app)
         .post('/api/v1/branches')
+        .set(createAuthHeaders('admin'))
         .send(branch)
         .expect(409);
     });
@@ -73,6 +81,7 @@ describe('Branches API Integration Tests', () => {
 
       await request(app)
         .post('/api/v1/branches')
+        .set(createAuthHeaders('admin'))
         .send(branch)
         .expect(400);
     });
@@ -82,6 +91,7 @@ describe('Branches API Integration Tests', () => {
     test('should return empty array when no branches', async () => {
       const response = await request(app)
         .get('/api/v1/branches')
+        .set(createAuthHeaders('admin'))
         .expect(200);
 
       expect(Array.isArray(response.body.branches)).toBe(true);
@@ -96,11 +106,14 @@ describe('Branches API Integration Tests', () => {
       ];
 
       for (const branch of branches) {
-        await request(app).post('/api/v1/branches').send(branch);
+        await request(app)
+          .post('/api/v1/branches')
+          .set(createAuthHeaders('admin'))
+          .send(branch);
       }
-
       const response = await request(app)
         .get('/api/v1/branches')
+        .set(createAuthHeaders('admin'))
         .expect(200);
 
       expect(response.body.branches.length).toBe(2);
@@ -111,6 +124,7 @@ describe('Branches API Integration Tests', () => {
       for (let i = 1; i <= 15; i++) {
         await request(app)
           .post('/api/v1/branches')
+          .set(createAuthHeaders('admin'))
           .send({
             id: `BR${String(i).padStart(3, '0')}`,
             city: `City ${i}`,
@@ -121,6 +135,7 @@ describe('Branches API Integration Tests', () => {
 
       const response = await request(app)
         .get('/api/v1/branches?limit=10&offset=0')
+        .set(createAuthHeaders('admin'))
         .expect(200);
 
       expect(response.body.branches.length).toBe(10);
@@ -138,10 +153,12 @@ describe('Branches API Integration Tests', () => {
 
       const createResponse = await request(app)
         .post('/api/v1/branches')
+        .set(createAuthHeaders('admin'))
         .send(branch);
 
       const response = await request(app)
         .get(`/api/v1/branches/${createResponse.body.branch.id}`)
+        .set(createAuthHeaders('admin'))
         .expect(200);
 
       expect(response.body.id).toBe(createResponse.body.branch.id);
@@ -151,6 +168,7 @@ describe('Branches API Integration Tests', () => {
     test('should return 404 for non-existent branch', async () => {
       await request(app)
         .get('/api/v1/branches/UNKNOWN')
+        .set(createAuthHeaders('admin'))
         .expect(404);
     });
   });
@@ -166,6 +184,7 @@ describe('Branches API Integration Tests', () => {
 
       const createResponse = await request(app)
         .post('/api/v1/branches')
+        .set(createAuthHeaders('admin'))
         .send(branch);
 
       const updates = {
@@ -176,6 +195,7 @@ describe('Branches API Integration Tests', () => {
 
       const response = await request(app)
         .put(`/api/v1/branches/${createResponse.body.branch.id}`)
+        .set(createAuthHeaders('admin'))
         .send(updates)
         .expect(200);
 
@@ -197,15 +217,18 @@ describe('Branches API Integration Tests', () => {
 
       const createResponse = await request(app)
         .post('/api/v1/branches')
+        .set(createAuthHeaders('admin'))
         .send(branch);
 
       await request(app)
         .delete(`/api/v1/branches/${createResponse.body.branch.id}`)
+        .set(createAuthHeaders('admin'))
         .expect(200);
 
       // Verify deletion
       await request(app)
         .get(`/api/v1/branches/${createResponse.body.branch.id}`)
+        .set(createAuthHeaders('admin'))
         .expect(404);
     });
   });

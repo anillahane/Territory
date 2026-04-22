@@ -1,5 +1,6 @@
 const express = require('express');
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
+const { requireRole } = require('../middleware/auth');
 const mappingService = require('../services/MappingService');
 const logger = require('../config/logger');
 
@@ -238,6 +239,7 @@ router.post(
  */
 router.delete(
   '/',
+  requireRole('admin'),
   asyncHandler(async (req, res) => {
     const { olderThan, jobId } = req.query;
 

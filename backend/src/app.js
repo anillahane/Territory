@@ -5,8 +5,10 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const logger = require('./config/logger');
+const { assertJwtConfiguration, requireAuth, requireRole } = require('./middleware/auth');
 
 // Import routes
+const authRoutes = require('./routes/auth');
 const configRoutes = require('./routes/config');
 const branchRoutes = require('./routes/branches');
 const pocketRoutes = require('./routes/pocket');
@@ -19,6 +21,8 @@ const customerMappingsRoutes = require('./routes/customerMappings');
 
 // Import middleware
 const { errorHandler } = require('./middleware/errorHandler');
+
+assertJwtConfiguration();
 
 const isTestEnv = process.env.NODE_ENV === 'test';
 const queuesDisabled = process.env.DISABLE_QUEUES === 'true' || isTestEnv;
@@ -92,14 +96,15 @@ app.use(
 );
 
 // API routes
-app.use(`/api/${API_VERSION}/config`, configRoutes);
-app.use(`/api/${API_VERSION}/branches`, branchRoutes);
-app.use(`/api/${API_VERSION}/pocket`, pocketRoutes);
-app.use(`/api/${API_VERSION}/nearest`, nearestRoutes);
-app.use(`/api/${API_VERSION}/batch`, batchRoutes);
-app.use(`/api/${API_VERSION}/jobs`, jobsRoutes);
-app.use(`/api/${API_VERSION}/templates`, templatesRoutes);
-app.use(`/api/${API_VERSION}/customer-mappings`, customerMappingsRoutes);
+app.use(`/api/${API_VERSION}/auth`, authRoutes);
+app.use(`/api/${API_VERSION}/config`, requireAuth, requireRole('admin'), configRoutes);
+app.use(`/api/${API_VERSION}/branches`, requireAuth, requireRole('admin'), branchRoutes);
+app.use(`/api/${API_VERSION}/pocket`, requireAuth, pocketRoutes);
+app.use(`/api/${API_VERSION}/nearest`, requireAuth, nearestRoutes);
+app.use(`/api/${API_VERSION}/batch`, requireAuth, batchRoutes);
+app.use(`/api/${API_VERSION}/jobs`, requireAuth, requireRole('admin'), jobsRoutes);
+app.use(`/api/${API_VERSION}/templates`, requireAuth, templatesRoutes);
+app.use(`/api/${API_VERSION}/customer-mappings`, requireAuth, customerMappingsRoutes);
 app.use('/health', healthRoutes);
 
 // Root endpoint
