@@ -58,6 +58,35 @@ function toNumber(value) {
   return Number.parseFloat(normalized);
 }
 
+function getScopedBranchIds(branches) {
+  return Array.from(
+    new Set(
+      (Array.isArray(branches) ? branches : [])
+        .map((branch) => String(branch?.id || '').trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function resolveBranchOverwriteScope(uploadMode, confirmWipeAll, branches) {
+  if (uploadMode !== 'overwrite') {
+    return { deleteMode: 'none', branchIds: [] };
+  }
+
+  if (confirmWipeAll) {
+    return { deleteMode: 'global', branchIds: [] };
+  }
+
+  const branchIds = getScopedBranchIds(branches);
+  if (branchIds.length === 0) {
+    throw new Error(
+      'overwrite mode requires at least one branch ID in the upload, or confirmWipeAll=true for a global wipe'
+    );
+  }
+
+  return { deleteMode: 'scoped', branchIds };
+}
+
 /**
  * Process branch upload job
  * @param {Object} job - Bull job object
@@ -65,7 +94,12 @@ function toNumber(value) {
  * @param {string} job.data.fileName - Original file name
  */
 async function processBranchUpload(job) {
-  const { fileBuffer, fileName, uploadMode: requestedUploadMode } = job.data;
+  const {
+    fileBuffer,
+    fileName,
+    uploadMode: requestedUploadMode,
+    confirmWipeAll = false,
+  } = job.data;
   const uploadMode = requestedUploadMode === 'add' ? 'add' : 'overwrite';
 
   logger.info('Starting branch upload processing', {
@@ -161,6 +195,8 @@ async function processBranchUpload(job) {
     // Update progress: validation complete
     await job.progress(80);
 
+    const overwriteScope = resolveBranchOverwriteScope(uploadMode, confirmWipeAll, branches);
+
     // Apply insert mode in one transaction.
     const result = await transaction(async (client) => {
       const inserted = [];
@@ -169,11 +205,29 @@ async function processBranchUpload(job) {
       let skippedExisting = 0;
 
       if (uploadMode === 'overwrite') {
-        const existingBranchCountResult = await client.query('SELECT COUNT(*)::int AS count FROM branches');
+        const existingBranchCountQuery =
+          overwriteScope.deleteMode === 'global'
+            ? 'SELECT COUNT(*)::int AS count FROM branches'
+            : 'SELECT COUNT(*)::int AS count FROM branches WHERE id = ANY($1::text[])';
+        const existingBranchCountParams =
+          overwriteScope.deleteMode === 'global' ? [] : [overwriteScope.branchIds];
+        const existingBranchCountResult = await client.query(
+          existingBranchCountQuery,
+          existingBranchCountParams
+        );
         existingBranchCount = existingBranchCountResult.rows[0].count;
 
         try {
-          const deleteMappingsResult = await client.query('DELETE FROM customer_pocket_mappings');
+          const deleteMappingsResult =
+            overwriteScope.deleteMode === 'global'
+              ? await client.query('DELETE FROM customer_pocket_mappings')
+              : await client.query(
+                  `
+                    DELETE FROM customer_pocket_mappings
+                    WHERE COALESCE(existing_branch_id, nearest_branch_id) = ANY($1::text[])
+                  `,
+                  [overwriteScope.branchIds]
+                );
           clearedMappings = deleteMappingsResult.rowCount || 0;
         } catch (err) {
           // Some environments may not have this table migrated yet.
@@ -182,7 +236,13 @@ async function processBranchUpload(job) {
           }
         }
 
-        await client.query('DELETE FROM branches');
+        if (overwriteScope.deleteMode === 'global') {
+          await client.query('DELETE FROM branches');
+        } else {
+          await client.query('DELETE FROM branches WHERE id = ANY($1::text[])', [
+            overwriteScope.branchIds,
+          ]);
+        }
       }
 
       const totalBranches = branches.length;
@@ -238,6 +298,7 @@ async function processBranchUpload(job) {
       replaced: result.replaced,
       clearedMappings: result.clearedMappings,
       skippedExisting: result.skippedExisting,
+      overwriteScope: overwriteScope.deleteMode,
       duplicatesInFile: duplicateRows,
       errors: errors.length,
     };
@@ -270,4 +331,6 @@ logger.info('Branch upload worker started');
 
 module.exports = {
   processBranchUpload,
+  getScopedBranchIds,
+  resolveBranchOverwriteScope,
 };

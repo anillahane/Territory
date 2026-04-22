@@ -116,6 +116,40 @@ const parseBooleanFlag = (value, defaultValue = false) => {
   return ['1', 'true', 'yes', 'y', 'on'].includes(normalized);
 };
 
+const getScopedBranchIdsFromMappings = (mappings) =>
+  Array.from(
+    new Set(
+      (Array.isArray(mappings) ? mappings : [])
+        .map((mapping) => String(mapping?.existingBranchId || '').trim())
+        .filter(Boolean)
+    )
+  );
+
+const resolveReplaceExistingScope = ({
+  replaceExisting = false,
+  confirmWipeAll = false,
+  mappings = [],
+}) => {
+  if (!replaceExisting) {
+    return { deleteMode: 'none', branchIds: [] };
+  }
+
+  if (confirmWipeAll) {
+    return { deleteMode: 'global', branchIds: [] };
+  }
+
+  const branchIds = getScopedBranchIdsFromMappings(mappings);
+  if (branchIds.length === 0) {
+    throw new AppError(
+      'replaceExisting requires at least one valid branch_code mapped to an existing branch, or confirmWipeAll=true for a global wipe.',
+      400,
+      'CONFIRM_WIPE_ALL_REQUIRED'
+    );
+  }
+
+  return { deleteMode: 'scoped', branchIds };
+};
+
 const parseTerritoryVisualizationMode = (rawMode) => {
   if (typeof rawMode !== 'string' || rawMode.trim() === '') {
     return TERRITORY_VISUALIZATION_MODE.EXISTING_CUSTOMERS;
@@ -559,7 +593,15 @@ const buildVoronoiTerritoriesForSelectedBranches = async (
 
 // Process jobs (Node.js worker for small files)
 batchQueue.process(async (job) => {
-  const { jobId, data, config, fileName, filePath, replaceExisting = false } = job.data;
+  const {
+    jobId,
+    data,
+    config,
+    fileName,
+    filePath,
+    replaceExisting = false,
+    confirmWipeAll = false,
+  } = job.data;
   let rows = data;
 
   if (!rows) {
@@ -752,15 +794,6 @@ batchQueue.process(async (job) => {
       try {
         logger.info('Starting mapping persistence', { jobId, mappingCount: mappings.length });
 
-        if (replaceExisting) {
-          const deleteMappingsResult = await query('DELETE FROM customer_pocket_mappings');
-          replacedMappingsCount = deleteMappingsResult.rowCount || 0;
-          logger.info('Cleared existing customer mappings before replacement upload', {
-            jobId,
-            deletedMappings: replacedMappingsCount
-          });
-        }
-        
         // Get unique pockets and find nearest branches
         const uniquePockets = Array.from(pocketCenters.entries()).map(([pocketId, center]) => ({
           pocketId,
@@ -806,6 +839,37 @@ batchQueue.process(async (job) => {
             distanceCustomerToExistingBranch,
           };
         });
+
+        const replaceExistingScope = resolveReplaceExistingScope({
+          replaceExisting,
+          confirmWipeAll,
+          mappings: enrichedMappings,
+        });
+
+        if (replaceExistingScope.deleteMode === 'global') {
+          const deleteMappingsResult = await query('DELETE FROM customer_pocket_mappings');
+          replacedMappingsCount = deleteMappingsResult.rowCount || 0;
+          logger.info('Cleared all customer mappings before replacement upload', {
+            jobId,
+            deletedMappings: replacedMappingsCount,
+            wipeScope: 'global',
+          });
+        } else if (replaceExistingScope.deleteMode === 'scoped') {
+          const deleteMappingsResult = await query(
+            `
+              DELETE FROM customer_pocket_mappings
+              WHERE COALESCE(existing_branch_id, nearest_branch_id) = ANY($1::text[])
+            `,
+            [replaceExistingScope.branchIds]
+          );
+          replacedMappingsCount = deleteMappingsResult.rowCount || 0;
+          logger.info('Cleared scoped customer mappings before replacement upload', {
+            jobId,
+            deletedMappings: replacedMappingsCount,
+            wipeScope: 'scoped',
+            branchIds: replaceExistingScope.branchIds,
+          });
+        }
         
         // Save mappings using UUID job_id (matches FK customer_pocket_mappings.job_id -> jobs.job_id)
         const saveResult = await mappingService.saveMappings(jobId, enrichedMappings);
@@ -825,14 +889,18 @@ batchQueue.process(async (job) => {
           });
         }
       } catch (error) {
-        // Log error but continue processing - don't fail the batch job
         logger.error('Failed to persist mappings', {
           jobId,
           error: error.message,
           stack: error.stack,
           mappingCount: mappings.length,
         });
-        // Continue with Excel export even if persistence fails
+
+        if (replaceExisting) {
+          throw error;
+        }
+
+        // Continue with Excel export for best-effort non-replacement uploads.
       }
     }
 
@@ -936,6 +1004,7 @@ router.post(
     await fs.promises.writeFile(filePath, req.file.buffer);
     const fileSizeMB = req.file.size / (1024 * 1024);
     const replaceExisting = parseBooleanFlag(req.body?.replaceExisting, false);
+    const confirmWipeAll = parseBooleanFlag(req.body?.confirmWipeAll, false);
 
     // Validation already parsed the workbook to enforce the row cap.
     // Keep the existing worker-routing threshold based on file size.
@@ -959,6 +1028,7 @@ router.post(
         fileName,
         rowCount,
         replaceExisting,
+        confirmWipeAll,
         worker: usePythonWorker ? 'python' : 'nodejs'
       })]
     );
@@ -971,7 +1041,8 @@ router.post(
         filePath,
         fileName,
         config,
-        replaceExisting
+        replaceExisting,
+        confirmWipeAll,
       };
       
       // CRITICAL FIX: Use Bull's existing Redis client instead of separate pythonRedisClient
@@ -1011,6 +1082,7 @@ router.post(
         fileName,
         rowCount,
         replaceExisting,
+        confirmWipeAll,
         worker: 'python',
         statusUrl: `/api/v1/batch/status/${jobId}`,
       });
@@ -1025,7 +1097,8 @@ router.post(
             config,
             fileName,
             filePath,
-            replaceExisting
+            replaceExisting,
+            confirmWipeAll,
           }),
           10000,
           'Timed out while queueing Node.js job'
@@ -1060,6 +1133,7 @@ router.post(
         fileName,
         rowCount,
         replaceExisting,
+        confirmWipeAll,
         worker: 'nodejs',
         statusUrl: `/api/v1/batch/status/${jobId}`,
       });
@@ -1807,5 +1881,10 @@ router.get(
     });
   })
 );
+
+router.__testables = {
+  getScopedBranchIdsFromMappings,
+  resolveReplaceExistingScope,
+};
 
 module.exports = router;

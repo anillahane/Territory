@@ -46,6 +46,10 @@ router.post(
       );
     }
     const uploadMode = uploadModeRaw;
+    const confirmWipeAll = String(req.body?.confirmWipeAll || '')
+      .trim()
+      .toLowerCase();
+    const allowGlobalWipe = ['1', 'true', 'yes', 'y', 'on'].includes(confirmWipeAll);
 
     // Generate unique job ID
     const jobId = uuidv4();
@@ -58,6 +62,7 @@ router.post(
           fileBuffer: req.file.buffer,
           fileName: sanitizedFileName,
           uploadMode,
+          confirmWipeAll: allowGlobalWipe,
         },
         {
           jobId,
@@ -81,6 +86,7 @@ router.post(
       fileSize: req.file.size,
       rowCount,
       uploadMode,
+      confirmWipeAll: allowGlobalWipe,
     });
 
     // Return immediately with job ID
@@ -91,6 +97,7 @@ router.post(
       fileName: sanitizedFileName,
       rowCount,
       uploadMode,
+      confirmWipeAll: allowGlobalWipe,
       statusUrl: `/api/v1/jobs/${job.id}`,
     });
   })

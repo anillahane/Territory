@@ -23,6 +23,9 @@ const getUpsertCalls = () =>
     String(queryText).includes('INSERT INTO customer_pocket_mappings')
   );
 
+const getExpectedPersistedCount = (mappings) =>
+  new Set(mappings.map(({ customerId }) => String(customerId))).size;
+
 describe('MappingService Property-Based Tests', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -59,6 +62,7 @@ describe('MappingService Property-Based Tests', () => {
           async (jobId, mappings) => {
             // Track total inserted
             let totalInserted = 0;
+            const expectedPersistedCount = getExpectedPersistedCount(mappings);
             
             // Mock successful database insert - return the batch size for each call
             transactionalQuery.mockImplementation((queryText, values) => {
@@ -77,7 +81,7 @@ describe('MappingService Property-Based Tests', () => {
 
             // Property: All mappings should be persisted successfully
             expect(result.success).toBe(true);
-            expect(result.insertedCount).toBe(mappings.length);
+            expect(result.insertedCount).toBe(expectedPersistedCount);
             expect(result.errors).toHaveLength(0);
 
             // Property: Query should be called at least once
@@ -114,8 +118,8 @@ describe('MappingService Property-Based Tests', () => {
               }
             });
 
-            // Property: Total records inserted equals input count
-            expect(totalInserted).toBe(mappings.length);
+            // Property: Total records inserted equals the deduped customer count
+            expect(totalInserted).toBe(expectedPersistedCount);
           }
         ),
         { numRuns: 100 }
@@ -151,6 +155,7 @@ describe('MappingService Property-Based Tests', () => {
           async (jobId, mappings) => {
             // Clear mocks for this iteration
             jest.clearAllMocks();
+            const expectedPersistedCount = getExpectedPersistedCount(mappings);
             
             // Mock successful database insert
             transactionalQuery.mockImplementation((queryText, values) => {
@@ -198,7 +203,7 @@ describe('MappingService Property-Based Tests', () => {
             });
 
             // All job IDs should be identical and equal to the input jobId
-            expect(allJobIds.length).toBe(mappings.length);
+            expect(allJobIds.length).toBe(expectedPersistedCount);
             allJobIds.forEach((id) => {
               expect(id).toBe(jobId);
             });
