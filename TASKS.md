@@ -35,7 +35,7 @@ Statuses:
 | 13 | ✅ | Service Layer Extraction ([PR #13](https://github.com/anillahane/Territory/pull/13)) | split `backend/src/routes/batch.js` into routes + `backend/src/services/BatchService.js`, `VoronoiService.js` | Routes become thin (`parse req -> call service -> respond`). Services are unit-testable and don't know about Express. |
 | 14 | ✅ | Unified Job Status ([PR #14](https://github.com/anillahane/Territory/pull/14)) | new `backend/src/services/JobStatusService.js`, `backend/src/routes/jobs.js`, `backend/src/routes/batch.js`, frontend job pages | Consolidate to one authoritative state machine driven by the Postgres table; Bull state is an internal detail. |
 | 15 | ✅ | Fix Hand-Rolled IST Formatting ([PR #15](https://github.com/anillahane/Territory/pull/15)) | `frontend/src/pages/BatchProcessing.tsx`, new `frontend/src/utils/datetime.ts` | Replace manual IST offset math with `date-fns-tz formatInTimeZone(date, 'Asia/Kolkata', 'dd MMM yyyy HH:mm:ss')`. |
-| 16 | ⬜ | Accessibility Pass | all files under `frontend/src/pages/` and `frontend/src/components/` | Add `aria-labels` on `IconButton`-only controls, keyboard focus management in dialogs, `role="status"` on loading regions, color contrast audit. |
+| 16 | ✅ | Accessibility Pass ([PR #16](https://github.com/anillahane/Territory/pull/16)) | all files under `frontend/src/pages/` and `frontend/src/components/` | Add `aria-labels` on `IconButton`-only controls, keyboard focus management in dialogs, `role="status"` on loading regions, color contrast audit. |
 
 ## P3 — Developer Experience & Observability
 
