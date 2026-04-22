@@ -15,6 +15,21 @@ export type AuthSession = {
   user: AuthUser;
 };
 
+type JobsStreamPayload = {
+  jobs: Array<Record<string, any>>;
+  total: number;
+};
+
+type JobsStreamOptions = {
+  status?: string;
+  type?: string;
+  limit?: number;
+  activeJobId?: string | null;
+  onOpen?: () => void;
+  onJobs: (payload: JobsStreamPayload) => void;
+  onError?: (error: Error) => void;
+};
+
 const readStoredSession = (): AuthSession | null => {
   const rawValue = window.localStorage.getItem(AUTH_STORAGE_KEY);
   if (!rawValue) {
@@ -210,6 +225,117 @@ class ApiService {
   async listJobs(params?: { status?: string; type?: string; limit?: number }) {
     const response = await this.client.get('/jobs', { params });
     return response.data;
+  }
+
+  async subscribeToJobsStream(options: JobsStreamOptions) {
+    if (
+      typeof window === 'undefined'
+      || typeof window.fetch !== 'function'
+      || typeof TextDecoder === 'undefined'
+    ) {
+      return null;
+    }
+
+    const session = readStoredSession();
+    if (!session?.accessToken) {
+      return null;
+    }
+
+    const streamUrl = new URL(`${API_URL.replace(/\/$/, '')}/jobs/stream`, window.location.origin);
+    if (options.status) {
+      streamUrl.searchParams.set('status', options.status);
+    }
+    if (options.type) {
+      streamUrl.searchParams.set('type', options.type);
+    }
+    if (options.limit !== undefined) {
+      streamUrl.searchParams.set('limit', String(options.limit));
+    }
+    if (options.activeJobId) {
+      streamUrl.searchParams.set('activeJobId', options.activeJobId);
+    }
+
+    const controller = new AbortController();
+    const response = await fetch(streamUrl.toString(), {
+      headers: {
+        Accept: 'text/event-stream',
+        Authorization: `Bearer ${session.accessToken}`,
+      },
+      signal: controller.signal,
+    });
+
+    if (!response.ok || !response.body) {
+      controller.abort();
+      throw new Error(`Job stream request failed with status ${response.status}`);
+    }
+
+    options.onOpen?.();
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    const handleEventBlock = (eventBlock: string) => {
+      const normalizedBlock = eventBlock.trim();
+      if (!normalizedBlock || normalizedBlock.startsWith(':')) {
+        return;
+      }
+
+      let eventName = 'message';
+      const dataLines: string[] = [];
+
+      normalizedBlock.split('\n').forEach((line) => {
+        if (line.startsWith('event:')) {
+          eventName = line.slice(6).trim();
+          return;
+        }
+
+        if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5).trim());
+        }
+      });
+
+      if (eventName !== 'jobs' || dataLines.length === 0) {
+        return;
+      }
+
+      options.onJobs(JSON.parse(dataLines.join('\n')) as JobsStreamPayload);
+    };
+
+    const pumpEvents = async () => {
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) {
+            break;
+          }
+
+          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+          const eventBlocks = buffer.split('\n\n');
+          buffer = eventBlocks.pop() || '';
+          eventBlocks.forEach(handleEventBlock);
+        }
+
+        const trailingBuffer = buffer.trim();
+        if (trailingBuffer) {
+          handleEventBlock(trailingBuffer);
+        }
+
+        if (!controller.signal.aborted) {
+          options.onError?.(new Error('Job stream disconnected'));
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          options.onError?.(error instanceof Error ? error : new Error('Job stream failed'));
+        }
+      }
+    };
+
+    void pumpEvents();
+
+    return () => {
+      controller.abort();
+    };
   }
 
   async retryJob(jobId: string) {
