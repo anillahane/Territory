@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Box,
   Typography,
@@ -46,6 +46,7 @@ interface Job {
   progress: number;
   createdAt: string;
   finishedAt?: string;
+  error?: string | null;
   data?: {
     fileName?: string;
     pocketStats?: { [key: string]: number };
@@ -54,6 +55,22 @@ interface Job {
     territoryUrl?: string;
   };
 }
+
+const filterBatchJobs = (jobs: Job[]) =>
+  jobs.filter((job) => job.type === 'batch-process' || job.type === 'batch-processing');
+
+const mergeLiveJobIntoHistory = (jobs: Job[], liveJob: Job) =>
+  jobs.map((job) =>
+    job.jobId === liveJob.jobId
+      ? {
+          ...job,
+          status: liveJob.status,
+          progress: liveJob.progress,
+          finishedAt: liveJob.finishedAt || job.finishedAt,
+          error: liveJob.error ?? job.error ?? null,
+        }
+      : job
+  );
 
 export default function BatchProcessing() {
   const { setError, setSuccess } = useStore();
@@ -67,81 +84,36 @@ export default function BatchProcessing() {
   const [selectedJobStats, setSelectedJobStats] = useState<Job | null>(null);
   const [statsDialogOpen, setStatsDialogOpen] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null); // Track currently processing job
-  const [pollingInterval, setPollingInterval] = useState<number | null>(null);
+  const [liveUpdateMode, setLiveUpdateMode] = useState<'stream' | 'polling' | 'manual'>('manual');
+  const streamCleanupRef = useRef<(() => void) | null>(null);
+  const pollingIntervalRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    console.log('BatchProcessing component mounted');
-    // Load job history on mount by default
-    setShowHistory(true);
-    loadJobHistory();
-  }, []);
-
-  // Cleanup polling on unmount
-  useEffect(() => {
-    return () => {
-      if (pollingInterval) {
-        clearInterval(pollingInterval);
-      }
-    };
-  }, [pollingInterval]);
-
-  // Start polling for active job updates
-  const startPolling = (jobId: string) => {
-    console.log('Starting polling for job:', jobId);
-    setActiveJobId(jobId);
-    
-    // Poll every 2 seconds
-    const interval = setInterval(() => {
-      loadJobHistory();
-    }, 2000);
-    
-    setPollingInterval(interval);
-  };
-
-  // Stop polling
-  const stopPolling = () => {
-    console.log('Stopping polling');
-    if (pollingInterval) {
-      clearInterval(pollingInterval);
-      setPollingInterval(null);
-    }
-    setActiveJobId(null);
-  };
-
-  // Check if we should stop polling (job completed or failed)
-  useEffect(() => {
-    if (activeJobId && jobs.length > 0) {
-      const activeJob = jobs.find(j => j.jobId === activeJobId);
-      if (activeJob && (activeJob.status === 'completed' || activeJob.status === 'failed')) {
-        console.log('Job finished, stopping polling:', activeJob.status);
-        stopPolling();
-        
-        if (activeJob.status === 'completed') {
-          setSuccess(`Processing complete! ${activeJob.data?.totalAccounts || 0} customers assigned to ${activeJob.data?.totalPockets || 0} pockets.`);
-        } else {
-          setError('Job failed. Please check the error details in job history.');
-        }
-      }
-    }
-  }, [jobs, activeJobId]);
-
-  const loadJobHistory = async () => {
+  const loadJobHistory = useCallback(async (liveJobId: string | null = activeJobId) => {
     console.log('loadJobHistory: Starting...');
     setLoadingJobs(true);
     try {
       console.log('loadJobHistory: Calling API...');
-      const response = await api.listJobs({ limit: 20 });
+      const response = await api.listJobs({
+        limit: 20,
+        type: 'batch-process',
+      });
       console.log('loadJobHistory: API response:', response);
-      
-      // Handle both response formats (with/without jobs array)
-      const allJobs = response.jobs || response || [];
+
+      let allJobs = (response.jobs || response || []) as Job[];
+
+      if (liveJobId) {
+        try {
+          const liveJob = await api.getJobStatus(liveJobId);
+          allJobs = mergeLiveJobIntoHistory(allJobs, liveJob as Job);
+        } catch (liveJobError) {
+          console.warn('Failed to hydrate live job state:', liveJobError);
+        }
+      }
+
       console.log('loadJobHistory: All jobs:', allJobs);
-      
-      // Filter for batch-related jobs
-      const batchJobs = allJobs.filter((job: Job) => 
-        job.type === 'batch-process' || job.type === 'batch-processing'
-      );
-      
+
+      const batchJobs = filterBatchJobs(allJobs);
+
       console.log('loadJobHistory: Filtered batch jobs:', batchJobs);
       setJobs(batchJobs);
     } catch (error: any) {
@@ -151,14 +123,157 @@ export default function BatchProcessing() {
         response: error.response?.data,
         status: error.response?.status
       });
-      // Show error to user since they explicitly requested history
       setError('Failed to load job history. Redis may not be running.');
       setJobs([]);
     } finally {
       console.log('loadJobHistory: Complete, setting loadingJobs to false');
       setLoadingJobs(false);
     }
-  };
+  }, [activeJobId, setError]);
+
+  useEffect(() => {
+    console.log('BatchProcessing component mounted');
+    setShowHistory(true);
+    void loadJobHistory();
+  }, [loadJobHistory]);
+
+  useEffect(() => {
+    return () => {
+      if (streamCleanupRef.current) {
+        streamCleanupRef.current();
+        streamCleanupRef.current = null;
+      }
+
+      if (pollingIntervalRef.current !== null) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+
+    const stopFallbackPolling = () => {
+      if (pollingIntervalRef.current !== null) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+    };
+
+    const stopJobsStream = () => {
+      if (streamCleanupRef.current) {
+        streamCleanupRef.current();
+        streamCleanupRef.current = null;
+      }
+    };
+
+    const startFallbackPolling = async () => {
+      stopFallbackPolling();
+      setLiveUpdateMode('polling');
+      await loadJobHistory(activeJobId);
+
+      if (!activeJobId || disposed) {
+        return;
+      }
+
+      pollingIntervalRef.current = window.setInterval(() => {
+        void loadJobHistory(activeJobId);
+      }, 2000);
+    };
+
+    const startJobsStream = async () => {
+      stopJobsStream();
+      stopFallbackPolling();
+
+      try {
+        const cleanup = await api.subscribeToJobsStream({
+          type: 'batch-process',
+          limit: 20,
+          activeJobId,
+          onOpen: () => {
+            if (!disposed) {
+              setLiveUpdateMode('stream');
+            }
+          },
+          onJobs: (payload) => {
+            if (disposed) {
+              return;
+            }
+
+            setJobs(filterBatchJobs((payload.jobs || []) as Job[]));
+            setLoadingJobs(false);
+          },
+          onError: (error) => {
+            if (disposed) {
+              return;
+            }
+
+            console.error('Job stream error:', error);
+            stopJobsStream();
+
+            if (activeJobId) {
+              void startFallbackPolling();
+              return;
+            }
+
+            setLiveUpdateMode('manual');
+          },
+        });
+
+        if (!cleanup) {
+          if (activeJobId) {
+            await startFallbackPolling();
+          } else {
+            setLiveUpdateMode('manual');
+          }
+          return;
+        }
+
+        if (disposed) {
+          cleanup();
+          return;
+        }
+
+        streamCleanupRef.current = cleanup;
+      } catch (error) {
+        if (disposed) {
+          return;
+        }
+
+        console.error('Failed to start job stream:', error);
+        if (activeJobId) {
+          await startFallbackPolling();
+        } else {
+          setLiveUpdateMode('manual');
+        }
+      }
+    };
+
+    void startJobsStream();
+
+    return () => {
+      disposed = true;
+      stopJobsStream();
+      stopFallbackPolling();
+    };
+  }, [activeJobId, loadJobHistory]);
+
+  useEffect(() => {
+    if (activeJobId && jobs.length > 0) {
+      const activeJob = jobs.find(j => j.jobId === activeJobId);
+      if (activeJob && (activeJob.status === 'completed' || activeJob.status === 'failed')) {
+        console.log('Job finished:', activeJob.status);
+        setActiveJobId(null);
+
+        if (activeJob.status === 'completed') {
+          setSuccess(`Processing complete! ${activeJob.data?.totalAccounts || 0} customers assigned to ${activeJob.data?.totalPockets || 0} pockets.`);
+        } else {
+          setError(activeJob.error || 'Job failed. Please check the error details in job history.');
+        }
+      }
+    }
+  }, [jobs, activeJobId, setError, setSuccess]);
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -210,10 +325,10 @@ export default function BatchProcessing() {
         const replaceText = shouldReplaceExisting ? ' Existing customer mappings will be replaced.' : '';
         setSuccess(`File "${response.fileName || fileToUpload.name}" uploaded! Processing ${totalText} in background.${replaceText}`);
         
-        // Show history and start polling for updates
+        // Show history and track the active job for live updates
         setShowHistory(true);
-        loadJobHistory();
-        startPolling(response.jobId);
+        setActiveJobId(response.jobId);
+        void loadJobHistory(response.jobId);
       } else {
         // Unexpected response format
         console.error('Unexpected response:', response);
@@ -273,7 +388,8 @@ export default function BatchProcessing() {
     try {
       await api.retryJob(jobId);
       setSuccess('Job queued for retry');
-      loadJobHistory();
+      setActiveJobId(jobId);
+      void loadJobHistory(jobId);
     } catch (error: any) {
       setError(error.message || 'Failed to retry job');
     }
@@ -309,7 +425,10 @@ export default function BatchProcessing() {
     try {
       await api.deleteJob(jobId);
       setSuccess('Job deleted successfully');
-      loadJobHistory();
+      if (activeJobId === jobId) {
+        setActiveJobId(null);
+      }
+      void loadJobHistory();
     } catch (error: any) {
       setError(error.message || 'Failed to delete job');
     }
@@ -331,7 +450,7 @@ export default function BatchProcessing() {
     try {
       const result = await api.bulkDeleteJobs({ status });
       setSuccess(result.message || `${count} job(s) deleted successfully`);
-      loadJobHistory();
+      void loadJobHistory();
     } catch (error: any) {
       setError(error.message || 'Failed to delete jobs');
     }
@@ -392,10 +511,22 @@ export default function BatchProcessing() {
             </Box>
             <Box display="flex" gap={1}>
               <Tooltip title="Refresh History">
-                <IconButton onClick={loadJobHistory} disabled={loadingJobs}>
+                <IconButton onClick={() => void loadJobHistory()} disabled={loadingJobs}>
                   <RefreshIcon />
                 </IconButton>
               </Tooltip>
+              <Chip
+                label={
+                  liveUpdateMode === 'stream'
+                    ? 'Live updates'
+                    : liveUpdateMode === 'polling'
+                      ? 'Polling fallback'
+                      : 'Manual refresh'
+                }
+                color={liveUpdateMode === 'stream' ? 'success' : 'default'}
+                size="small"
+                variant="outlined"
+              />
               {jobs.length > 0 && (
                 <>
                   <Button
@@ -428,7 +559,7 @@ export default function BatchProcessing() {
                 startIcon={<HistoryIcon />}
                 onClick={() => {
                   if (!showHistory) {
-                    loadJobHistory(); // Load jobs when showing history
+                    void loadJobHistory(); // Load jobs when showing history
                   }
                   setShowHistory(!showHistory);
                 }}
