@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Box,
   Typography,
@@ -11,9 +11,10 @@ import {
   Divider,
   Chip,
 } from '@mui/material';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Save as SaveIcon, History as HistoryIcon, Refresh as RefreshIcon } from '@mui/icons-material';
 import { useStore } from '../store/useStore';
-import api from '../services/api';
+import api, { queryKeys } from '../services/api';
 import DataState from '../components/DataState';
 
 interface Config {
@@ -36,57 +37,55 @@ interface ConfigHistory {
 
 export default function Configuration() {
   const { setError, setSuccess } = useStore();
+  const queryClient = useQueryClient();
   const [config, setConfig] = useState<Config>({
     originLat: 8.0,
     originLon: 68.0,
     alphabet: '0123456789ABCDEFGHJKLMNPQRSTUV',
   });
-  const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [history, setHistory] = useState<ConfigHistory[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  useEffect(() => {
-    loadConfig();
-  }, []);
-
-  const loadConfig = async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
+  const configQuery = useQuery({
+    queryKey: queryKeys.config,
+    queryFn: async () => {
       const data = await api.getConfig();
-      // Handle both response formats
       const configData = data.config || data;
-      setConfig({
+      return {
         originLat: configData.originLat,
         originLon: configData.originLon,
         alphabet: configData.alphabet,
-      });
-      setLoadError(null);
-    } catch (error: any) {
-      console.error('Failed to load configuration:', error);
-      const errorMessage = error.message || 'Failed to load configuration';
-      setLoadError(errorMessage);
-      setError(errorMessage);
-    } finally {
-      setLoading(false);
-    }
-  };
+      } satisfies Config;
+    },
+  });
 
-  const loadHistory = async () => {
-    try {
+  const historyQuery = useQuery({
+    queryKey: queryKeys.configHistory(),
+    queryFn: async () => {
       const data = await api.getConfigHistory();
-      // Handle response format
       const historyData = data.history || data;
-      setHistory(Array.isArray(historyData) ? historyData : []);
-      setShowHistory(true);
-    } catch (error: any) {
-      console.error('Failed to load configuration history:', error);
-      setError(error.message || 'Failed to load configuration history');
+      return (Array.isArray(historyData) ? historyData : []) as ConfigHistory[];
+    },
+    enabled: showHistory,
+  });
+
+  const saveConfigMutation = useMutation({
+    mutationFn: async (nextConfig: Config) => {
+      const response = await api.updateConfig(nextConfig);
+      const updatedConfig = response.config || response;
+      return {
+        originLat: updatedConfig.originLat,
+        originLon: updatedConfig.originLon,
+        alphabet: updatedConfig.alphabet,
+      } satisfies Config;
+    },
+  });
+
+  useEffect(() => {
+    if (configQuery.data) {
+      setConfig(configQuery.data);
     }
-  };
+  }, [configQuery.data]);
 
   const validateConfig = (): boolean => {
     const newErrors: Record<string, string> = {};
@@ -121,24 +120,29 @@ export default function Configuration() {
       return;
     }
 
-    setSaving(true);
     try {
-      const response = await api.updateConfig(config);
-      // Handle response format
-      const updatedConfig = response.config || response;
-      setConfig({
-        originLat: updatedConfig.originLat,
-        originLon: updatedConfig.originLon,
-        alphabet: updatedConfig.alphabet,
-      });
+      const updatedConfig = await saveConfigMutation.mutateAsync(config);
+      setConfig(updatedConfig);
+      queryClient.setQueryData(queryKeys.config, updatedConfig);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.configHistory() });
       setSuccess('Configuration updated successfully');
       setErrors({});
     } catch (error: any) {
-      console.error('Failed to update configuration:', error);
       setError(error.message || 'Failed to update configuration');
-    } finally {
-      setSaving(false);
     }
+  };
+
+  const loadConfig = async () => {
+    await configQuery.refetch();
+  };
+
+  const loadHistory = async () => {
+    if (!showHistory) {
+      setShowHistory(true);
+      return;
+    }
+
+    await historyQuery.refetch();
   };
 
   const handleChange = (field: keyof Config) => (
@@ -166,7 +170,7 @@ export default function Configuration() {
     </Box>
   );
 
-  if (loading) {
+  if (configQuery.isLoading) {
     return (
       <Box sx={{ width: '100%', height: '100%', p: 3, overflow: 'auto', bgcolor: '#FEF2F2' }}>
         {pageHeader}
@@ -180,7 +184,10 @@ export default function Configuration() {
     );
   }
 
-  if (loadError) {
+  if (configQuery.isError) {
+    const loadError =
+      configQuery.error instanceof Error ? configQuery.error.message : 'Failed to load configuration';
+
     return (
       <Box sx={{ width: '100%', height: '100%', p: 3, overflow: 'auto', bgcolor: '#FEF2F2' }}>
         {pageHeader}
@@ -262,11 +269,11 @@ export default function Configuration() {
               <Box display="flex" gap={2}>
                 <Button
                   variant="contained"
-                  startIcon={saving ? <CircularProgress size={20} /> : <SaveIcon />}
+                  startIcon={saveConfigMutation.isPending ? <CircularProgress size={20} /> : <SaveIcon />}
                   onClick={handleSave}
-                  disabled={saving}
+                  disabled={saveConfigMutation.isPending}
                 >
-                  {saving ? 'Saving...' : 'Save Configuration'}
+                  {saveConfigMutation.isPending ? 'Saving...' : 'Save Configuration'}
                 </Button>
 
                 <Button
@@ -334,14 +341,14 @@ export default function Configuration() {
           </Paper>
         </Grid>
 
-        {showHistory && history.length > 0 && (
+        {showHistory && (historyQuery.data?.length || 0) > 0 && (
           <Grid item xs={12}>
             <Paper sx={{ p: 3 }}>
               <Typography variant="h6" gutterBottom>
                 Configuration History
               </Typography>
               <Box sx={{ mt: 2 }}>
-                {history.map((item) => {
+                {historyQuery.data?.map((item) => {
                   const changedAt = item.changedAt ?? item.changed_at;
                   return (
                     <Box

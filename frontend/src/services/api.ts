@@ -3,6 +3,35 @@ import axios, { AxiosInstance, AxiosError } from 'axios';
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api/v1';
 const AUTH_STORAGE_KEY = 'territory-auth';
 
+export type BranchListParams = {
+  limit?: number;
+  offset?: number;
+  search?: string;
+};
+
+export type JobsListParams = {
+  status?: string;
+  type?: string;
+  limit?: number;
+};
+
+export type TerritoryVisualizationParams = {
+  mode?: string;
+  branchIds?: string[];
+  jobId?: string;
+  customerView?: string;
+};
+
+export const queryKeys = {
+  config: ['config'] as const,
+  configHistory: (limit = 10, offset = 0) => ['config-history', limit, offset] as const,
+  branches: (params: BranchListParams = {}) => ['branches', params] as const,
+  jobs: (params: JobsListParams = {}) => ['jobs', params] as const,
+  job: (jobId: string) => ['job', jobId] as const,
+  territoryVisualization: (params: TerritoryVisualizationParams = {}) =>
+    ['territory-visualization', params] as const,
+};
+
 export type AuthUser = {
   id: string;
   email: string;
@@ -15,7 +44,7 @@ export type AuthSession = {
   user: AuthUser;
 };
 
-type JobsStreamPayload = {
+export type JobsStreamPayload = {
   jobs: Array<Record<string, any>>;
   total: number;
 };
@@ -183,7 +212,7 @@ class ApiService {
   }
 
   // Branch endpoints
-  async getBranches(params?: { limit?: number; offset?: number; search?: string }) {
+  async getBranches(params?: BranchListParams) {
     const response = await this.client.get('/branches', { params });
     return response.data;
   }
@@ -222,7 +251,7 @@ class ApiService {
     return response.data;
   }
 
-  async listJobs(params?: { status?: string; type?: string; limit?: number }) {
+  async listJobs(params?: JobsListParams) {
     const response = await this.client.get('/jobs', { params });
     return response.data;
   }
@@ -439,12 +468,7 @@ class ApiService {
     return response.data;
   }
 
-  async getTerritoryVisualization(params?: {
-    mode?: string;
-    branchIds?: string[];
-    jobId?: string;
-    customerView?: string;
-  }) {
+  async getTerritoryVisualization(params?: TerritoryVisualizationParams) {
     const response = await this.client.get('/batch/territories/visualization', {
       params: {
         mode: params?.mode,

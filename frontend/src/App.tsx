@@ -1,6 +1,7 @@
 import { lazy, Suspense, type ComponentType, type LazyExoticComponent } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Box, Snackbar, Alert, CircularProgress, Stack, Typography } from '@mui/material';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import { useStore } from './store/useStore';
@@ -12,6 +13,15 @@ const Branches = lazy(() => import('./pages/Branches'));
 const Calculator = lazy(() => import('./pages/Calculator'));
 const BatchProcessing = lazy(() => import('./pages/BatchProcessing'));
 const CustomerMappingView = lazy(() => import('./pages/CustomerMappingView'));
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+      staleTime: 30_000,
+    },
+  },
+});
 
 function RouteLoadingFallback() {
   return (
@@ -56,34 +66,36 @@ function App() {
   };
 
   return (
-    <Box sx={{ width: '100%', height: '100vh', overflow: 'hidden' }}>
-      <Routes>
-        <Route
-          path="/login"
-          element={isAuthenticated() ? <Navigate to="/" replace /> : <Login />}
-        />
-        <Route path="/" element={<ProtectedAppShell />}>
-          <Route index element={renderLazyRoute(Dashboard)} />
-          <Route path="config" element={renderLazyRoute(Configuration)} />
-          <Route path="branches" element={renderLazyRoute(Branches)} />
-          <Route path="calculator" element={renderLazyRoute(Calculator)} />
-          <Route path="batch" element={renderLazyRoute(BatchProcessing)} />
-          <Route path="mappings" element={renderLazyRoute(CustomerMappingView)} />
-        </Route>
-      </Routes>
+    <QueryClientProvider client={queryClient}>
+      <Box sx={{ width: '100%', height: '100vh', overflow: 'hidden' }}>
+        <Routes>
+          <Route
+            path="/login"
+            element={isAuthenticated() ? <Navigate to="/" replace /> : <Login />}
+          />
+          <Route path="/" element={<ProtectedAppShell />}>
+            <Route index element={renderLazyRoute(Dashboard)} />
+            <Route path="config" element={renderLazyRoute(Configuration)} />
+            <Route path="branches" element={renderLazyRoute(Branches)} />
+            <Route path="calculator" element={renderLazyRoute(Calculator)} />
+            <Route path="batch" element={renderLazyRoute(BatchProcessing)} />
+            <Route path="mappings" element={renderLazyRoute(CustomerMappingView)} />
+          </Route>
+        </Routes>
 
-      {/* Global notification snackbar */}
-      <Snackbar
-        open={!!(error || success)}
-        autoHideDuration={6000}
-        onClose={handleClose}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
-      >
-        <Alert onClose={handleClose} severity={error ? 'error' : 'success'} sx={{ width: '100%' }}>
-          {error || success}
-        </Alert>
-      </Snackbar>
-    </Box>
+        {/* Global notification snackbar */}
+        <Snackbar
+          open={!!(error || success)}
+          autoHideDuration={6000}
+          onClose={handleClose}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+        >
+          <Alert onClose={handleClose} severity={error ? 'error' : 'success'} sx={{ width: '100%' }}>
+            {error || success}
+          </Alert>
+        </Snackbar>
+      </Box>
+    </QueryClientProvider>
   );
 }
 
