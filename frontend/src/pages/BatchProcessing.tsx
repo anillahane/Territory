@@ -39,6 +39,7 @@ import {
 import { useStore } from '../store/useStore';
 import api from '../services/api';
 import DataState from '../components/DataState';
+import { formatIndiaDateTime } from '../utils/datetime';
 
 interface Job {
   jobId: string;
@@ -440,22 +441,6 @@ export default function BatchProcessing() {
     }
   };
 
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    // Format in India timezone (IST = UTC+5:30)
-    // Add 5 hours and 30 minutes to UTC
-    const istDate = new Date(date.getTime() + (5.5 * 60 * 60 * 1000));
-    
-    const day = String(istDate.getUTCDate()).padStart(2, '0');
-    const month = String(istDate.getUTCMonth() + 1).padStart(2, '0');
-    const year = istDate.getUTCFullYear();
-    const hours = String(istDate.getUTCHours()).padStart(2, '0');
-    const minutes = String(istDate.getUTCMinutes()).padStart(2, '0');
-    const seconds = String(istDate.getUTCSeconds()).padStart(2, '0');
-    
-    return `${day}/${month}/${year}, ${hours}:${minutes}:${seconds}`;
-  };
-
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'completed':
@@ -735,7 +720,7 @@ export default function BatchProcessing() {
                       </TableCell>
                       <TableCell>
                         <Typography variant="body2">
-                          {formatDate(job.createdAt)}
+                          {formatIndiaDateTime(job.createdAt)}
                         </Typography>
                       </TableCell>
                       <TableCell>
