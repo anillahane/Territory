@@ -55,11 +55,15 @@ async function setupTestDatabase() {
  */
 async function cleanupTestData() {
   try {
-    await pool.query('TRUNCATE TABLE customer_pocket_mappings RESTART IDENTITY CASCADE;');
-    await pool.query('TRUNCATE TABLE branches CASCADE;');
-    await pool.query('TRUNCATE TABLE jobs RESTART IDENTITY CASCADE;');
-    await pool.query('TRUNCATE TABLE config_audit RESTART IDENTITY CASCADE;');
-    await pool.query('TRUNCATE TABLE users RESTART IDENTITY CASCADE;');
+    await pool.query(`
+      TRUNCATE TABLE
+        customer_pocket_mappings,
+        branches,
+        jobs,
+        config_audit,
+        users
+      RESTART IDENTITY CASCADE;
+    `);
     await pool.query(`
       UPDATE config
       SET

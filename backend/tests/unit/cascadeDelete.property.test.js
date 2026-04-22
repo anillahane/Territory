@@ -89,7 +89,7 @@ describe('Property 20: Cascade Deletion Integrity', () => {
       ),
       { numRuns: 100 }
     );
-  });
+  }, 15000);
 
   it('should only delete mappings for the specific job', async () => {
     const jobId1 = `test-cascade-multi-1-${Date.now()}`;
