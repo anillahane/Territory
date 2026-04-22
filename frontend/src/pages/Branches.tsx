@@ -429,6 +429,7 @@ export default function Branches() {
         <Box>
           <Tooltip title="Edit">
             <IconButton
+              aria-label={`Edit branch ${params.row.id}`}
               size="small"
               onClick={() => handleEdit(params.row as Branch)}
               color="primary"
@@ -438,6 +439,7 @@ export default function Branches() {
           </Tooltip>
           <Tooltip title="Delete">
             <IconButton
+              aria-label={`Delete branch ${params.row.id}`}
               size="small"
               onClick={() => handleDelete(params.row.id)}
               color="error"
@@ -464,6 +466,7 @@ export default function Branches() {
         <Box display="flex" gap={1}>
           <Tooltip title="Refresh">
             <IconButton
+              aria-label="Refresh branches"
               onClick={handleReloadBranches}
               disabled={loading}
             >
@@ -573,8 +576,9 @@ export default function Branches() {
             rowCount={totalBranches}
             disableRowSelectionOnClick
             sx={{
-              '& .MuiDataGrid-cell:focus': {
-                outline: 'none',
+              '& .MuiDataGrid-cell:focus, & .MuiDataGrid-cell:focus-within, & .MuiDataGrid-columnHeader:focus, & .MuiDataGrid-columnHeader:focus-within': {
+                outline: '2px solid #1D4ED8',
+                outlineOffset: '-2px',
               },
             }}
           />
@@ -582,10 +586,20 @@ export default function Branches() {
       </Paper>
 
       {/* Add/Edit Dialog */}
-      <Dialog open={openDialog} onClose={() => setOpenDialog(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>{editingBranch ? 'Edit Branch' : 'Add New Branch'}</DialogTitle>
+      <Dialog
+        aria-describedby="branch-dialog-description"
+        aria-labelledby="branch-dialog-title"
+        open={openDialog}
+        onClose={() => setOpenDialog(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle id="branch-dialog-title">{editingBranch ? 'Edit Branch' : 'Add New Branch'}</DialogTitle>
         <DialogContent>
           <Box sx={{ pt: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <Typography id="branch-dialog-description" variant="body2" color="text.secondary">
+              Provide the branch details below. Pocket ID is calculated automatically from the coordinates.
+            </Typography>
             <TextField
               label="Branch ID"
               value={formData.id}
@@ -593,6 +607,7 @@ export default function Branches() {
               required
               fullWidth
               disabled={!!editingBranch}
+              autoFocus={!editingBranch}
               helperText="Unique identifier for the branch (e.g., BR001)"
             />
             <TextField
@@ -601,6 +616,7 @@ export default function Branches() {
               onChange={(e) => setFormData({ ...formData, city: e.target.value })}
               required
               fullWidth
+              autoFocus={!!editingBranch}
             />
             <TextField
               label="Latitude"
@@ -635,15 +651,17 @@ export default function Branches() {
 
       {/* Upload Dialog */}
       <Dialog
+        aria-describedby="branch-upload-dialog-description"
+        aria-labelledby="branch-upload-dialog-title"
         open={uploadDialogOpen}
         onClose={() => !uploading && setUploadDialogOpen(false)}
         maxWidth="sm"
         fullWidth
       >
-        <DialogTitle>Upload Branches from Excel</DialogTitle>
+        <DialogTitle id="branch-upload-dialog-title">Upload Branches from Excel</DialogTitle>
         <DialogContent>
           <Box sx={{ pt: 2 }}>
-            <Alert severity="info" sx={{ mb: 2 }}>
+            <Alert id="branch-upload-dialog-description" severity="info" sx={{ mb: 2 }}>
               Excel file should contain columns: <strong>ID</strong>, <strong>City</strong>, <strong>Latitude</strong>, <strong>Longitude</strong>
               <br />
               (Column names are case-insensitive)
@@ -674,18 +692,21 @@ export default function Branches() {
             
             {!uploading && (
               <>
-                <input
-                  type="file"
-                  accept=".xlsx,.xls"
-                  onChange={handleFileSelect}
-                  style={{ display: 'none' }}
-                  id="file-upload"
-                />
-                <label htmlFor="file-upload">
-                  <Button variant="outlined" component="span" fullWidth>
-                    Select Excel File
-                  </Button>
-                </label>
+                <Button
+                  variant="outlined"
+                  component="label"
+                  fullWidth
+                  autoFocus
+                >
+                  Select Excel File
+                  <input
+                    hidden
+                    type="file"
+                    accept=".xlsx,.xls"
+                    onChange={handleFileSelect}
+                    id="file-upload"
+                  />
+                </Button>
                 {selectedFile && (
                   <Typography variant="body2" sx={{ mt: 2 }}>
                     Selected: {selectedFile.name}
@@ -695,7 +716,7 @@ export default function Branches() {
             )}
 
             {uploading && (
-              <Box sx={{ mt: 2 }}>
+              <Box role="status" aria-live="polite" sx={{ mt: 2 }}>
                 <Typography variant="body2" gutterBottom>
                   Processing upload... {uploadProgress}%
                 </Typography>
