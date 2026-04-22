@@ -13,6 +13,19 @@ const router = express.Router();
 
 const upload = createExcelUpload();
 
+const parsePositiveInteger = (value, fallback, { allowZero = true } = {}) => {
+  const parsedValue = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsedValue)) {
+    return fallback;
+  }
+
+  if (allowZero) {
+    return parsedValue >= 0 ? parsedValue : fallback;
+  }
+
+  return parsedValue > 0 ? parsedValue : fallback;
+};
+
 // Validation schemas
 const branchSchema = Joi.object({
   id: Joi.string().max(20).required(),
@@ -150,8 +163,8 @@ router.get(
 router.get(
   '/',
   asyncHandler(async (req, res) => {
-    const limit = parseInt(req.query.limit || '100', 10);
-    const offset = parseInt(req.query.offset || '0', 10);
+    const limit = parsePositiveInteger(req.query.limit, 100, { allowZero: false });
+    const offset = parsePositiveInteger(req.query.offset, 0);
     const search = req.query.search || '';
 
     let queryText = `
@@ -196,6 +209,8 @@ router.get(
         total,
         limit,
         offset,
+        page: Math.floor(offset / limit),
+        pageSize: limit,
         hasMore: offset + limit < total,
       },
     });
