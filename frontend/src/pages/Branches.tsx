@@ -29,7 +29,7 @@ import {
   Refresh as RefreshIcon,
   Business,
 } from '@mui/icons-material';
-import { DataGrid, GridColDef } from '@mui/x-data-grid';
+import { DataGrid, GridColDef, GridPaginationModel } from '@mui/x-data-grid';
 import { useStore } from '../store/useStore';
 import api from '../services/api';
 
@@ -43,9 +43,23 @@ interface Branch {
   updated_at: string;
 }
 
+const normalizeBranches = (branchesData: unknown): Branch[] =>
+  Array.isArray(branchesData)
+    ? branchesData.map((branch: any) => ({
+        id: branch.id,
+        city: branch.city,
+        lat: branch.lat,
+        lon: branch.lon,
+        pocket_id: branch.pocket_id || branch.pocketId,
+        created_at: branch.created_at || branch.createdAt,
+        updated_at: branch.updated_at || branch.updatedAt,
+      }))
+    : [];
+
 export default function Branches() {
   const { setError, setSuccess } = useStore();
   const [branches, setBranches] = useState<Branch[]>([]);
+  const [totalBranches, setTotalBranches] = useState(0);
   const [loading, setLoading] = useState(false);
   const [openDialog, setOpenDialog] = useState(false);
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
@@ -60,39 +74,66 @@ export default function Branches() {
   const [uploadMode, setUploadMode] = useState<'overwrite' | 'add'>('overwrite');
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [reloadToken, setReloadToken] = useState(0);
+  const [paginationModel, setPaginationModel] = useState<GridPaginationModel>({
+    page: 0,
+    pageSize: 25,
+  });
 
   useEffect(() => {
-    loadBranches();
-  }, []);
+    let isActive = true;
 
-  const loadBranches = async () => {
-    setLoading(true);
-    try {
-      const data = await api.getBranches({ limit: 1000 });
-      console.log('Branches API response:', data);
-      // Handle both response formats and field naming conventions
-      const branchesData = data.branches || data.data || data;
-      const normalizedBranches = Array.isArray(branchesData) 
-        ? branchesData.map(branch => ({
-            id: branch.id,
-            city: branch.city,
-            lat: branch.lat,
-            lon: branch.lon,
-            pocket_id: branch.pocket_id || branch.pocketId,
-            created_at: branch.created_at || branch.createdAt,
-            updated_at: branch.updated_at || branch.updatedAt,
-          }))
-        : [];
-      setBranches(normalizedBranches);
-    } catch (error: any) {
-      console.error('Failed to load branches:', error);
-      setError(error.message || 'Failed to load branches');
-      // Set empty array on error to prevent infinite loading
-      setBranches([]);
-    } finally {
-      setLoading(false);
-    }
-  };
+    const fetchBranches = async () => {
+      setLoading(true);
+      try {
+        const data = await api.getBranches({
+          limit: paginationModel.pageSize,
+          offset: paginationModel.page * paginationModel.pageSize,
+        });
+        console.log('Branches API response:', data);
+        const branchesData = data.branches || data.data || data;
+        const normalizedBranches = normalizeBranches(branchesData);
+        const total = Number(data.pagination?.total ?? normalizedBranches.length);
+
+        if (!isActive) {
+          return;
+        }
+
+        if (normalizedBranches.length === 0 && total > 0 && paginationModel.page > 0) {
+          const lastPage = Math.max(0, Math.ceil(total / paginationModel.pageSize) - 1);
+          if (lastPage !== paginationModel.page) {
+            setPaginationModel((currentModel) => ({
+              ...currentModel,
+              page: lastPage,
+            }));
+            return;
+          }
+        }
+
+        setBranches(normalizedBranches);
+        setTotalBranches(total);
+      } catch (error: any) {
+        if (!isActive) {
+          return;
+        }
+
+        console.error('Failed to load branches:', error);
+        setError(error.message || 'Failed to load branches');
+        setBranches([]);
+        setTotalBranches(0);
+      } finally {
+        if (isActive) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void fetchBranches();
+
+    return () => {
+      isActive = false;
+    };
+  }, [paginationModel.page, paginationModel.pageSize, reloadToken, setError]);
 
   const handleAdd = () => {
     setEditingBranch(null);
@@ -124,7 +165,7 @@ export default function Branches() {
     try {
       await api.deleteBranch(id);
       setSuccess('Branch deleted successfully');
-      loadBranches();
+      setReloadToken((currentToken) => currentToken + 1);
     } catch (error: any) {
       setError(error.message || 'Failed to delete branch');
     }
@@ -171,7 +212,7 @@ export default function Branches() {
         setSuccess('Branch created successfully');
       }
       setOpenDialog(false);
-      loadBranches();
+      setReloadToken((currentToken) => currentToken + 1);
     } catch (error: any) {
       setError(error.message || 'Failed to save branch');
     }
@@ -269,7 +310,14 @@ export default function Branches() {
             if (errors > 0) {
               setError(`${errors} row(s) were skipped due validation errors.`);
             }
-            loadBranches();
+            if (paginationModel.page === 0) {
+              setReloadToken((currentToken) => currentToken + 1);
+            } else {
+              setPaginationModel((currentModel) => ({
+                ...currentModel,
+                page: 0,
+              }));
+            }
           } else if (status.status === 'failed') {
             clearInterval(pollInterval);
             setUploading(false);
@@ -401,7 +449,10 @@ export default function Branches() {
         </Box>
         <Box display="flex" gap={1}>
           <Tooltip title="Refresh">
-            <IconButton onClick={loadBranches} disabled={loading}>
+            <IconButton
+              onClick={() => setReloadToken((currentToken) => currentToken + 1)}
+              disabled={loading}
+            >
               <RefreshIcon />
             </IconButton>
           </Tooltip>
@@ -423,7 +474,7 @@ export default function Branches() {
             variant="outlined"
             startIcon={<DownloadIcon />}
             onClick={handleExport}
-            disabled={branches.length === 0}
+            disabled={totalBranches === 0}
           >
             Export Excel
           </Button>
@@ -433,7 +484,7 @@ export default function Branches() {
         </Box>
       </Box>
 
-      {branches.length === 0 && !loading && (
+      {totalBranches === 0 && !loading && (
         <Alert severity="info" sx={{ mb: 2 }}>
           <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
             Getting Started with Branches
@@ -447,7 +498,7 @@ export default function Branches() {
       )}
 
       <Paper sx={{ height: 'calc(100vh - 250px)', width: '100%' }}>
-        {!loading && branches.length === 0 ? (
+        {!loading && totalBranches === 0 ? (
           <Box
             sx={{
               display: 'flex',
@@ -490,10 +541,12 @@ export default function Branches() {
             rows={branches}
             columns={columns}
             loading={loading}
+            pagination
+            paginationMode="server"
+            paginationModel={paginationModel}
+            onPaginationModelChange={(model) => setPaginationModel(model)}
             pageSizeOptions={[10, 25, 50, 100]}
-            initialState={{
-              pagination: { paginationModel: { pageSize: 25 } },
-            }}
+            rowCount={totalBranches}
             disableRowSelectionOnClick
             sx={{
               '& .MuiDataGrid-cell:focus': {
