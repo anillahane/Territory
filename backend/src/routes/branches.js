@@ -1,6 +1,5 @@
 const express = require('express');
 const Joi = require('joi');
-const multer = require('multer');
 const xlsx = require('xlsx');
 const { v4: uuidv4 } = require('uuid');
 const { query, transaction } = require('../config/database');
@@ -8,27 +7,11 @@ const { encodePocketId } = require('../utils/geometry');
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
 const { branchUploadQueue } = require('../config/queue');
 const logger = require('../config/logger');
+const { createExcelUpload, validateUploadedWorkbook } = require('../utils/fileValidation');
 
 const router = express.Router();
 
-// Configure multer for file uploads
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: parseInt(process.env.MAX_FILE_SIZE_MB || '10', 10) * 1024 * 1024,
-  },
-  fileFilter: (req, file, cb) => {
-    if (
-      file.mimetype ===
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-      file.mimetype === 'application/vnd.ms-excel'
-    ) {
-      cb(null, true);
-    } else {
-      cb(new AppError('Only Excel files are allowed', 400, 'INVALID_FILE_TYPE'));
-    }
-  },
-});
+const upload = createExcelUpload();
 
 // Validation schemas
 const branchSchema = Joi.object({
@@ -50,6 +33,7 @@ router.post(
     if (!req.file) {
       throw new AppError('No file uploaded', 400, 'NO_FILE');
     }
+    const { sanitizedFileName, rowCount } = await validateUploadedWorkbook(req.file);
 
     const uploadModeRaw = String(req.body?.uploadMode || 'overwrite')
       .trim()
@@ -72,7 +56,7 @@ router.post(
       job = await branchUploadQueue.add(
         {
           fileBuffer: req.file.buffer,
-          fileName: req.file.originalname,
+          fileName: sanitizedFileName,
           uploadMode,
         },
         {
@@ -82,7 +66,7 @@ router.post(
     } catch (error) {
       logger.error('Failed to queue branch upload job', {
         error: error.message,
-        fileName: req.file.originalname,
+        fileName: sanitizedFileName,
       });
       throw new AppError(
         'Upload queue is unavailable. Verify Redis service is running and try again.',
@@ -93,8 +77,9 @@ router.post(
 
     logger.info('Branch upload job queued', {
       jobId: job.id,
-      fileName: req.file.originalname,
+      fileName: sanitizedFileName,
       fileSize: req.file.size,
+      rowCount,
       uploadMode,
     });
 
@@ -103,6 +88,8 @@ router.post(
       message: 'Upload queued for processing',
       jobId: job.id,
       status: 'queued',
+      fileName: sanitizedFileName,
+      rowCount,
       uploadMode,
       statusUrl: `/api/v1/jobs/${job.id}`,
     });
