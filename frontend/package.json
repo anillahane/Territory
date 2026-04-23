@@ -34,7 +34,7 @@
     "react-dom": "^18.2.0",
     "react-dropzone": "^14.2.3",
     "react-leaflet": "^4.2.1",
-    "react-router-dom": "^6.21.1",
+    "react-router-dom": "^7.14.2",
     "xlsx": "^0.18.5",
     "zustand": "^4.4.7"
   },
