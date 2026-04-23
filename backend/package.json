@@ -30,7 +30,7 @@
     "@opentelemetry/exporter-trace-otlp-proto": "^0.215.0",
     "@opentelemetry/sdk-node": "^0.215.0",
     "@sentry/node": "^10.49.0",
-    "bcryptjs": "^2.4.3",
+    "bcryptjs": "^3.0.3",
     "bullmq": "^5.76.1",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
