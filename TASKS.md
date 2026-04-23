@@ -45,7 +45,7 @@ Statuses:
 | 18 | ✅ | OpenTelemetry + Sentry ([PR #18](https://github.com/anillahane/Territory/pull/18)) | `backend/src/app.js`, new `backend/src/utils/tracing.js`, `backend-worker/worker.py`, `frontend/src/main.tsx` | Auto-instrument Express/pg/ioredis/axios. Send traces to OTLP collector; errors to Sentry. Frontend: browser SDK with session replay. |
 | 19 | ✅ | BullMQ + Bull Board ([PR #19](https://github.com/anillahane/Territory/pull/19)) | migrate `backend/src/config/queue.js` from bull to bullmq; mount Bull Board UI at `/admin/queues` | BullMQ is the maintained successor; Bull Board gives an admin UI for job inspection/retry. |
 | 20 | ✅ | Frontend Testing ([PR #20](https://github.com/anillahane/Territory/pull/20)) | add Vitest + React Testing Library; create `frontend/src/**/__tests__/*.test.tsx` | Initial coverage for stores (`useStore` slices), utils (`datetime`, `validation`), and critical components (`Dashboard` compose, `BatchProcessing` upload flow). |
-| 21 | ⬜ | Remove `console.log` / `any` | all `.ts` and `.tsx` files in frontend | Replace console logs with a logger util. Replace loose `any` types in `services/api.ts` with DTOs generated from backend Joi schemas. |
+| 21 | ✅ | Remove `console.log` / `any` ([PR #21](https://github.com/anillahane/Territory/pull/21)) | all `.ts` and `.tsx` files in frontend | Replace console logs with a logger util. Replace loose `any` types in `services/api.ts` with DTOs generated from backend Joi schemas. |
 
 ## P4 — Ops & Hygiene
 
