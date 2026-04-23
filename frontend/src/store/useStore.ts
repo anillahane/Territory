@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { getStoredSession, type AuthSession, type AuthUser } from '../services/api';
 
 export interface Config {
   id: number;
@@ -54,7 +55,15 @@ const defaultDashboardMapPanel: DashboardMapPanel = {
   mapError: null
 };
 
+const defaultAuthSession = getStoredSession();
+
 interface AppState {
+  // Auth
+  authSession: AuthSession | null;
+  currentUser: AuthUser | null;
+  setAuthSession: (session: AuthSession | null) => void;
+  clearAuthSession: () => void;
+
   // Configuration
   config: Config | null;
   setConfig: (config: Config) => void;
@@ -113,6 +122,18 @@ interface AppState {
 }
 
 export const useStore = create<AppState>((set) => ({
+  // Auth
+  authSession: defaultAuthSession,
+  currentUser: defaultAuthSession?.user ?? null,
+  setAuthSession: (session) => set({
+    authSession: session,
+    currentUser: session?.user ?? null,
+  }),
+  clearAuthSession: () => set({
+    authSession: null,
+    currentUser: null,
+  }),
+
   // Configuration
   config: null,
   setConfig: (config) => set({ config }),

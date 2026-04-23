@@ -1,4 +1,5 @@
 import '@testing-library/jest-dom';
+import 'vitest-axe/extend-expect';
 import { expect, afterEach } from 'vitest';
 import { cleanup } from '@testing-library/react';
 import * as matchers from '@testing-library/jest-dom/matchers';
@@ -36,3 +37,10 @@ globalThis.IntersectionObserver = class IntersectionObserver {
   }
   unobserve() {}
 } as unknown as typeof IntersectionObserver;
+
+globalThis.ResizeObserver = class ResizeObserver {
+  constructor() {}
+  disconnect() {}
+  observe() {}
+  unobserve() {}
+} as unknown as typeof ResizeObserver;

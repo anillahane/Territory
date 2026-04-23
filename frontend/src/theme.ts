@@ -1,40 +1,73 @@
-import { createTheme } from '@mui/material/styles';
+import { alpha, createTheme } from '@mui/material/styles';
+
+type SidebarPalette = {
+  activeBg: string;
+  activeColor: string;
+  activeAdminBg: string;
+  activeAdminColor: string;
+  hoverBg: string;
+  iconColor: string;
+};
+
+declare module '@mui/material/styles' {
+  interface Palette {
+    sidebar: SidebarPalette;
+  }
+
+  interface PaletteOptions {
+    sidebar?: SidebarPalette;
+  }
+}
+
+const basePalette = {
+  primary: {
+    main: '#1E40AF',
+    light: '#3B82F6',
+    dark: '#1E3A8A',
+  },
+  secondary: {
+    main: '#059669',
+    light: '#10B981',
+    dark: '#047857',
+  },
+  success: {
+    main: '#059669',
+  },
+  error: {
+    main: '#DC2626',
+  },
+  warning: {
+    main: '#D97706',
+    light: '#FACC15',
+  },
+  info: {
+    main: '#0284C7',
+    light: '#93C5FD',
+  },
+  background: {
+    default: '#F8FAFC',
+    paper: '#FFFFFF',
+  },
+  text: {
+    primary: '#0F172A',
+    secondary: '#64748B',
+    disabled: '#94A3B8',
+  },
+  divider: '#E2E8F0',
+};
 
 const theme = createTheme({
   palette: {
     mode: 'light',
-    primary: {
-      main: '#1E40AF', // rgb(30, 64, 175) - Vistaar blue
-      light: '#3B82F6',
-      dark: '#1E3A8A',
+    ...basePalette,
+    sidebar: {
+      activeBg: alpha(basePalette.primary.main, 0.08),
+      activeColor: basePalette.primary.main,
+      activeAdminBg: alpha(basePalette.error.main, 0.08),
+      activeAdminColor: basePalette.error.main,
+      hoverBg: alpha(basePalette.primary.main, 0.04),
+      iconColor: basePalette.text.secondary,
     },
-    secondary: {
-      main: '#059669', // rgb(5, 150, 105) - Vistaar green
-      light: '#10B981',
-      dark: '#047857',
-    },
-    success: {
-      main: '#059669',
-    },
-    error: {
-      main: '#DC2626',
-    },
-    warning: {
-      main: '#D97706',
-    },
-    info: {
-      main: '#0284C7',
-    },
-    background: {
-      default: '#F8FAFC', // rgb(248, 250, 252)
-      paper: '#FFFFFF',
-    },
-    text: {
-      primary: '#0F172A', // rgb(15, 23, 42)
-      secondary: '#64748B', // rgb(100, 116, 139)
-      disabled: '#94A3B8', // rgb(148, 163, 184)
-    },
-    divider: '#E2E8F0', // rgb(226, 232, 240)
   },
   typography: {
     fontFamily: '"Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", sans-serif',
@@ -88,7 +121,7 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           boxShadow: 'none',
-          border: '1px solid #F1F5F9',
+          border: `1px solid ${alpha(basePalette.divider, 0.7)}`,
           borderRadius: '12px',
         },
       },
@@ -97,7 +130,7 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           boxShadow: 'none',
-          border: '1px solid #F1F5F9',
+          border: `1px solid ${alpha(basePalette.divider, 0.7)}`,
         },
       },
     },
@@ -105,7 +138,7 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           boxShadow: 'none',
-          borderBottom: '1px solid #E2E8F0',
+          borderBottom: `1px solid ${basePalette.divider}`,
         },
       },
     },

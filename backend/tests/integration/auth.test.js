@@ -65,4 +65,21 @@ describe('Authentication API Integration Tests', () => {
       role: 'admin',
     });
   });
+
+  test('should accept logout requests', async () => {
+    const loginResponse = await request(app)
+      .post('/api/v1/auth/login')
+      .send({
+        email: 'admin@example.com',
+        password: 'Admin123!',
+      })
+      .expect(200);
+
+    await request(app)
+      .post('/api/v1/auth/logout')
+      .send({
+        refreshToken: loginResponse.body.refreshToken,
+      })
+      .expect(204);
+  });
 });

@@ -22,6 +22,10 @@ const refreshSchema = Joi.object({
   refreshToken: Joi.string().required(),
 });
 
+const logoutSchema = Joi.object({
+  refreshToken: Joi.string().optional(),
+}).unknown(false);
+
 const sanitizeUser = (row) => ({
   id: row.id,
   email: String(row.email || '').trim().toLowerCase(),
@@ -135,6 +139,18 @@ router.post(
       refreshToken: issueRefreshToken(sanitizedUser),
       user: sanitizedUser,
     });
+  })
+);
+
+router.post(
+  '/logout',
+  asyncHandler(async (req, res) => {
+    const { error } = logoutSchema.validate(req.body || {});
+    if (error) {
+      throw new AppError(error.details[0].message, 400, 'VALIDATION_ERROR', error.details);
+    }
+
+    res.status(204).send();
   })
 );
 

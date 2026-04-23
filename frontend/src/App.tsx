@@ -1,11 +1,11 @@
-import { lazy, Suspense, type ComponentType, type LazyExoticComponent } from 'react';
+import { lazy, Suspense, useEffect, type ComponentType, type LazyExoticComponent } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Box, Snackbar, Alert, CircularProgress, Stack, Typography } from '@mui/material';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import { useStore } from './store/useStore';
-import { isAuthenticated } from './services/api';
+import { getStoredSession, isAuthenticated, subscribeToStoredSession } from './services/api';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Configuration = lazy(() => import('./pages/Configuration'));
@@ -51,7 +51,9 @@ const renderLazyRoute = (
 );
 
 function ProtectedAppShell() {
-  if (!isAuthenticated()) {
+  const authSession = useStore((state) => state.authSession);
+
+  if (!authSession?.accessToken) {
     return <Navigate to="/login" replace />;
   }
 
@@ -59,7 +61,25 @@ function ProtectedAppShell() {
 }
 
 function App() {
-  const { error, success, clearNotifications } = useStore();
+  const { error, success, clearNotifications, setAuthSession, clearAuthSession } = useStore();
+
+  useEffect(() => {
+    const initialSession = getStoredSession();
+    if (initialSession) {
+      setAuthSession(initialSession);
+    } else {
+      clearAuthSession();
+    }
+
+    return subscribeToStoredSession((nextSession) => {
+      if (nextSession) {
+        setAuthSession(nextSession);
+        return;
+      }
+
+      clearAuthSession();
+    });
+  }, [clearAuthSession, setAuthSession]);
 
   const handleClose = () => {
     clearNotifications();
