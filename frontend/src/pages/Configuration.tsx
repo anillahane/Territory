@@ -16,6 +16,7 @@ import { Save as SaveIcon, History as HistoryIcon, Refresh as RefreshIcon } from
 import { useStore } from '../store/useStore';
 import api, { queryKeys } from '../services/api';
 import DataState from '../components/DataState';
+import { validateConfig as validateConfigFields } from '../utils/configValidation';
 
 interface Config {
   originLat: number;
@@ -88,29 +89,7 @@ export default function Configuration() {
   }, [configQuery.data]);
 
   const validateConfig = (): boolean => {
-    const newErrors: Record<string, string> = {};
-
-    if (config.originLat < -90 || config.originLat > 90) {
-      newErrors.originLat = 'Latitude must be between -90 and 90';
-    }
-
-    if (config.originLon < -180 || config.originLon > 180) {
-      newErrors.originLon = 'Longitude must be between -180 and 180';
-    }
-
-    if (config.alphabet.length !== 30) {
-      newErrors.alphabet = 'Alphabet must contain exactly 30 characters';
-    }
-
-    const uniqueChars = new Set(config.alphabet);
-    if (uniqueChars.size !== 30) {
-      newErrors.alphabet = 'Alphabet must contain 30 unique characters';
-    }
-
-    if (config.alphabet.includes('-')) {
-      newErrors.alphabet = 'Alphabet cannot contain hyphen (-)';
-    }
-
+    const newErrors = validateConfigFields(config);
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
