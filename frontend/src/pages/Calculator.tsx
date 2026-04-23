@@ -26,6 +26,8 @@ import {
 } from '@mui/icons-material';
 import { useStore } from '../store/useStore';
 import api from '../services/api';
+import { getErrorMessage } from '../utils/errors';
+import logger from '../utils/logger';
 
 type Mode = 'encode' | 'decode';
 
@@ -96,12 +98,12 @@ export default function Calculator() {
     setLoading(true);
     try {
       const result = await api.encodePocketId(lat, lon);
-      console.log('Encode result:', result);
+      logger.info('Pocket encoded successfully', { pocketId: result.pocketId });
       setEncodeResult(result);
       setSuccess('Pocket ID generated successfully');
-    } catch (error: any) {
-      console.error('Encode error:', error);
-      setError(error.message || 'Failed to encode coordinates');
+    } catch (error) {
+      logger.error('Pocket encode failed', error);
+      setError(getErrorMessage(error, 'Failed to encode coordinates'));
     } finally {
       setLoading(false);
     }
@@ -116,7 +118,6 @@ export default function Calculator() {
     setLoading(true);
     try {
       const result = await api.decodePocketId(pocketId.trim());
-      console.log('Decode result:', result);
       
       // Handle backend response format
       const normalizedResult: DecodeResult = {
@@ -133,9 +134,9 @@ export default function Calculator() {
       
       setDecodeResult(normalizedResult);
       setSuccess('Pocket ID decoded successfully');
-    } catch (error: any) {
-      console.error('Decode error:', error);
-      setError(error.message || 'Failed to decode Pocket ID');
+    } catch (error) {
+      logger.error('Pocket decode failed', error);
+      setError(getErrorMessage(error, 'Failed to decode Pocket ID'));
     } finally {
       setLoading(false);
     }

@@ -1,10 +1,11 @@
 import type { Map } from 'maplibre-gl';
-import api from '../../../services/api';
+import api, { type BranchListResponse, type BranchRecord } from '../../../services/api';
 import {
   BRANCH_MARKERS_LAYER_ID,
   BRANCH_MARKERS_SOURCE_ID,
   EMPTY_BRANCH_FEATURE_COLLECTION,
 } from '../constants';
+import logger from '../../../utils/logger';
 
 export const setBranchLayerVisibility = (mapInstance: Map, visible: boolean) => {
   if (mapInstance.getLayer(BRANCH_MARKERS_LAYER_ID)) {
@@ -66,12 +67,14 @@ export const loadBranchMarkers = async (
 
   try {
     const response = branchResponse ?? await api.getBranches({ limit: 5000, offset: 0 });
-    const rawCandidate = response?.branches ?? response?.data ?? response;
-    const rawBranches = Array.isArray(rawCandidate)
-      ? rawCandidate
-      : Array.isArray(rawCandidate?.branches)
-        ? rawCandidate.branches
-        : [];
+    const typedResponse = response as
+      | BranchListResponse
+      | { data?: BranchRecord[]; branches?: BranchRecord[] };
+    const rawCandidate =
+      typedResponse.branches
+      ?? ('data' in typedResponse ? typedResponse.data : undefined)
+      ?? [];
+    const rawBranches = Array.isArray(rawCandidate) ? rawCandidate : [];
 
     const features: GeoJSON.Feature<GeoJSON.Point>[] = [];
     rawBranches.forEach((branch: Record<string, unknown>) => {
@@ -104,6 +107,6 @@ export const loadBranchMarkers = async (
       features
     });
   } catch (error) {
-    console.error('Failed to load branch markers:', error);
+    logger.error('Failed to load branch markers', error);
   }
 };

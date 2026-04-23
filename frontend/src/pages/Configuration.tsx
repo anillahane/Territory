@@ -17,6 +17,7 @@ import { useStore } from '../store/useStore';
 import api, { queryKeys } from '../services/api';
 import DataState from '../components/DataState';
 import { validateConfig as validateConfigFields } from '../utils/configValidation';
+import { getErrorMessage } from '../utils/errors';
 
 interface Config {
   originLat: number;
@@ -51,11 +52,10 @@ export default function Configuration() {
     queryKey: queryKeys.config,
     queryFn: async () => {
       const data = await api.getConfig();
-      const configData = data.config || data;
       return {
-        originLat: configData.originLat,
-        originLon: configData.originLon,
-        alphabet: configData.alphabet,
+        originLat: data.originLat,
+        originLon: data.originLon,
+        alphabet: data.alphabet,
       } satisfies Config;
     },
   });
@@ -106,8 +106,8 @@ export default function Configuration() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.configHistory() });
       setSuccess('Configuration updated successfully');
       setErrors({});
-    } catch (error: any) {
-      setError(error.message || 'Failed to update configuration');
+    } catch (error) {
+      setError(getErrorMessage(error, 'Failed to update configuration'));
     }
   };
 

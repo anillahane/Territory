@@ -16,6 +16,7 @@ import {
   ensureTerritoryLayers,
 } from '../features/dashboard/layers/TerritoryLayer';
 import { useMapInstance } from '../features/dashboard/hooks/useMapInstance';
+import logger from '../utils/logger';
 import type {
   TerritoryBranchOption,
   TerritoryCustomerView,
@@ -47,7 +48,7 @@ export default function Dashboard() {
   const [showOtherBranches, setShowOtherBranches] = useState(false);
 
   const findNearestBranch = (lat: number, lng: number) => {
-    console.debug('Nearest branch lookup pending API integration:', { lat, lng });
+    logger.debug('Nearest branch lookup pending API integration', { lat, lng });
   };
 
   const {

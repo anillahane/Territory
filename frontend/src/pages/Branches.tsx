@@ -32,31 +32,31 @@ import {
 } from '@mui/icons-material';
 import { DataGrid, GridColDef, GridPaginationModel } from '@mui/x-data-grid';
 import { useStore } from '../store/useStore';
-import api, { queryKeys } from '../services/api';
+import api, { queryKeys, type BranchRecord } from '../services/api';
 import DataState from '../components/DataState';
+import { getErrorMessage, getErrorSummary } from '../utils/errors';
+import logger from '../utils/logger';
 
 interface Branch {
   id: string;
-  city: string;
+  city: string | null;
   lat: number;
   lon: number;
   pocket_id: string;
-  created_at: string;
-  updated_at: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
-const normalizeBranches = (branchesData: unknown): Branch[] =>
-  Array.isArray(branchesData)
-    ? branchesData.map((branch: any) => ({
-        id: branch.id,
-        city: branch.city,
-        lat: branch.lat,
-        lon: branch.lon,
-        pocket_id: branch.pocket_id || branch.pocketId,
-        created_at: branch.created_at || branch.createdAt,
-        updated_at: branch.updated_at || branch.updatedAt,
-      }))
-    : [];
+const normalizeBranches = (branchesData: BranchRecord[]): Branch[] =>
+  branchesData.map((branch) => ({
+    id: branch.id,
+    city: branch.city,
+    lat: branch.lat,
+    lon: branch.lon,
+    pocket_id: branch.pocketId,
+    created_at: branch.createdAt,
+    updated_at: branch.updatedAt,
+  }));
 
 export default function Branches() {
   const { setError, setSuccess } = useStore();
@@ -88,11 +88,10 @@ export default function Branches() {
         limit: paginationModel.pageSize,
         offset: paginationModel.page * paginationModel.pageSize,
       });
-      const branchesData = data.branches || data.data || data;
-      const normalizedBranches = normalizeBranches(branchesData);
+      const normalizedBranches = normalizeBranches(data.branches);
       return {
         branches: normalizedBranches,
-        total: Number(data.pagination?.total ?? normalizedBranches.length),
+        total: Number(data.pagination.total ?? normalizedBranches.length),
       };
     },
     placeholderData: (previousData) => previousData,
@@ -136,7 +135,7 @@ export default function Branches() {
     setEditingBranch(branch);
     setFormData({
       id: branch.id,
-      city: branch.city,
+      city: branch.city || '',
       lat: branch.lat.toString(),
       lon: branch.lon.toString(),
     });
@@ -159,8 +158,8 @@ export default function Branches() {
           page: 0,
         }));
       }
-    } catch (error: any) {
-      setError(error.message || 'Failed to delete branch');
+    } catch (error) {
+      setError(getErrorMessage(error, 'Failed to delete branch'));
     }
   };
 
@@ -213,8 +212,8 @@ export default function Branches() {
           page: 0,
         }));
       }
-    } catch (error: any) {
-      setError(error.message || 'Failed to save branch');
+    } catch (error) {
+      setError(getErrorMessage(error, 'Failed to save branch'));
     }
   };
 
@@ -242,11 +241,11 @@ export default function Branches() {
     setUploadProgress(0);
     
     try {
-      console.log('Starting upload for file:', selectedFile.name);
+      logger.info('Starting branch upload', { fileName: selectedFile.name, uploadMode });
       
       // Start upload - returns immediately with job ID
       const response = await api.uploadBranches(selectedFile, uploadMode);
-      console.log('Upload response:', response);
+      logger.info('Branch upload accepted', { jobId: response.jobId, fileName: response.fileName });
       
       const jobId = response.jobId;
       
@@ -272,9 +271,7 @@ export default function Branches() {
         }
         
         try {
-          console.log(`Polling job status (attempt ${pollCount})...`);
           const status = await api.getJobStatus(jobId);
-          console.log('Job status:', status);
           
           // Update progress
           const progress = status.progress || 0;
@@ -324,24 +321,24 @@ export default function Branches() {
             setUploadProgress(0);
             setError(status.error || 'Upload failed');
           } else if (status.status === 'active' || status.status === 'pending') {
-            console.log('Job is active, progress:', progress);
+            logger.debug('Branch upload in progress', { jobId, progress, status: status.status });
           } else {
-            console.log('Job status:', status.status);
+            logger.debug('Branch upload status update', { jobId, status: status.status });
           }
-        } catch (pollError: any) {
-          console.error('Poll error:', pollError);
+        } catch (pollError) {
+          logger.error('Branch upload polling failed', getErrorSummary(pollError));
           clearInterval(pollInterval);
           setUploading(false);
           setUploadProgress(0);
-          setError(`Failed to check upload status: ${pollError.message}`);
+          setError(`Failed to check upload status: ${getErrorMessage(pollError, 'Unknown error')}`);
         }
       }, 1000); // Poll every second
 
-    } catch (error: any) {
-      console.error('Upload error:', error);
+    } catch (error) {
+      logger.error('Branch upload failed', getErrorSummary(error));
       setUploading(false);
       setUploadProgress(0);
-      setError(error.message || 'Failed to start upload');
+      setError(getErrorMessage(error, 'Failed to start upload'));
     }
   };
 
@@ -357,8 +354,8 @@ export default function Branches() {
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
       setSuccess('Branches exported successfully');
-    } catch (error: any) {
-      setError(error.message || 'Failed to export branches');
+    } catch (error) {
+      setError(getErrorMessage(error, 'Failed to export branches'));
     }
   };
 
@@ -374,8 +371,8 @@ export default function Branches() {
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
       setSuccess('Template downloaded successfully');
-    } catch (error: any) {
-      setError(error.message || 'Failed to download template');
+    } catch (error) {
+      setError(getErrorMessage(error, 'Failed to download template'));
     }
   };
 

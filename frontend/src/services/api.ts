@@ -1,7 +1,37 @@
-import axios, { AxiosInstance, AxiosError } from 'axios';
+import axios, { AxiosError, type AxiosInstance } from 'axios';
+import type {
+  TerritoryCustomerView,
+  TerritoryMode,
+  TerritoryVisualizationResponse,
+} from '../features/dashboard/types';
+import { getErrorMessage, isRecord } from '../utils/errors';
+import logger from '../utils/logger';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api/v1';
 const AUTH_STORAGE_KEY = 'territory-auth';
+
+type ApiErrorPayload = {
+  error?: string;
+  message?: string;
+  code?: string;
+  details?: unknown;
+};
+
+export type ApiRequestError = Error & {
+  status?: number;
+  code?: string;
+  details?: unknown;
+  originalError?: AxiosError<ApiErrorPayload>;
+};
+
+export type PaginationResponse = {
+  total: number;
+  limit: number;
+  offset: number;
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+};
 
 export type BranchListParams = {
   limit?: number;
@@ -16,20 +46,10 @@ export type JobsListParams = {
 };
 
 export type TerritoryVisualizationParams = {
-  mode?: string;
+  mode?: TerritoryMode;
   branchIds?: string[];
   jobId?: string;
-  customerView?: string;
-};
-
-export const queryKeys = {
-  config: ['config'] as const,
-  configHistory: (limit = 10, offset = 0) => ['config-history', limit, offset] as const,
-  branches: (params: BranchListParams = {}) => ['branches', params] as const,
-  jobs: (params: JobsListParams = {}) => ['jobs', params] as const,
-  job: (jobId: string) => ['job', jobId] as const,
-  territoryVisualization: (params: TerritoryVisualizationParams = {}) =>
-    ['territory-visualization', params] as const,
+  customerView?: TerritoryCustomerView;
 };
 
 export type AuthUser = {
@@ -44,8 +64,144 @@ export type AuthSession = {
   user: AuthUser;
 };
 
+export type ConfigRequest = {
+  originLat: number;
+  originLon: number;
+  alphabet: string;
+  gridLevels?: number[];
+};
+
+export type ConfigResponse = {
+  id: number;
+  originLat: number;
+  originLon: number;
+  alphabet: string;
+  gridLevels: number[];
+  version: number;
+  createdAt?: string;
+  updatedAt: string;
+};
+
+export type ConfigUpdateResponse = {
+  message: string;
+  config: ConfigResponse;
+};
+
+export type ConfigHistoryEntry = {
+  id: number;
+  configId: number;
+  originLat: number;
+  originLon: number;
+  alphabet: string;
+  gridLevels: number[];
+  version: number;
+  changedAt: string;
+};
+
+export type ConfigHistoryResponse = {
+  history: ConfigHistoryEntry[];
+  pagination: {
+    total: number;
+    limit: number;
+    offset: number;
+    hasMore: boolean;
+  };
+};
+
+export type BranchRecord = {
+  id: string;
+  city: string | null;
+  lat: number;
+  lon: number;
+  pocketId: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type CreateBranchRequest = {
+  id: string;
+  city: string;
+  lat: number;
+  lon: number;
+};
+
+export type UpdateBranchRequest = {
+  city: string;
+  lat: number;
+  lon: number;
+};
+
+export type BranchListResponse = {
+  branches: BranchRecord[];
+  pagination: PaginationResponse;
+};
+
+export type BranchMutationResponse = {
+  message: string;
+  branch: BranchRecord;
+};
+
+export type BranchDeleteResponse = {
+  message: string;
+  id: string;
+};
+
+export type BranchUploadMode = 'overwrite' | 'add';
+
+export type BranchUploadResponse = {
+  message: string;
+  jobId: string;
+  status: 'pending' | string;
+  fileName: string;
+  rowCount: number;
+  uploadMode: BranchUploadMode;
+  confirmWipeAll: boolean;
+  statusUrl: string;
+};
+
+export type JobType = 'batch-process' | 'branch-upload' | string;
+export type JobStatus = 'pending' | 'active' | 'completed' | 'failed' | string;
+
+export type JobResultSummary = {
+  inserted?: number;
+  replaced?: number;
+  skippedExisting?: number;
+  errors?: number;
+  mode?: BranchUploadMode | string;
+};
+
+export type JobResult = Record<string, unknown> & {
+  summary?: JobResultSummary;
+};
+
+export type JobData = Record<string, unknown> & {
+  fileName?: string;
+  rowCount?: number;
+  totalAccounts?: number;
+  totalPockets?: number;
+  territoryUrl?: string | null;
+  pocketStats?: Record<string, number>;
+  mappingsPersisted?: number;
+};
+
+export type JobRecord = {
+  jobId: string;
+  type: JobType;
+  status: JobStatus;
+  progress: number;
+  total: number;
+  resultUrl?: string | null;
+  error?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt?: string | null;
+  completedAt?: string | null;
+  data: JobData;
+  result?: JobResult | null;
+};
+
 export type JobsStreamPayload = {
-  jobs: Array<Record<string, any>>;
+  jobs: JobRecord[];
   total: number;
 };
 
@@ -57,6 +213,137 @@ type JobsStreamOptions = {
   onOpen?: () => void;
   onJobs: (payload: JobsStreamPayload) => void;
   onError?: (error: Error) => void;
+};
+
+export type DeleteJobResponse = {
+  message: string;
+  jobId: string;
+};
+
+export type RetryJobResponse = {
+  message: string;
+  jobId: string;
+};
+
+export type BulkDeleteJobsRequest = {
+  jobIds?: string[];
+  status?: string;
+};
+
+export type BulkDeleteJobsResponse = {
+  message: string;
+  deletedCount: number;
+};
+
+export type PocketIndex = {
+  level: number;
+  levelSize: number;
+  row: number;
+  col: number;
+};
+
+type PocketCornerCoordinates = {
+  lat: number;
+  lon: number;
+};
+
+export type PocketEncodeResponse = {
+  pocketId: string;
+  input: {
+    lat: number;
+    lon: number;
+  };
+  meters: {
+    x: number;
+    y: number;
+  };
+  indices: PocketIndex[];
+  breakdown: Array<{
+    level: number;
+    levelSize: number;
+    code: string;
+    row: number;
+    col: number;
+  }>;
+};
+
+export type PocketDecodeResponse = {
+  pocketId: string;
+  centerLat: number;
+  centerLon: number;
+  center: PocketCornerCoordinates;
+  corners: {
+    sw: PocketCornerCoordinates;
+    ne: PocketCornerCoordinates;
+    nw: PocketCornerCoordinates;
+    se: PocketCornerCoordinates;
+    southwest: PocketCornerCoordinates;
+    northeast: PocketCornerCoordinates;
+    northwest: PocketCornerCoordinates;
+    southeast: PocketCornerCoordinates;
+  };
+  indices: PocketIndex[];
+  cellSize: number;
+};
+
+export type PocketValidationResponse = {
+  valid: boolean;
+  pocketId: string;
+  levels?: number;
+  error?: string;
+};
+
+export type NearestBranchRecord = {
+  id: string;
+  city: string;
+  lat: number;
+  lon: number;
+  pocketId: string;
+  distance: number;
+  distanceKm: string;
+};
+
+export type NearestBranchesResponse = {
+  query: {
+    lat: number;
+    lon: number;
+    limit: number;
+    maxDistance?: number;
+  };
+  count: number;
+  branches: NearestBranchRecord[];
+  warning?: string;
+};
+
+export type WithinPocketResponse = {
+  pocketId: string;
+  count: number;
+  branches: Array<Pick<NearestBranchRecord, 'id' | 'city' | 'lat' | 'lon' | 'pocketId'>>;
+};
+
+export type BatchEncodeResponse = {
+  message: string;
+  jobId: string;
+  fileName: string;
+  rowCount: number;
+  total?: number;
+  replaceExisting: boolean;
+  confirmWipeAll: boolean;
+  worker: string;
+  statusUrl: string;
+};
+
+export type HealthCheckResponse = Record<string, unknown>;
+export type BatchTerritoriesResponse = Record<string, unknown>;
+
+export const queryKeys = {
+  config: ['config'] as const,
+  configHistory: (limit = 10, offset = 0) => ['config-history', limit, offset] as const,
+  branches: (params: BranchListParams = {}) => ['branches', params] as const,
+  jobs: (params: JobsListParams = {}) => ['jobs', params] as const,
+  job: (jobId: string) => ['job', jobId] as const,
+  territoryVisualization: (params: TerritoryVisualizationParams = {}) =>
+    ['territory-visualization', params] as const,
 };
 
 const readStoredSession = (): AuthSession | null => {
@@ -71,6 +358,34 @@ const readStoredSession = (): AuthSession | null => {
     window.localStorage.removeItem(AUTH_STORAGE_KEY);
     return null;
   }
+};
+
+const getApiErrorPayload = (value: unknown): ApiErrorPayload | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  return {
+    error: typeof value.error === 'string' ? value.error : undefined,
+    message: typeof value.message === 'string' ? value.message : undefined,
+    code: typeof value.code === 'string' ? value.code : undefined,
+    details: value.details,
+  };
+};
+
+const createApiRequestError = (
+  message: string,
+  error: AxiosError<ApiErrorPayload>
+): ApiRequestError => {
+  const payload = getApiErrorPayload(error.response?.data);
+  const normalizedError = new Error(message) as ApiRequestError;
+
+  normalizedError.status = error.response?.status;
+  normalizedError.code = payload?.code || error.code;
+  normalizedError.details = payload?.details;
+  normalizedError.originalError = error;
+
+  return normalizedError;
 };
 
 export const getStoredSession = (): AuthSession | null => readStoredSession();
@@ -98,10 +413,9 @@ class ApiService {
   constructor() {
     this.client = axios.create({
       baseURL: API_URL,
-      timeout: 120000, // 2 minutes for large file uploads
+      timeout: 120000,
     });
 
-    // Request interceptor
     this.client.interceptors.request.use(
       (config) => {
         const session = readStoredSession();
@@ -114,18 +428,17 @@ class ApiService {
       (error) => Promise.reject(error)
     );
 
-    // Response interceptor
     this.client.interceptors.response.use(
       (response) => response,
-      async (error: AxiosError) => {
-        const responseData = error.response?.data as Record<string, any> | undefined;
+      async (error: AxiosError<ApiErrorPayload>) => {
         const responseStatus = error.response?.status;
+        const responseData = getApiErrorPayload(error.response?.data);
         const originalRequest = error.config as (typeof error.config & { _retry?: boolean }) | undefined;
         const errorMessage =
-          responseData?.error ||
-          responseData?.message ||
-          error.message ||
-          'Request failed';
+          responseData?.error
+          || responseData?.message
+          || error.message
+          || 'Request failed';
 
         if (responseStatus === 401 && originalRequest && !originalRequest._retry) {
           const existingSession = readStoredSession();
@@ -154,109 +467,95 @@ class ApiService {
         }
 
         if (error.response) {
-          // Server responded with error
-          console.error('API Error:', responseData);
+          logger.error('API request failed', responseData);
         } else if (error.request) {
-          // Request made but no response
-          console.error('Network Error:', error.message);
+          logger.error('Network request failed', { message: error.message });
         }
 
-        const normalizedError = new Error(errorMessage) as Error & {
-          status?: number;
-          code?: string;
-          details?: unknown;
-          originalError?: AxiosError;
-        };
-        normalizedError.status = responseStatus;
-        normalizedError.code = (responseData?.code as string | undefined) || error.code;
-        normalizedError.details = responseData?.details;
-        normalizedError.originalError = error;
-
-        return Promise.reject(normalizedError);
+        return Promise.reject(createApiRequestError(errorMessage, error));
       }
     );
   }
 
-  async login(email: string, password: string) {
-    const response = await this.client.post('/auth/login', { email, password });
-    const session = response.data as AuthSession;
-    setStoredSession(session);
-    return session;
+  async login(email: string, password: string): Promise<AuthSession> {
+    const response = await this.client.post<AuthSession>('/auth/login', { email, password });
+    setStoredSession(response.data);
+    return response.data;
   }
 
-  async refreshAuth(refreshToken: string) {
-    const response = await axios.post(`${API_URL}/auth/refresh`, { refreshToken }, {
+  async refreshAuth(refreshToken: string): Promise<AuthSession> {
+    const response = await axios.post<AuthSession>(`${API_URL}/auth/refresh`, { refreshToken }, {
       timeout: 120000,
     });
-    const session = response.data as AuthSession;
-    setStoredSession(session);
-    return session;
-  }
-
-  // Configuration endpoints
-  async getConfig() {
-    const response = await this.client.get('/config');
+    setStoredSession(response.data);
     return response.data;
   }
 
-  async updateConfig(config: any) {
-    const response = await this.client.put('/config', config);
+  async getConfig(): Promise<ConfigResponse> {
+    const response = await this.client.get<ConfigResponse>('/config');
     return response.data;
   }
 
-  async getConfigHistory(limit = 10, offset = 0) {
-    const response = await this.client.get('/config/history', {
+  async updateConfig(config: ConfigRequest): Promise<ConfigUpdateResponse> {
+    const response = await this.client.put<ConfigUpdateResponse>('/config', config);
+    return response.data;
+  }
+
+  async getConfigHistory(limit = 10, offset = 0): Promise<ConfigHistoryResponse> {
+    const response = await this.client.get<ConfigHistoryResponse>('/config/history', {
       params: { limit, offset },
     });
     return response.data;
   }
 
-  // Branch endpoints
-  async getBranches(params?: BranchListParams) {
-    const response = await this.client.get('/branches', { params });
+  async getBranches(params?: BranchListParams): Promise<BranchListResponse> {
+    const response = await this.client.get<BranchListResponse>('/branches', { params });
     return response.data;
   }
 
-  async getBranch(id: string) {
-    const response = await this.client.get(`/branches/${id}`);
+  async getBranch(id: string): Promise<BranchRecord> {
+    const response = await this.client.get<BranchRecord>(`/branches/${id}`);
     return response.data;
   }
 
-  async createBranch(branch: any) {
-    const response = await this.client.post('/branches', branch);
+  async createBranch(branch: CreateBranchRequest): Promise<BranchMutationResponse> {
+    const response = await this.client.post<BranchMutationResponse>('/branches', branch);
     return response.data;
   }
 
-  async updateBranch(id: string, branch: any) {
-    const response = await this.client.put(`/branches/${id}`, branch);
+  async updateBranch(id: string, branch: UpdateBranchRequest): Promise<BranchMutationResponse> {
+    const response = await this.client.put<BranchMutationResponse>(`/branches/${id}`, branch);
     return response.data;
   }
 
-  async deleteBranch(id: string) {
-    const response = await this.client.delete(`/branches/${id}`);
+  async deleteBranch(id: string): Promise<BranchDeleteResponse> {
+    const response = await this.client.delete<BranchDeleteResponse>(`/branches/${id}`);
     return response.data;
   }
 
-  async uploadBranches(file: File, uploadMode: 'overwrite' | 'add' = 'overwrite') {
+  async uploadBranches(
+    file: File,
+    uploadMode: BranchUploadMode = 'overwrite'
+  ): Promise<BranchUploadResponse> {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('uploadMode', uploadMode);
-    // Let the browser set multipart boundary automatically.
-    const response = await this.client.post('/branches/upload', formData);
+
+    const response = await this.client.post<BranchUploadResponse>('/branches/upload', formData);
     return response.data;
   }
 
-  async getJobStatus(jobId: string) {
-    const response = await this.client.get(`/jobs/${jobId}`);
+  async getJobStatus(jobId: string): Promise<JobRecord> {
+    const response = await this.client.get<JobRecord>(`/jobs/${jobId}`);
     return response.data;
   }
 
-  async listJobs(params?: JobsListParams) {
-    const response = await this.client.get('/jobs', { params });
+  async listJobs(params?: JobsListParams): Promise<JobsStreamPayload> {
+    const response = await this.client.get<JobsStreamPayload>('/jobs', { params });
     return response.data;
   }
 
-  async subscribeToJobsStream(options: JobsStreamOptions) {
+  async subscribeToJobsStream(options: JobsStreamOptions): Promise<(() => void) | null> {
     if (
       typeof window === 'undefined'
       || typeof window.fetch !== 'function'
@@ -367,47 +666,50 @@ class ApiService {
     };
   }
 
-  async retryJob(jobId: string) {
-    const response = await this.client.post(`/jobs/${jobId}/retry`);
+  async retryJob(jobId: string): Promise<RetryJobResponse> {
+    const response = await this.client.post<RetryJobResponse>(`/jobs/${jobId}/retry`);
     return response.data;
   }
 
-  async deleteJob(jobId: string) {
-    const response = await this.client.delete(`/jobs/${jobId}`);
+  async deleteJob(jobId: string): Promise<DeleteJobResponse> {
+    const response = await this.client.delete<DeleteJobResponse>(`/jobs/${jobId}`);
     return response.data;
   }
 
-  async bulkDeleteJobs(params: { jobIds?: string[]; status?: string }) {
-    const response = await this.client.post('/jobs/bulk-delete', params);
+  async bulkDeleteJobs(params: BulkDeleteJobsRequest): Promise<BulkDeleteJobsResponse> {
+    const response = await this.client.post<BulkDeleteJobsResponse>('/jobs/bulk-delete', params);
     return response.data;
   }
 
-  async exportBranches() {
-    const response = await this.client.get('/branches/export', {
+  async exportBranches(): Promise<Blob> {
+    const response = await this.client.get<Blob>('/branches/export', {
       responseType: 'blob',
     });
     return response.data;
   }
 
-  // Pocket ID endpoints
-  async encodePocketId(lat: number, lon: number) {
-    const response = await this.client.post('/pocket/encode', { lat, lon });
+  async encodePocketId(lat: number, lon: number): Promise<PocketEncodeResponse> {
+    const response = await this.client.post<PocketEncodeResponse>('/pocket/encode', { lat, lon });
     return response.data;
   }
 
-  async decodePocketId(pocketId: string) {
-    const response = await this.client.post('/pocket/decode', { pocketId });
+  async decodePocketId(pocketId: string): Promise<PocketDecodeResponse> {
+    const response = await this.client.post<PocketDecodeResponse>('/pocket/decode', { pocketId });
     return response.data;
   }
 
-  async validatePocketId(pocketId: string) {
-    const response = await this.client.post('/pocket/validate', { pocketId });
+  async validatePocketId(pocketId: string): Promise<PocketValidationResponse> {
+    const response = await this.client.post<PocketValidationResponse>('/pocket/validate', { pocketId });
     return response.data;
   }
 
-  // Nearest branch endpoints
-  async findNearest(lat: number, lon: number, limit = 5, maxDistance?: number) {
-    const response = await this.client.post('/nearest', {
+  async findNearest(
+    lat: number,
+    lon: number,
+    limit = 5,
+    maxDistance?: number
+  ): Promise<NearestBranchesResponse> {
+    const response = await this.client.post<NearestBranchesResponse>('/nearest', {
       lat,
       lon,
       limit,
@@ -416,8 +718,13 @@ class ApiService {
     return response.data;
   }
 
-  async findNearestFallback(lat: number, lon: number, limit = 5, maxDistance?: number) {
-    const response = await this.client.post('/nearest/fallback', {
+  async findNearestFallback(
+    lat: number,
+    lon: number,
+    limit = 5,
+    maxDistance?: number
+  ): Promise<NearestBranchesResponse> {
+    const response = await this.client.post<NearestBranchesResponse>('/nearest/fallback', {
       lat,
       lon,
       limit,
@@ -426,80 +733,92 @@ class ApiService {
     return response.data;
   }
 
-  async findWithinPocket(pocketId: string) {
-    const response = await this.client.get(`/nearest/within-pocket/${pocketId}`);
+  async findWithinPocket(pocketId: string): Promise<WithinPocketResponse> {
+    const response = await this.client.get<WithinPocketResponse>(`/nearest/within-pocket/${pocketId}`);
     return response.data;
   }
 
-  // Batch processing endpoints
-  async batchEncode(file: File, replaceExisting = false) {
+  async batchEncode(file: File, replaceExisting = false): Promise<BatchEncodeResponse> {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('replaceExisting', String(replaceExisting));
-    
+
     try {
-      // Try as JSON first (new non-blocking behavior)
-      const response = await this.client.post('/batch/encode', formData);
+      const response = await this.client.post<BatchEncodeResponse>('/batch/encode', formData);
       return response.data;
-    } catch (error: any) {
-      const axiosError = error?.originalError || error;
-      // If it's a blob response (shouldn't happen anymore), handle it
-      if (axiosError.response?.headers['content-type']?.includes('application/vnd.openxmlformats')) {
-        return axiosError.response.data;
+    } catch (error) {
+      const originalError =
+        isRecord(error)
+        && 'originalError' in error
+        && error.originalError instanceof AxiosError
+          ? error.originalError
+          : error;
+
+      if (
+        axios.isAxiosError(originalError)
+        && typeof originalError.response?.headers['content-type'] === 'string'
+        && originalError.response.headers['content-type'].includes('application/vnd.openxmlformats')
+      ) {
+        throw new Error('Unexpected file response from batch encode endpoint');
       }
-      throw error;
+
+      throw error instanceof Error ? error : new Error(getErrorMessage(error, 'Failed to upload file'));
     }
   }
 
-  async getBatchStatus(jobId: string) {
-    const response = await this.client.get(`/batch/status/${jobId}`);
+  async getBatchStatus(jobId: string): Promise<JobRecord> {
+    const response = await this.client.get<JobRecord>(`/batch/status/${jobId}`);
     return response.data;
   }
 
-  async downloadBatchResult(jobId: string) {
-    const response = await this.client.get(`/batch/download/${jobId}`, {
+  async downloadBatchResult(jobId: string): Promise<Blob> {
+    const response = await this.client.get<Blob>(`/batch/download/${jobId}`, {
       responseType: 'blob',
     });
     return response.data;
   }
 
-  async getBatchTerritories(jobId: string) {
-    const response = await this.client.get(`/batch/territories/${jobId}`);
+  async getBatchTerritories(jobId: string): Promise<BatchTerritoriesResponse> {
+    const response = await this.client.get<BatchTerritoriesResponse>(`/batch/territories/${jobId}`);
     return response.data;
   }
 
-  async getTerritoryVisualization(params?: TerritoryVisualizationParams) {
-    const response = await this.client.get('/batch/territories/visualization', {
-      params: {
-        mode: params?.mode,
-        jobId: params?.jobId,
-        customerView: params?.customerView,
-        branchIds: params?.branchIds && params.branchIds.length > 0
-          ? params.branchIds.join(',')
-          : undefined
+  async getTerritoryVisualization(
+    params?: TerritoryVisualizationParams
+  ): Promise<TerritoryVisualizationResponse> {
+    const response = await this.client.get<TerritoryVisualizationResponse>(
+      '/batch/territories/visualization',
+      {
+        params: {
+          mode: params?.mode,
+          jobId: params?.jobId,
+          customerView: params?.customerView,
+          branchIds:
+            params?.branchIds && params.branchIds.length > 0
+              ? params.branchIds.join(',')
+              : undefined,
+        },
       }
-    });
+    );
     return response.data;
   }
 
-  // Template endpoints
-  async downloadBatchTemplate() {
-    const response = await this.client.get('/templates/batch-processing', {
+  async downloadBatchTemplate(): Promise<Blob> {
+    const response = await this.client.get<Blob>('/templates/batch-processing', {
       responseType: 'blob',
     });
     return response.data;
   }
 
-  async downloadBranchTemplate() {
-    const response = await this.client.get('/templates/branch-upload', {
+  async downloadBranchTemplate(): Promise<Blob> {
+    const response = await this.client.get<Blob>('/templates/branch-upload', {
       responseType: 'blob',
     });
     return response.data;
   }
 
-  // Health check
-  async healthCheck() {
-    const response = await axios.get(`${API_URL.replace('/api/v1', '')}/health`);
+  async healthCheck(): Promise<HealthCheckResponse> {
+    const response = await axios.get<HealthCheckResponse>(`${API_URL.replace('/api/v1', '')}/health`);
     return response.data;
   }
 }
