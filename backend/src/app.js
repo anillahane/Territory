@@ -13,6 +13,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const logger = require('./config/logger');
+const { queueAdminRouter } = require('./config/queue');
 const { assertJwtConfiguration, requireAuth, requireRole } = require('./middleware/auth');
 
 // Import routes
@@ -115,6 +116,10 @@ app.use(`/api/${API_VERSION}/templates`, requireAuth, templatesRoutes);
 app.use(`/api/${API_VERSION}/customer-mappings`, requireAuth, customerMappingsRoutes);
 app.use('/health', healthRoutes);
 
+if (queueAdminRouter) {
+  app.use('/admin/queues', requireAuth, requireRole('admin'), queueAdminRouter);
+}
+
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({
@@ -129,6 +134,7 @@ app.get('/', (req, res) => {
       batch: `/api/${API_VERSION}/batch`,
       customerMappings: `/api/${API_VERSION}/customer-mappings`,
       health: '/health',
+      adminQueues: '/admin/queues',
     },
   });
 });
