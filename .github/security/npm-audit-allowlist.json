@@ -1,0 +1,26 @@
+{
+  "backend": [
+    {
+      "package": "xlsx",
+      "advisory": "GHSA-4r6h-8v6p-xvw6",
+      "reason": "No upstream fix is available yet for the backend workbook dependency."
+    },
+    {
+      "package": "xlsx",
+      "advisory": "GHSA-5pgg-2g8v-p4x9",
+      "reason": "No upstream fix is available yet for the backend workbook dependency."
+    }
+  ],
+  "frontend": [
+    {
+      "package": "xlsx",
+      "advisory": "GHSA-4r6h-8v6p-xvw6",
+      "reason": "No upstream fix is available yet for the frontend workbook dependency."
+    },
+    {
+      "package": "xlsx",
+      "advisory": "GHSA-5pgg-2g8v-p4x9",
+      "reason": "No upstream fix is available yet for the frontend workbook dependency."
+    }
+  ]
+}
