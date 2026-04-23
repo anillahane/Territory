@@ -9,6 +9,7 @@ import logger from '../utils/logger';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api/v1';
 const AUTH_STORAGE_KEY = 'territory-auth';
+const AUTH_SESSION_EVENT = 'territory-auth:changed';
 
 type ApiErrorPayload = {
   error?: string;
@@ -52,10 +53,12 @@ export type TerritoryVisualizationParams = {
   customerView?: TerritoryCustomerView;
 };
 
+export type Role = 'admin' | 'editor' | 'viewer';
+
 export type AuthUser = {
   id: string;
   email: string;
-  role: 'admin' | 'editor' | 'viewer';
+  role: Role;
 };
 
 export type AuthSession = {
@@ -360,6 +363,14 @@ const readStoredSession = (): AuthSession | null => {
   }
 };
 
+const dispatchStoredSessionEvent = () => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.dispatchEvent(new CustomEvent(AUTH_SESSION_EVENT));
+};
+
 const getApiErrorPayload = (value: unknown): ApiErrorPayload | null => {
   if (!isRecord(value)) {
     return null;
@@ -392,13 +403,41 @@ export const getStoredSession = (): AuthSession | null => readStoredSession();
 
 export const setStoredSession = (session: AuthSession) => {
   window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
+  dispatchStoredSessionEvent();
 };
 
 export const clearStoredSession = () => {
   window.localStorage.removeItem(AUTH_STORAGE_KEY);
+  dispatchStoredSessionEvent();
 };
 
 export const isAuthenticated = () => Boolean(readStoredSession()?.accessToken);
+
+export const subscribeToStoredSession = (
+  listener: (session: AuthSession | null) => void
+) => {
+  if (typeof window === 'undefined') {
+    return () => {};
+  }
+
+  const handleSessionChanged = () => {
+    listener(readStoredSession());
+  };
+
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key === AUTH_STORAGE_KEY) {
+      listener(readStoredSession());
+    }
+  };
+
+  window.addEventListener(AUTH_SESSION_EVENT, handleSessionChanged as EventListener);
+  window.addEventListener('storage', handleStorage);
+
+  return () => {
+    window.removeEventListener(AUTH_SESSION_EVENT, handleSessionChanged as EventListener);
+    window.removeEventListener('storage', handleStorage);
+  };
+};
 
 const redirectToLogin = () => {
   if (window.location.pathname !== '/login') {
@@ -489,6 +528,14 @@ class ApiService {
     });
     setStoredSession(response.data);
     return response.data;
+  }
+
+  async logout(refreshToken?: string): Promise<void> {
+    try {
+      await this.client.post('/auth/logout', refreshToken ? { refreshToken } : {});
+    } finally {
+      clearStoredSession();
+    }
   }
 
   async getConfig(): Promise<ConfigResponse> {

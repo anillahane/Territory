@@ -89,14 +89,21 @@ export const useMapInstance = ({
     mapRef.current.addControl(new NavigationControl(), 'bottom-right');
     mapRef.current.addControl(new ScaleControl(), 'bottom-left');
 
-    const handleMapResize = () => {
-      if (!mapRef.current) return;
-      mapRef.current.resize();
-    };
+    const parentElement = mapContainerRef.current.parentElement;
+    const resizeObserver = parentElement
+      ? new ResizeObserver(() => {
+        window.requestAnimationFrame(() => {
+          mapRef.current?.resize();
+        });
+      })
+      : null;
+    const initialResizeFrame = window.requestAnimationFrame(() => {
+      mapRef.current?.resize();
+    });
 
-    window.addEventListener('resize', handleMapResize);
-    window.addEventListener('dashboard-layout-resize', handleMapResize);
-    window.setTimeout(handleMapResize, 0);
+    if (resizeObserver && parentElement) {
+      resizeObserver.observe(parentElement);
+    }
 
     mapRef.current.on('error', (event) => {
       if (!mapRef.current) return;
@@ -275,8 +282,8 @@ export const useMapInstance = ({
     });
 
     return () => {
-      window.removeEventListener('resize', handleMapResize);
-      window.removeEventListener('dashboard-layout-resize', handleMapResize);
+      window.cancelAnimationFrame(initialResizeFrame);
+      resizeObserver?.disconnect();
       if (gridUpdateDebounceRef.current !== null) {
         clearTimeout(gridUpdateDebounceRef.current);
         gridUpdateDebounceRef.current = null;

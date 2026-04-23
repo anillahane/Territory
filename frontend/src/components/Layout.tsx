@@ -1,508 +1,719 @@
-import { Outlet, Link, useLocation } from 'react-router-dom';
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
+  AppBar,
+  Avatar,
+  Button,
   Box,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
   Drawer,
+  IconButton,
+  InputAdornment,
   List,
   ListItem,
   ListItemButton,
   ListItemIcon,
   ListItemText,
-  Typography,
-  Divider,
-  IconButton,
-  Checkbox,
+  Menu,
+  MenuItem,
+  Stack,
+  TextField,
+  Toolbar,
   Tooltip,
-  Collapse,
+  Typography,
+  useMediaQuery,
 } from '@mui/material';
+import { alpha, useTheme } from '@mui/material/styles';
 import {
-  Dashboard as DashboardIcon,
-  Settings as SettingsIcon,
-  Business as BusinessIcon,
-  Calculate as CalculateIcon,
-  CloudUpload as CloudUploadIcon,
-  TableChart as TableChartIcon,
-  Menu as MenuIcon,
   ChevronLeft as ChevronLeftIcon,
-  ExpandLess as ExpandLessIcon,
-  ExpandMore as ExpandMoreIcon,
+  Close as CloseIcon,
+  Logout as LogoutIcon,
+  Menu as MenuIcon,
+  PersonOutline as PersonOutlineIcon,
+  Search as SearchIcon,
+  SettingsOutlined as SettingsOutlinedIcon,
 } from '@mui/icons-material';
-import { DASHBOARD_GRID_LEVELS, useStore } from '../store/useStore';
+import { navigationSections } from '../config/navigation';
+import api from '../services/api';
+import { useStore } from '../store/useStore';
 
-const drawerWidth = 240;
-const drawerWidthCollapsed = 64;
+const drawerWidth = 276;
+const drawerWidthCollapsed = 84;
+const SIDEBAR_STORAGE_KEY = 'sidebar:open';
+
+const readStoredSidebarOpen = () => {
+  const storedValue = window.localStorage.getItem(SIDEBAR_STORAGE_KEY);
+  if (storedValue === null) {
+    return true;
+  }
+
+  return storedValue === 'true';
+};
+
+const isNavItemActive = (pathname: string, path: string) => (
+  pathname === path || (path !== '/' && pathname.startsWith(`${path}/`))
+);
+
+const toRoleLabel = (role: string | undefined) => {
+  if (!role) {
+    return 'Guest';
+  }
+
+  return role.charAt(0).toUpperCase() + role.slice(1);
+};
 
 export default function Layout() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const location = useLocation();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [mapLegendExpanded, setMapLegendExpanded] = useState(true);
-  const dashboardMapPanel = useStore((state) => state.dashboardMapPanel);
-  const selectedGridLevels = useStore((state) => state.dashboardSelectedGridLevels);
-  const toggleDashboardGridLevel = useStore((state) => state.toggleDashboardGridLevel);
-  const showBranches = useStore((state) => state.showBranches);
-  const setShowBranches = useStore((state) => state.setShowBranches);
-  const isDashboardRoute = location.pathname === '/';
+  const navigate = useNavigate();
+  const mainContentRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const currentUser = useStore((state) => state.currentUser);
+  const authSession = useStore((state) => state.authSession);
+  const clearAuthSession = useStore((state) => state.clearAuthSession);
+  const setError = useStore((state) => state.setError);
+  const [sidebarOpen, setSidebarOpen] = useState(readStoredSidebarOpen);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [searchValue, setSearchValue] = useState('');
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [userMenuAnchor, setUserMenuAnchor] = useState<HTMLElement | null>(null);
 
-  const navItems = [
-    { path: '/', label: 'Dashboard', icon: <DashboardIcon /> },
-    { path: '/branches', label: 'Branches', icon: <BusinessIcon /> },
-    { path: '/batch', label: 'Batch Processing', icon: <CloudUploadIcon /> },
-    { path: '/mappings', label: 'Customer Pocket Mappings', icon: <TableChartIcon /> },
-  ];
+  const isMapRoute = location.pathname === '/';
+  const effectiveSidebarOpen = isMobile ? true : sidebarOpen;
+  const normalizedSearchValue = searchValue.trim().toLowerCase();
 
-  const adminItems = [
-    { path: '/calculator', label: 'Pocket ID Calculator', icon: <CalculateIcon /> },
-    { path: '/config', label: 'System Configuration', icon: <SettingsIcon /> },
-  ];
+  const roleFilteredSections = useMemo(
+    () =>
+      navigationSections
+        .map((section) => ({
+          ...section,
+          items: section.items.filter(
+            (item) => !item.roles || (currentUser ? item.roles.includes(currentUser.role) : false)
+          ),
+        }))
+        .filter((section) => section.items.length > 0),
+    [currentUser]
+  );
 
-  const toggleSidebar = () => {
-    setSidebarOpen((prev) => !prev);
-    window.setTimeout(() => {
-      window.dispatchEvent(new Event('dashboard-layout-resize'));
-    }, 220);
+  const totalVisibleItems = useMemo(
+    () => roleFilteredSections.reduce((count, section) => count + section.items.length, 0),
+    [roleFilteredSections]
+  );
+
+  const shouldShowSearch = effectiveSidebarOpen && totalVisibleItems > 8;
+
+  const visibleSections = useMemo(() => {
+    if (!normalizedSearchValue) {
+      return roleFilteredSections;
+    }
+
+    return roleFilteredSections
+      .map((section) => ({
+        ...section,
+        items: section.items.filter((item) => item.label.toLowerCase().includes(normalizedSearchValue)),
+      }))
+      .filter((section) => section.items.length > 0);
+  }, [normalizedSearchValue, roleFilteredSections]);
+
+  const currentPage = useMemo(
+    () =>
+      roleFilteredSections
+        .flatMap((section) => section.items)
+        .find((item) => isNavItemActive(location.pathname, item.path)),
+    [location.pathname, roleFilteredSections]
+  );
+
+  const userInitial = useMemo(() => {
+    const email = currentUser?.email || '';
+    const initial = email.trim().charAt(0);
+    return initial ? initial.toUpperCase() : 'U';
+  }, [currentUser?.email]);
+
+  useEffect(() => {
+    if (isMobile) {
+      return;
+    }
+
+    window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(sidebarOpen));
+  }, [isMobile, sidebarOpen]);
+
+  useEffect(() => {
+    if (!shouldShowSearch && searchValue) {
+      setSearchValue('');
+    }
+  }, [searchValue, shouldShowSearch]);
+
+  useEffect(() => {
+    if (mainContentRef.current) {
+      mainContentRef.current.scrollTo?.({ top: 0, left: 0, behavior: 'auto' });
+    }
+
+    if (isMobile) {
+      setMobileOpen(false);
+    }
+  }, [isMobile, location.pathname]);
+
+  useEffect(() => {
+    const focusSearchInput = () => {
+      window.setTimeout(() => {
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }, 0);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey && !event.metaKey) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === 'b') {
+        event.preventDefault();
+        if (isMobile) {
+          setMobileOpen((previous) => !previous);
+          return;
+        }
+
+        setSidebarOpen((previous) => !previous);
+      }
+
+      if (key === 'k' && totalVisibleItems > 8) {
+        event.preventDefault();
+        if (isMobile) {
+          setMobileOpen(true);
+          focusSearchInput();
+          return;
+        }
+
+        if (!sidebarOpen) {
+          setSidebarOpen(true);
+        }
+        focusSearchInput();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isMobile, sidebarOpen, totalVisibleItems]);
+
+  const handleNavigate = (path: string) => {
+    if (location.pathname !== path) {
+      navigate(path);
+    }
+
+    if (isMobile) {
+      setMobileOpen(false);
+    }
   };
 
-  const mapStatusLabel = dashboardMapPanel.mapError || (dashboardMapPanel.mapLoaded ? 'Ready' : 'Loading...');
-  const mapStatusColor = dashboardMapPanel.mapError
-    ? '#DC2626'
-    : (dashboardMapPanel.mapLoaded ? '#059669' : '#D97706');
+  const handleDesktopSidebarToggle = () => {
+    setSidebarOpen((previous) => !previous);
+  };
 
-  return (
-    <Box sx={{ display: 'flex', height: '100vh', overflow: 'hidden', background: '#F8FAFC' }}>
-      {/* Sidebar */}
-      <Drawer
-        variant="permanent"
-        sx={{
-          width: sidebarOpen ? drawerWidth : drawerWidthCollapsed,
-          flexShrink: 0,
-          transition: 'width 0.2s',
-          '& .MuiDrawer-paper': {
-            width: sidebarOpen ? drawerWidth : drawerWidthCollapsed,
-            boxSizing: 'border-box',
-            borderRight: '1px solid #E2E8F0',
-            background: '#FFFFFF',
-            transition: 'width 0.2s',
-            overflowX: 'hidden',
-            display: 'flex',
-            flexDirection: 'column',
-          },
-        }}
-      >
-        {/* Logo/Brand */}
-        <Box
+  const handleUserMenuOpen = (event: MouseEvent<HTMLElement>) => {
+    setUserMenuAnchor(event.currentTarget);
+  };
+
+  const handleUserMenuClose = () => {
+    setUserMenuAnchor(null);
+  };
+
+  const handleProfileOpen = () => {
+    handleUserMenuClose();
+    setProfileOpen(true);
+  };
+
+  const handleSettingsNavigate = () => {
+    handleUserMenuClose();
+    navigate('/config');
+  };
+
+  const handleLogout = async () => {
+    handleUserMenuClose();
+
+    try {
+      await api.logout(authSession?.refreshToken);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Unable to log out cleanly.');
+    } finally {
+      clearAuthSession();
+      navigate('/login', { replace: true });
+    }
+  };
+
+  const renderSection = (title: string, items: typeof visibleSections[number]['items']) => (
+    <Box key={title} sx={{ mb: 1.5 }}>
+      {effectiveSidebarOpen ? (
+        <Typography
+          component="h2"
           sx={{
-            p: 2,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 1.25,
-            borderBottom: '1px solid #F1F5F9',
-            minHeight: 68,
+            px: 2,
+            mb: 0.75,
+            fontSize: '0.7rem',
+            fontWeight: 700,
+            letterSpacing: '0.08em',
+            color: 'text.disabled',
+            textTransform: 'uppercase',
           }}
         >
-          <Box
-            sx={{
-              width: 36,
-              height: 36,
-              borderRadius: '10px',
-              background: 'linear-gradient(135deg, #1E40AF, #059669)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '16px',
-              fontWeight: 800,
-              color: '#FFFFFF',
-              flexShrink: 0,
-            }}
-          >
-            LP
-          </Box>
-          {sidebarOpen && (
-            <Box sx={{ flex: 1, minWidth: 0 }}>
-              <Typography
-                sx={{
-                  fontSize: '15px',
-                  fontWeight: 700,
-                  color: '#0F172A',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                }}
-              >
-                Location Pockets
-              </Typography>
-              <Typography
-                sx={{
-                  fontSize: '9px',
-                  color: '#475569',
-                  letterSpacing: '1px',
-                  textTransform: 'uppercase',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                }}
-              >
-                Territory Management
-              </Typography>
-            </Box>
-          )}
-          <IconButton
-            aria-label={sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar'}
-            onClick={toggleSidebar}
-            size="small"
-            sx={{
-              color: '#64748B',
-              flexShrink: 0,
-              ml: sidebarOpen ? 0 : -1,
-            }}
-          >
-            {sidebarOpen ? <ChevronLeftIcon /> : <MenuIcon />}
-          </IconButton>
-        </Box>
+          {title}
+        </Typography>
+      ) : null}
 
-        {/* Navigation */}
-        <List sx={{ px: 1, py: 1.5, flex: 1 }}>
-          {navItems.map((item) => {
-            const isActive = location.pathname === item.path;
-            return (
-              <ListItem key={item.path} disablePadding sx={{ mb: 0.5 }}>
-                <Tooltip title={!sidebarOpen ? item.label : ''} placement="right">
-                  <ListItemButton
-                    component={Link}
-                    to={item.path}
-                    sx={{
-                      borderRadius: '8px',
-                      py: 1.125,
-                      px: 1.5,
-                      transition: '0.15s',
-                      color: isActive ? '#1E40AF' : '#64748B',
-                      background: isActive ? 'rgba(37, 99, 235, 0.08)' : 'transparent',
-                      fontWeight: isActive ? 600 : 400,
-                      justifyContent: sidebarOpen ? 'flex-start' : 'center',
-                      '&:hover': {
-                        background: isActive ? 'rgba(37, 99, 235, 0.12)' : 'rgba(0, 0, 0, 0.04)',
-                      },
-                    }}
-                  >
-                    <ListItemIcon
-                      sx={{
-                        minWidth: sidebarOpen ? 36 : 'auto',
-                        color: 'inherit',
-                        fontSize: '20px',
-                        justifyContent: 'center',
-                      }}
-                    >
-                      {item.icon}
-                    </ListItemIcon>
-                    {sidebarOpen && (
-                      <ListItemText
-                        primary={item.label}
-                        primaryTypographyProps={{
-                          fontSize: '13px',
-                          fontWeight: 'inherit',
-                        }}
-                      />
-                    )}
-                  </ListItemButton>
-                </Tooltip>
-              </ListItem>
-            );
-          })}
+      <List disablePadding>
+        {items.map((item) => {
+          const selected = isNavItemActive(location.pathname, item.path);
+          const isAdminItem = Boolean(item.roles?.includes('admin'));
+          const selectedColor = isAdminItem
+            ? theme.palette.sidebar.activeAdminColor
+            : theme.palette.sidebar.activeColor;
+          const selectedBackground = isAdminItem
+            ? theme.palette.sidebar.activeAdminBg
+            : theme.palette.sidebar.activeBg;
+          const selectedBorderColor = isAdminItem ? theme.palette.error.main : theme.palette.primary.main;
+          const tooltipTitle = !effectiveSidebarOpen ? item.label : '';
 
-          {isDashboardRoute && sidebarOpen && (
-            <Box
-              sx={{
-                mt: 1.25,
-                mb: 1,
-                p: 1.25,
-                border: '1px solid #E2E8F0',
-                borderRadius: '10px',
-                background: '#F8FAFC',
-              }}
-            >
-              <Box
-                sx={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  mb: mapLegendExpanded ? 0.75 : 0
-                }}
-              >
-                <Typography sx={{ fontSize: '11px', fontWeight: 700, color: '#0F172A' }}>
-                  Map Legend
-                </Typography>
-                <IconButton
-                  aria-controls="dashboard-map-legend-content"
-                  aria-expanded={mapLegendExpanded}
-                  aria-label={mapLegendExpanded ? 'Collapse map legend' : 'Expand map legend'}
-                  onClick={() => setMapLegendExpanded((prev) => !prev)}
-                  size="small"
-                  sx={{ p: 0.2, color: '#64748B' }}
-                >
-                  {mapLegendExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
-                </IconButton>
-              </Box>
-              <Collapse id="dashboard-map-legend-content" in={mapLegendExpanded} timeout="auto" unmountOnExit>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.6 }}>
-                <Box
+          return (
+            <ListItem key={item.path} disablePadding sx={{ mb: 0.5 }}>
+              <Tooltip title={tooltipTitle} placement="right">
+                <ListItemButton
+                  selected={selected}
+                  aria-current={selected ? 'page' : undefined}
+                  onClick={() => handleNavigate(item.path)}
                   sx={{
-                    width: 18,
-                    height: 12,
-                    backgroundColor: '#93C5FD',
-                    opacity: 0.6,
-                    border: '2px solid #FDE047',
-                    borderRadius: '4px',
-                    flexShrink: 0,
+                    borderRadius: 2,
+                    px: effectiveSidebarOpen ? 1.5 : 1,
+                    py: 1.125,
+                    minHeight: 46,
+                    borderLeft: '3px solid transparent',
+                    borderLeftColor: selected ? selectedBorderColor : 'transparent',
+                    color: selected ? selectedColor : 'text.secondary',
+                    backgroundColor: selected ? selectedBackground : 'transparent',
+                    fontWeight: selected ? 600 : 500,
+                    justifyContent: effectiveSidebarOpen ? 'flex-start' : 'center',
+                    '&.Mui-selected': {
+                      backgroundColor: selectedBackground,
+                    },
+                    '&.Mui-selected:hover': {
+                      backgroundColor: selectedBackground,
+                    },
+                    '&:hover': {
+                      backgroundColor: selected ? selectedBackground : theme.palette.sidebar.hoverBg,
+                    },
                   }}
-                />
-                <Typography sx={{ fontSize: '10px', color: '#334155' }}>
-                  India (Light blue fill, Yellow border)
-                </Typography>
-              </Box>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.8 }}>
-                <Box sx={{ width: 18, height: 0, borderTop: '2px solid #E2E8F0', flexShrink: 0 }} />
-                <Typography sx={{ fontSize: '10px', color: '#334155' }}>State borders</Typography>
-              </Box>
-              <Divider sx={{ my: 0.8, borderColor: '#E2E8F0' }} />
-              <Typography sx={{ fontSize: '10px', color: '#64748B', mb: 0.25 }}>Zoom Level</Typography>
-              <Typography sx={{ fontSize: '14px', fontWeight: 700, color: '#0F172A', mb: 0.75 }}>
-                {dashboardMapPanel.zoomLevel.toFixed(2)}
-              </Typography>
-              <Typography sx={{ fontSize: '10px', color: '#64748B', mb: 0.25 }}>Center</Typography>
-              <Typography sx={{ fontSize: '11px', color: '#0F172A', mb: 0.75 }}>
-                {dashboardMapPanel.center[1].toFixed(4)}degN, {dashboardMapPanel.center[0].toFixed(4)}degE
-              </Typography>
-              <Typography sx={{ fontSize: '10px', color: '#64748B', mb: 0.25 }}>Grid Overlay</Typography>
-              <Typography sx={{ fontSize: '11px', color: '#0F172A', mb: 0.75 }}>
-                {dashboardMapPanel.gridOverlay}
-              </Typography>
-              <Typography sx={{ fontSize: '10px', color: '#64748B', mb: 0.2 }}>Grid Layers</Typography>
-              <Box sx={{ mb: 0.7 }}>
-                {DASHBOARD_GRID_LEVELS.map((gridLevel) => {
-                  const isSelected = selectedGridLevels.includes(gridLevel.id);
-                  const zoomEligible = dashboardMapPanel.zoomLevel >= gridLevel.minZoom;
-
-                  return (
-                    <Box
-                      key={gridLevel.id}
-                      sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        mb: 0.1,
-                        mr: -0.25
-                      }}
-                    >
-                      <Box sx={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
-                        <Checkbox
-                          size="small"
-                          checked={isSelected}
-                          onChange={() => toggleDashboardGridLevel(gridLevel.id)}
-                          sx={{ p: 0.3, mr: 0.4 }}
-                        />
-                        <Typography sx={{ fontSize: '10px', color: '#334155' }}>{gridLevel.label}</Typography>
-                      </Box>
-                      {gridLevel.minZoom >= 6 && (
-                        <Typography sx={{ fontSize: '9px', color: zoomEligible ? '#059669' : '#94A3B8' }}>
-                          z6+
-                        </Typography>
-                      )}
-                    </Box>
-                  );
-                })}
-              </Box>
-              <Typography sx={{ fontSize: '10px', color: '#64748B', mb: 0.2 }}>Overlays</Typography>
-              <Box
-                sx={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  mb: 0.7,
-                  mr: -0.25
-                }}
-              >
-                <Box sx={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
-                  <Checkbox
-                    size="small"
-                    checked={showBranches}
-                    onChange={(event) => setShowBranches(event.target.checked)}
-                    sx={{ p: 0.3, mr: 0.4 }}
-                  />
-                  <Typography sx={{ fontSize: '10px', color: '#334155' }}>Branches (red dots)</Typography>
-                </Box>
-              </Box>
-              <Typography sx={{ fontSize: '10px', color: '#64748B', mb: 0.25 }}>Map Status</Typography>
-              <Typography
-                sx={{
-                  fontSize: '10px',
-                  color: mapStatusColor,
-                  lineHeight: 1.3,
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                  maxHeight: 96,
-                  overflowY: 'auto',
-                }}
-              >
-                {mapStatusLabel}
-              </Typography>
-              </Collapse>
-            </Box>
-          )}
-
-          {/* Admin Section */}
-          {sidebarOpen && (
-            <Box sx={{ mt: 2, mb: 1, px: 1.5 }}>
-              <Typography
-                variant="caption"
-                sx={{
-                  color: '#94A3B8',
-                  fontWeight: 600,
-                  letterSpacing: '0.5px',
-                  textTransform: 'uppercase',
-                  fontSize: '10px',
-                }}
-              >
-                Administration
-              </Typography>
-            </Box>
-          )}
-
-          {adminItems.map((item) => {
-            const isActive = location.pathname === item.path;
-            return (
-              <ListItem key={item.path} disablePadding sx={{ mb: 0.5 }}>
-                <Tooltip title={!sidebarOpen ? item.label : ''} placement="right">
-                  <ListItemButton
-                    component={Link}
-                    to={item.path}
+                >
+                  <ListItemIcon
                     sx={{
-                      borderRadius: '8px',
-                      py: 1.125,
-                      px: 1.5,
-                      transition: '0.15s',
-                      color: isActive ? '#DC2626' : '#64748B',
-                      background: isActive ? 'rgba(220, 38, 38, 0.08)' : 'transparent',
-                      fontWeight: isActive ? 600 : 400,
-                      justifyContent: sidebarOpen ? 'flex-start' : 'center',
-                      '&:hover': {
-                        background: isActive ? 'rgba(220, 38, 38, 0.12)' : 'rgba(0, 0, 0, 0.04)',
-                      },
+                      minWidth: effectiveSidebarOpen ? 36 : 'auto',
+                      color: 'inherit',
+                      justifyContent: 'center',
                     }}
                   >
-                    <ListItemIcon
-                      sx={{
-                        minWidth: sidebarOpen ? 36 : 'auto',
-                        color: 'inherit',
-                        fontSize: '20px',
-                        justifyContent: 'center',
+                    {item.icon}
+                  </ListItemIcon>
+                  {effectiveSidebarOpen ? (
+                    <ListItemText
+                      primary={item.label}
+                      primaryTypographyProps={{
+                        fontSize: '0.8125rem',
+                        fontWeight: 'inherit',
                       }}
-                    >
-                      {item.icon}
-                    </ListItemIcon>
-                    {sidebarOpen && (
-                      <ListItemText
-                        primary={item.label}
-                        primaryTypographyProps={{
-                          fontSize: '13px',
-                          fontWeight: 'inherit',
-                        }}
-                      />
-                    )}
-                  </ListItemButton>
-                </Tooltip>
-              </ListItem>
-            );
-          })}
-        </List>
+                    />
+                  ) : null}
+                </ListItemButton>
+              </Tooltip>
+            </ListItem>
+          );
+        })}
+      </List>
+    </Box>
+  );
 
-        <Divider sx={{ borderColor: '#F1F5F9' }} />
-
-        {/* Footer */}
-        <Box sx={{ p: 1.5, borderTop: '1px solid #F1F5F9' }}>
-          <Box
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 1.25,
-              px: sidebarOpen ? 1.5 : 0,
-              py: 1,
-              justifyContent: sidebarOpen ? 'flex-start' : 'center',
-            }}
-          >
-            <Box
+  const drawerContent = (
+    <Box
+      component="nav"
+      aria-label="Primary navigation"
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+      }}
+    >
+      <Box
+        sx={{
+          px: 2,
+          py: 1.75,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1.25,
+          minHeight: 72,
+          borderBottom: `1px solid ${theme.palette.divider}`,
+        }}
+      >
+        <Box
+          sx={{
+            width: 40,
+            height: 40,
+            borderRadius: 2.5,
+            background: `linear-gradient(135deg, ${theme.palette.primary.main}, ${theme.palette.error.main})`,
+            color: 'common.white',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '1rem',
+            fontWeight: 800,
+            flexShrink: 0,
+          }}
+        >
+          LP
+        </Box>
+        {effectiveSidebarOpen ? (
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Typography
               sx={{
-                width: 32,
-                height: 32,
-                borderRadius: '8px',
-                background: '#EFF6FF',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: '13px',
+                fontSize: '0.9375rem',
                 fontWeight: 700,
-                color: '#1E40AF',
-                flexShrink: 0,
+                color: 'text.primary',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
               }}
             >
-              U
+              Location Pockets
+            </Typography>
+            <Typography
+              sx={{
+                fontSize: '0.625rem',
+                color: 'text.disabled',
+                letterSpacing: '0.18em',
+                textTransform: 'uppercase',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              Territory Management
+            </Typography>
+          </Box>
+        ) : null}
+        <IconButton
+          aria-label={
+            isMobile
+              ? 'Close navigation menu'
+              : (sidebarOpen ? 'Collapse sidebar' : 'Expand sidebar')
+          }
+          onClick={isMobile ? () => setMobileOpen(false) : handleDesktopSidebarToggle}
+          size="small"
+          sx={{ color: 'text.secondary', flexShrink: 0 }}
+        >
+          {isMobile ? <CloseIcon /> : (sidebarOpen ? <ChevronLeftIcon /> : <MenuIcon />)}
+        </IconButton>
+      </Box>
+
+      <Box sx={{ flex: 1, overflowY: 'auto', px: 1.25, py: 1.5 }}>
+        {shouldShowSearch ? (
+          <TextField
+            inputRef={searchInputRef}
+            fullWidth
+            size="small"
+            value={searchValue}
+            onChange={(event) => setSearchValue(event.target.value)}
+            placeholder="Search navigation"
+            aria-label="Search navigation"
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon fontSize="small" sx={{ color: 'text.secondary' }} />
+                </InputAdornment>
+              ),
+            }}
+            sx={{
+              mb: 2,
+              '& .MuiOutlinedInput-root': {
+                backgroundColor: alpha(theme.palette.background.paper, 0.8),
+              },
+            }}
+          />
+        ) : null}
+
+        {visibleSections.length > 0 ? (
+          visibleSections.map((section) => renderSection(section.title, section.items))
+        ) : (
+          <Typography sx={{ px: 2, py: 1, color: 'text.secondary', fontSize: '0.8125rem' }}>
+            No navigation items match “{searchValue}”.
+          </Typography>
+        )}
+      </Box>
+
+      <Divider />
+
+      <Box sx={{ p: 1.5 }}>
+        <Stack direction="row" alignItems="center" spacing={1.25}>
+          <IconButton
+            aria-label="Open user menu"
+            onClick={handleUserMenuOpen}
+            sx={{
+              p: 0,
+              borderRadius: 2,
+            }}
+          >
+            <Avatar
+              sx={{
+                width: 36,
+                height: 36,
+                bgcolor: alpha(theme.palette.primary.main, 0.12),
+                color: 'primary.main',
+                fontSize: '0.875rem',
+                fontWeight: 700,
+              }}
+            >
+              {userInitial}
+            </Avatar>
+          </IconButton>
+          {effectiveSidebarOpen ? (
+            <Box sx={{ minWidth: 0, flex: 1 }}>
+              <Typography
+                sx={{
+                  fontSize: '0.8125rem',
+                  fontWeight: 600,
+                  color: 'text.primary',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {currentUser?.email || 'User'}
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: '0.75rem',
+                  color: 'text.secondary',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {toRoleLabel(currentUser?.role)}
+              </Typography>
             </Box>
-            {sidebarOpen && (
+          ) : null}
+        </Stack>
+      </Box>
+    </Box>
+  );
+
+  return (
+    <Box
+      sx={{
+        display: 'flex',
+        minHeight: '100vh',
+        backgroundColor: 'background.default',
+        overflow: 'hidden',
+      }}
+    >
+      {isMobile ? (
+        <Drawer
+          variant="temporary"
+          open={mobileOpen}
+          onClose={() => setMobileOpen(false)}
+          ModalProps={{ keepMounted: true }}
+          sx={{
+            display: { xs: 'block', md: 'none' },
+            '& .MuiDrawer-paper': {
+              width: drawerWidth,
+              boxSizing: 'border-box',
+              borderRight: `1px solid ${theme.palette.divider}`,
+              backgroundColor: 'background.paper',
+            },
+          }}
+        >
+          {drawerContent}
+        </Drawer>
+      ) : (
+        <Drawer
+          variant="permanent"
+          open
+          sx={{
+            width: sidebarOpen ? drawerWidth : drawerWidthCollapsed,
+            flexShrink: 0,
+            transition: theme.transitions.create('width', {
+              duration: theme.transitions.duration.shorter,
+            }),
+            '& .MuiDrawer-paper': {
+              width: sidebarOpen ? drawerWidth : drawerWidthCollapsed,
+              boxSizing: 'border-box',
+              borderRight: `1px solid ${theme.palette.divider}`,
+              backgroundColor: 'background.paper',
+              overflowX: 'hidden',
+              transition: theme.transitions.create('width', {
+                duration: theme.transitions.duration.shorter,
+              }),
+            },
+          }}
+        >
+          {drawerContent}
+        </Drawer>
+      )}
+
+      <Box
+        sx={{
+          display: 'flex',
+          flexDirection: 'column',
+          flexGrow: 1,
+          minWidth: 0,
+          minHeight: '100vh',
+        }}
+      >
+        {isMobile ? (
+          <AppBar
+            position="static"
+            color="inherit"
+            sx={{
+              display: { xs: 'block', md: 'none' },
+              backgroundColor: 'background.paper',
+            }}
+          >
+            <Toolbar sx={{ minHeight: 72, gap: 1.5 }}>
+              <IconButton
+                aria-label="Open navigation menu"
+                edge="start"
+                onClick={() => setMobileOpen(true)}
+                sx={{ color: 'text.secondary' }}
+              >
+                <MenuIcon />
+              </IconButton>
               <Box sx={{ flex: 1, minWidth: 0 }}>
                 <Typography
                   sx={{
-                    fontSize: '12px',
-                    fontWeight: 600,
-                    color: '#1E293B',
+                    fontSize: '0.9375rem',
+                    fontWeight: 700,
+                    color: 'text.primary',
                     whiteSpace: 'nowrap',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
                   }}
                 >
-                  User
+                  {currentPage?.label || 'Location Pockets'}
                 </Typography>
                 <Typography
                   sx={{
-                    fontSize: '10px',
-                    color: '#94A3B8',
+                    fontSize: '0.75rem',
+                    color: 'text.secondary',
                     whiteSpace: 'nowrap',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
                   }}
                 >
-                  Administrator
+                  {toRoleLabel(currentUser?.role)}
                 </Typography>
               </Box>
-            )}
-          </Box>
-        </Box>
-      </Drawer>
+              <IconButton aria-label="Open user menu" onClick={handleUserMenuOpen} sx={{ p: 0 }}>
+                <Avatar
+                  sx={{
+                    width: 34,
+                    height: 34,
+                    bgcolor: alpha(theme.palette.primary.main, 0.12),
+                    color: 'primary.main',
+                    fontSize: '0.875rem',
+                    fontWeight: 700,
+                  }}
+                >
+                  {userInitial}
+                </Avatar>
+              </IconButton>
+            </Toolbar>
+          </AppBar>
+        ) : null}
 
-      {/* Main Content */}
-      <Box
-        component="main"
-        sx={{
-          flexGrow: 1,
-          display: 'flex',
-          flexDirection: 'column',
-          overflowX: 'hidden',
-          overflowY: isDashboardRoute ? 'hidden' : 'scroll',
-          scrollbarGutter: isDashboardRoute ? 'auto' : 'stable',
-          scrollbarWidth: 'thin',
-          '&::-webkit-scrollbar': {
-            width: '10px'
-          },
-          '&::-webkit-scrollbar-thumb': {
-            backgroundColor: '#94A3B8',
-            borderRadius: '8px'
-          },
-          '&::-webkit-scrollbar-track': {
-            backgroundColor: '#E2E8F0'
-          },
-          minHeight: 0,
-          minWidth: 0,
-        }}
-      >
-        <Outlet />
+        <Box
+          component="main"
+          ref={mainContentRef}
+          sx={{
+            flexGrow: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            overflowX: 'hidden',
+            overflowY: isMapRoute ? 'hidden' : 'auto',
+            scrollbarGutter: isMapRoute ? 'auto' : 'stable',
+            scrollbarWidth: 'thin',
+            '&::-webkit-scrollbar': {
+              width: '10px',
+            },
+            '&::-webkit-scrollbar-thumb': {
+              backgroundColor: theme.palette.text.disabled,
+              borderRadius: '8px',
+            },
+            '&::-webkit-scrollbar-track': {
+              backgroundColor: theme.palette.divider,
+            },
+            minHeight: 0,
+            minWidth: 0,
+          }}
+        >
+          <Outlet />
+        </Box>
       </Box>
+
+      <Menu
+        anchorEl={userMenuAnchor}
+        open={Boolean(userMenuAnchor)}
+        onClose={handleUserMenuClose}
+        anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+      >
+        <MenuItem onClick={handleProfileOpen}>
+          <ListItemIcon>
+            <PersonOutlineIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText>Profile</ListItemText>
+        </MenuItem>
+        <MenuItem onClick={handleSettingsNavigate} disabled={currentUser?.role !== 'admin'}>
+          <ListItemIcon>
+            <SettingsOutlinedIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText>Settings</ListItemText>
+        </MenuItem>
+        <MenuItem onClick={handleLogout}>
+          <ListItemIcon>
+            <LogoutIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText>Logout</ListItemText>
+        </MenuItem>
+      </Menu>
+
+      <Dialog open={profileOpen} onClose={() => setProfileOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Profile</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={1.5}>
+            <Box>
+              <Typography variant="caption" color="text.secondary">
+                Email
+              </Typography>
+              <Typography variant="body1" color="text.primary">
+                {currentUser?.email || 'Unavailable'}
+              </Typography>
+            </Box>
+            <Box>
+              <Typography variant="caption" color="text.secondary">
+                Role
+              </Typography>
+              <Typography variant="body1" color="text.primary">
+                {toRoleLabel(currentUser?.role)}
+              </Typography>
+            </Box>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setProfileOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

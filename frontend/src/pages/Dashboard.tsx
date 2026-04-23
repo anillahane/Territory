@@ -3,6 +3,7 @@ import { Box } from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
 import { useStore } from '../store/useStore';
 import api, { queryKeys } from '../services/api';
+import { MapLegend } from '../features/dashboard/MapLegend';
 import { MapContainer } from '../features/dashboard/components/MapContainer';
 import { MapControls } from '../features/dashboard/components/MapControls';
 import {
@@ -200,6 +201,7 @@ export default function Dashboard() {
         onShowTerritoryCustomersChange={setShowTerritoryCustomers}
         onShowOtherBranchesChange={setShowOtherBranches}
       />
+      <MapLegend />
     </Box>
   );
 }
