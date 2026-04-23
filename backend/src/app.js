@@ -8,10 +8,12 @@ const {
 initializeTelemetry();
 
 const express = require('express');
+const path = require('path');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
+const swaggerUi = require('swagger-ui-express');
 const logger = require('./config/logger');
 const { queueAdminRouter } = require('./config/queue');
 const { assertJwtConfiguration, requireAuth, requireRole } = require('./middleware/auth');
@@ -44,6 +46,8 @@ if (!queuesDisabled) {
 const app = express();
 const PORT = process.env.PORT || 3000;
 const API_VERSION = process.env.API_VERSION || 'v1';
+const openApiDocumentPath = path.join(__dirname, 'docs', 'openapi.yaml');
+const openApiDocumentUrl = `/api/${API_VERSION}/docs/openapi.yaml`;
 
 // Security middleware
 app.use(helmet());
@@ -104,6 +108,21 @@ app.use(
   })
 );
 
+app.get(openApiDocumentUrl, (_req, res) => {
+  res.type('application/yaml');
+  res.sendFile(openApiDocumentPath);
+});
+
+app.use(
+  `/api/${API_VERSION}/docs`,
+  swaggerUi.serve,
+  swaggerUi.setup(null, {
+    swaggerOptions: {
+      url: openApiDocumentUrl,
+    },
+  })
+);
+
 // API routes
 app.use(`/api/${API_VERSION}/auth`, authRoutes);
 app.use(`/api/${API_VERSION}/config`, requireAuth, requireRole('admin'), configRoutes);
@@ -134,6 +153,7 @@ app.get('/', (req, res) => {
       batch: `/api/${API_VERSION}/batch`,
       customerMappings: `/api/${API_VERSION}/customer-mappings`,
       health: '/health',
+      docs: `/api/${API_VERSION}/docs`,
       adminQueues: '/admin/queues',
     },
   });

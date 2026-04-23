@@ -1,0 +1,1911 @@
+openapi: 3.0.3
+info:
+  title: Territory API
+  version: v1
+  description: |
+    OpenAPI reference for the Territory backend. Protected endpoints require a bearer
+    access token issued by `/api/v1/auth/login`.
+servers:
+  - url: /
+    description: Relative to the deployed API host
+tags:
+  - name: Auth
+  - name: Config
+  - name: Branches
+  - name: Pocket IDs
+  - name: Nearest
+  - name: Batch Processing
+  - name: Jobs
+  - name: Templates
+  - name: Customer Mappings
+  - name: Health
+paths:
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Authenticate a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Access and refresh tokens issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh an access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Fresh token pair returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /api/v1/config:
+    get:
+      tags: [Config]
+      summary: Fetch the active configuration
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Current configuration record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Config'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+    put:
+      tags: [Config]
+      summary: Update the active configuration
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigUpdateRequest'
+      responses:
+        '200':
+          description: Configuration updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigUpdateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /api/v1/config/history:
+    get:
+      tags: [Config]
+      summary: List configuration audit history
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            default: 10
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Audit history page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigHistoryResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /api/v1/branches/upload:
+    post:
+      tags: [Branches]
+      summary: Queue an Excel branch upload job
+      description: Requires admin scope. Upload must be an Excel workbook.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                uploadMode:
+                  type: string
+                  enum: [overwrite, add]
+                  default: overwrite
+                confirmWipeAll:
+                  type: boolean
+                  description: Allow overwrite mode to clear all branches when no scoped IDs are present.
+      responses:
+        '202':
+          description: Upload accepted and queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BranchUploadResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaTypeError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableError'
+
+  /api/v1/branches/export:
+    get:
+      tags: [Branches]
+      summary: Export all branches as an Excel workbook
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Workbook download
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /api/v1/branches:
+    get:
+      tags: [Branches]
+      summary: List branches
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            default: 100
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - in: query
+          name: search
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Paginated branch listing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BranchListResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+    post:
+      tags: [Branches]
+      summary: Create a branch
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BranchCreateRequest'
+      responses:
+        '201':
+          description: Branch created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BranchMutationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+
+  /api/v1/branches/{id}:
+    get:
+      tags: [Branches]
+      summary: Fetch a branch by ID
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BranchId'
+      responses:
+        '200':
+          description: Branch record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Branch'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+    put:
+      tags: [Branches]
+      summary: Update a branch
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BranchId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BranchUpdateRequest'
+      responses:
+        '200':
+          description: Branch updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BranchMutationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+    delete:
+      tags: [Branches]
+      summary: Delete a branch
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BranchId'
+      responses:
+        '200':
+          description: Branch deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BranchDeleteResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /api/v1/pocket/encode:
+    post:
+      tags: [Pocket IDs]
+      summary: Encode coordinates into a pocket ID
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PocketEncodeRequest'
+      responses:
+        '200':
+          description: Encoded pocket ID and breakdown
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PocketEncodeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /api/v1/pocket/decode:
+    post:
+      tags: [Pocket IDs]
+      summary: Decode a pocket ID back to coordinates
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PocketDecodeRequest'
+      responses:
+        '200':
+          description: Center coordinates and cell corners
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PocketDecodeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /api/v1/pocket/validate:
+    post:
+      tags: [Pocket IDs]
+      summary: Validate a pocket ID string
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PocketValidateRequest'
+      responses:
+        '200':
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PocketValidationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /api/v1/nearest:
+    post:
+      tags: [Nearest]
+      summary: Find nearest branches for coordinates
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NearestRequest'
+      responses:
+        '200':
+          description: Ordered branch matches
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NearestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /api/v1/nearest/fallback:
+    post:
+      tags: [Nearest]
+      summary: Fallback nearest-branch lookup
+      deprecated: true
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NearestRequest'
+      responses:
+        '200':
+          description: Branch matches with a deprecation warning
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NearestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /api/v1/nearest/within-pocket/{pocketId}:
+    get:
+      tags: [Nearest]
+      summary: List branches inside a pocket cell
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PocketId'
+      responses:
+        '200':
+          description: Branches assigned to the supplied pocket ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WithinPocketResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /api/v1/batch/encode:
+    post:
+      tags: [Batch Processing]
+      summary: Upload a customer workbook for batch encoding
+      description: Requires admin scope. Returns `202` for Node queueing or `200` when routed to the Python worker.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                replaceExisting:
+                  type: boolean
+                confirmWipeAll:
+                  type: boolean
+      responses:
+        '200':
+          description: Large upload routed to Python worker
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchEncodeResponse'
+        '202':
+          description: Upload queued on the Node worker
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchEncodeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaTypeError'
+
+  /api/v1/batch/status/{jobId}:
+    get:
+      tags: [Batch Processing]
+      summary: Get batch job status
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Current job status snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobRecord'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /api/v1/batch/download/{jobId}:
+    get:
+      tags: [Batch Processing]
+      summary: Download the completed batch result workbook
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: XLSX result workbook
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /api/v1/batch/territories/visualization:
+    get:
+      tags: [Batch Processing]
+      summary: Build GeoJSON territory visualization payloads
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: mode
+          schema:
+            type: string
+            enum: [existing_customers, nearest_pockets, customer_availability]
+        - in: query
+          name: customerView
+          schema:
+            type: string
+            enum: [selected_pockets, original_customers]
+        - in: query
+          name: branchIds
+          schema:
+            type: string
+          description: Comma-delimited branch IDs
+        - in: query
+          name: jobId
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Territory visualization payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TerritoryVisualizationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /api/v1/batch/territories/{jobId}:
+    get:
+      tags: [Batch Processing]
+      summary: Fetch territory data for a completed batch job
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Territory export payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericObject'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /api/v1/jobs/stream:
+    get:
+      tags: [Jobs]
+      summary: Stream job list updates over Server-Sent Events
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+        - in: query
+          name: type
+          schema:
+            type: string
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: SSE stream of `jobs` events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                example: |
+                  event: jobs
+                  data: {"jobs":[{"jobId":"job-123","status":"pending"}],"total":1}
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /api/v1/jobs:
+    get:
+      tags: [Jobs]
+      summary: List recent jobs
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+        - in: query
+          name: type
+          schema:
+            type: string
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Job listing payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobsListResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /api/v1/jobs/{jobId}:
+    get:
+      tags: [Jobs]
+      summary: Fetch a single job by ID
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Job record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobRecord'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+    delete:
+      tags: [Jobs]
+      summary: Delete a job record
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Deletion acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteJobResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /api/v1/jobs/bulk-delete:
+    post:
+      tags: [Jobs]
+      summary: Delete jobs by explicit IDs or by status
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkDeleteJobsRequest'
+      responses:
+        '200':
+          description: Bulk deletion result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkDeleteJobsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /api/v1/jobs/{jobId}/retry:
+    post:
+      tags: [Jobs]
+      summary: Retry a failed job
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Retry acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteJobResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /api/v1/templates/batch-processing:
+    get:
+      tags: [Templates]
+      summary: Download the sample customer batch workbook
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: XLSX template download
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /api/v1/templates/branch-upload:
+    get:
+      tags: [Templates]
+      summary: Download the sample branch upload workbook
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: XLSX template download
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /api/v1/customer-mappings:
+    get:
+      tags: [Customer Mappings]
+      summary: List customer-to-pocket mappings
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - in: query
+          name: jobId
+          schema:
+            type: string
+        - in: query
+          name: customerId
+          schema:
+            type: string
+        - in: query
+          name: pocketId
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Mapping page with aggregate stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MappingsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+    delete:
+      tags: [Customer Mappings]
+      summary: Delete mappings older than a timestamp
+      description: Requires admin scope.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: olderThan
+          required: true
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: jobId
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deletion result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, deletedCount]
+                properties:
+                  success:
+                    type: boolean
+                  deletedCount:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+
+  /api/v1/customer-mappings/batch:
+    post:
+      tags: [Customer Mappings]
+      summary: Persist batch-processed customer mappings
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerMappingsBatchRequest'
+      responses:
+        '201':
+          description: Mappings persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerMappingsBatchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /health:
+    get:
+      tags: [Health]
+      summary: Health and dependency readiness probe
+      responses:
+        '200':
+          description: Service and database are healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Service is degraded or database is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    BranchId:
+      in: path
+      name: id
+      required: true
+      schema:
+        type: string
+    JobId:
+      in: path
+      name: jobId
+      required: true
+      schema:
+        type: string
+    PocketId:
+      in: path
+      name: pocketId
+      required: true
+      schema:
+        type: string
+  responses:
+    BadRequestError:
+      description: Invalid request payload or query parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnauthorizedError:
+      description: Missing or invalid bearer token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ForbiddenError:
+      description: Authenticated user lacks the required role
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFoundError:
+      description: Requested resource was not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ConflictError:
+      description: Resource already exists
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnsupportedMediaTypeError:
+      description: Uploaded file type is not supported
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ServiceUnavailableError:
+      description: Required background infrastructure is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error, code]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+        details:
+          oneOf:
+            - type: array
+              items:
+                type: object
+                additionalProperties: true
+            - type: object
+              additionalProperties: true
+            - type: string
+          nullable: true
+    GenericObject:
+      type: object
+      additionalProperties: true
+    User:
+      type: object
+      required: [id, email, role]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [admin, editor, viewer]
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+    AuthSession:
+      type: object
+      required: [accessToken, refreshToken, user]
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        user:
+          $ref: '#/components/schemas/User'
+    Config:
+      type: object
+      required: [id, originLat, originLon, alphabet, gridLevels, version]
+      properties:
+        id:
+          type: integer
+        originLat:
+          type: number
+        originLon:
+          type: number
+        alphabet:
+          type: string
+        gridLevels:
+          type: array
+          items:
+            type: number
+        version:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ConfigUpdateRequest:
+      type: object
+      required: [originLat, originLon, alphabet]
+      properties:
+        originLat:
+          type: number
+        originLon:
+          type: number
+        alphabet:
+          type: string
+          minLength: 30
+          maxLength: 30
+        gridLevels:
+          type: array
+          minItems: 5
+          maxItems: 5
+          items:
+            type: number
+    ConfigUpdateResponse:
+      type: object
+      required: [message, config]
+      properties:
+        message:
+          type: string
+        config:
+          $ref: '#/components/schemas/Config'
+    ConfigHistoryEntry:
+      type: object
+      required: [id, configId, originLat, originLon, alphabet, gridLevels, version, changedAt]
+      properties:
+        id:
+          type: integer
+        configId:
+          type: integer
+        originLat:
+          type: number
+        originLon:
+          type: number
+        alphabet:
+          type: string
+        gridLevels:
+          type: array
+          items:
+            type: number
+        version:
+          type: integer
+        changedAt:
+          type: string
+          format: date-time
+    ConfigHistoryResponse:
+      type: object
+      required: [history, pagination]
+      properties:
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConfigHistoryEntry'
+        pagination:
+          type: object
+          required: [total, limit, offset, hasMore]
+          properties:
+            total:
+              type: integer
+            limit:
+              type: integer
+            offset:
+              type: integer
+            hasMore:
+              type: boolean
+    PaginationResponse:
+      type: object
+      required: [total, limit, offset, page, pageSize, hasMore]
+      properties:
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        hasMore:
+          type: boolean
+    Branch:
+      type: object
+      required: [id, lat, lon, pocketId]
+      properties:
+        id:
+          type: string
+        city:
+          type: string
+          nullable: true
+        lat:
+          type: number
+        lon:
+          type: number
+        pocketId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    BranchCreateRequest:
+      type: object
+      required: [id, lat, lon]
+      properties:
+        id:
+          type: string
+          maxLength: 20
+        city:
+          type: string
+          nullable: true
+        lat:
+          type: number
+          minimum: -90
+          maximum: 90
+        lon:
+          type: number
+          minimum: -180
+          maximum: 180
+    BranchUpdateRequest:
+      type: object
+      required: [lat, lon]
+      properties:
+        city:
+          type: string
+          nullable: true
+        lat:
+          type: number
+        lon:
+          type: number
+    BranchListResponse:
+      type: object
+      required: [branches, pagination]
+      properties:
+        branches:
+          type: array
+          items:
+            $ref: '#/components/schemas/Branch'
+        pagination:
+          $ref: '#/components/schemas/PaginationResponse'
+    BranchMutationResponse:
+      type: object
+      required: [message, branch]
+      properties:
+        message:
+          type: string
+        branch:
+          $ref: '#/components/schemas/Branch'
+    BranchDeleteResponse:
+      type: object
+      required: [message, id]
+      properties:
+        message:
+          type: string
+        id:
+          type: string
+    BranchUploadResponse:
+      type: object
+      required: [message, jobId, status, fileName, rowCount, uploadMode, confirmWipeAll, statusUrl]
+      properties:
+        message:
+          type: string
+        jobId:
+          type: string
+        status:
+          type: string
+        fileName:
+          type: string
+        rowCount:
+          type: integer
+        uploadMode:
+          type: string
+          enum: [overwrite, add]
+        confirmWipeAll:
+          type: boolean
+        statusUrl:
+          type: string
+    PocketEncodeRequest:
+      type: object
+      properties:
+        lat:
+          type: number
+        lon:
+          type: number
+        latitude:
+          type: number
+        longitude:
+          type: number
+      anyOf:
+        - required: [lat, lon]
+        - required: [latitude, longitude]
+    PocketIndex:
+      type: object
+      required: [level, levelSize, row, col]
+      properties:
+        level:
+          type: integer
+        levelSize:
+          type: number
+        row:
+          type: integer
+        col:
+          type: integer
+    CoordinatePoint:
+      type: object
+      required: [lat, lon]
+      properties:
+        lat:
+          type: number
+        lon:
+          type: number
+    PocketEncodeResponse:
+      type: object
+      required: [pocketId, input, meters, indices, breakdown]
+      properties:
+        pocketId:
+          type: string
+        input:
+          $ref: '#/components/schemas/CoordinatePoint'
+        meters:
+          type: object
+          required: [x, y]
+          properties:
+            x:
+              type: number
+            y:
+              type: number
+        indices:
+          type: array
+          items:
+            $ref: '#/components/schemas/PocketIndex'
+        breakdown:
+          type: array
+          items:
+            type: object
+            required: [level, levelSize, code, row, col]
+            properties:
+              level:
+                type: integer
+              levelSize:
+                type: number
+              code:
+                type: string
+              row:
+                type: integer
+              col:
+                type: integer
+    PocketDecodeRequest:
+      type: object
+      required: [pocketId]
+      properties:
+        pocketId:
+          type: string
+    PocketDecodeResponse:
+      type: object
+      required: [pocketId, centerLat, centerLon, center, corners, indices, cellSize]
+      properties:
+        pocketId:
+          type: string
+        centerLat:
+          type: number
+        centerLon:
+          type: number
+        center:
+          $ref: '#/components/schemas/CoordinatePoint'
+        corners:
+          type: object
+          properties:
+            sw:
+              $ref: '#/components/schemas/CoordinatePoint'
+            ne:
+              $ref: '#/components/schemas/CoordinatePoint'
+            nw:
+              $ref: '#/components/schemas/CoordinatePoint'
+            se:
+              $ref: '#/components/schemas/CoordinatePoint'
+            southwest:
+              $ref: '#/components/schemas/CoordinatePoint'
+            northeast:
+              $ref: '#/components/schemas/CoordinatePoint'
+            northwest:
+              $ref: '#/components/schemas/CoordinatePoint'
+            southeast:
+              $ref: '#/components/schemas/CoordinatePoint'
+        indices:
+          type: array
+          items:
+            $ref: '#/components/schemas/PocketIndex'
+        cellSize:
+          type: number
+    PocketValidateRequest:
+      type: object
+      required: [pocketId]
+      properties:
+        pocketId:
+          type: string
+    PocketValidationResponse:
+      type: object
+      required: [valid, pocketId]
+      properties:
+        valid:
+          type: boolean
+        pocketId:
+          type: string
+        levels:
+          type: integer
+        error:
+          type: string
+    NearestRequest:
+      type: object
+      required: [lat, lon]
+      properties:
+        lat:
+          type: number
+        lon:
+          type: number
+        limit:
+          type: integer
+          default: 5
+          minimum: 1
+          maximum: 100
+        maxDistance:
+          type: number
+          nullable: true
+    NearestBranch:
+      type: object
+      required: [id, city, lat, lon, pocketId, distance, distanceKm]
+      properties:
+        id:
+          type: string
+        city:
+          type: string
+          nullable: true
+        lat:
+          type: number
+        lon:
+          type: number
+        pocketId:
+          type: string
+        distance:
+          type: integer
+        distanceKm:
+          type: string
+    NearestResponse:
+      type: object
+      required: [query, count, branches]
+      properties:
+        query:
+          type: object
+          required: [lat, lon, limit]
+          properties:
+            lat:
+              type: number
+            lon:
+              type: number
+            limit:
+              type: integer
+            maxDistance:
+              type: number
+              nullable: true
+        count:
+          type: integer
+        branches:
+          type: array
+          items:
+            $ref: '#/components/schemas/NearestBranch'
+        warning:
+          type: string
+    WithinPocketResponse:
+      type: object
+      required: [pocketId, count, branches]
+      properties:
+        pocketId:
+          type: string
+        count:
+          type: integer
+        branches:
+          type: array
+          items:
+            type: object
+            required: [id, lat, lon, pocketId]
+            properties:
+              id:
+                type: string
+              city:
+                type: string
+                nullable: true
+              lat:
+                type: number
+              lon:
+                type: number
+              pocketId:
+                type: string
+    JobResultSummary:
+      type: object
+      properties:
+        inserted:
+          type: integer
+        replaced:
+          type: integer
+        skippedExisting:
+          type: integer
+        errors:
+          type: integer
+        mode:
+          type: string
+    JobResult:
+      type: object
+      properties:
+        summary:
+          $ref: '#/components/schemas/JobResultSummary'
+      additionalProperties: true
+    JobData:
+      type: object
+      properties:
+        fileName:
+          type: string
+        rowCount:
+          type: integer
+        totalAccounts:
+          type: integer
+        totalPockets:
+          type: integer
+        territoryUrl:
+          type: string
+          nullable: true
+        mappingsPersisted:
+          type: integer
+      additionalProperties: true
+    JobRecord:
+      type: object
+      required: [jobId, type, status, progress, total, createdAt, updatedAt, data]
+      properties:
+        jobId:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+        progress:
+          type: number
+        total:
+          type: integer
+        resultUrl:
+          type: string
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        data:
+          $ref: '#/components/schemas/JobData'
+        result:
+          $ref: '#/components/schemas/JobResult'
+    JobsListResponse:
+      type: object
+      required: [jobs, total]
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/JobRecord'
+        total:
+          type: integer
+    DeleteJobResponse:
+      type: object
+      required: [message, jobId]
+      properties:
+        message:
+          type: string
+        jobId:
+          type: string
+    BulkDeleteJobsRequest:
+      type: object
+      properties:
+        jobIds:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+    BulkDeleteJobsResponse:
+      type: object
+      required: [message, deletedCount]
+      properties:
+        message:
+          type: string
+        deletedCount:
+          type: integer
+    BatchEncodeResponse:
+      type: object
+      required: [message, jobId, fileName, rowCount, replaceExisting, confirmWipeAll, worker, statusUrl]
+      properties:
+        message:
+          type: string
+        jobId:
+          type: string
+        fileName:
+          type: string
+        rowCount:
+          type: integer
+        replaceExisting:
+          type: boolean
+        confirmWipeAll:
+          type: boolean
+        worker:
+          type: string
+        statusUrl:
+          type: string
+    GeoJsonFeatureCollection:
+      type: object
+      required: [type, features]
+      properties:
+        type:
+          type: string
+          enum: [FeatureCollection]
+        features:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+      additionalProperties: true
+    TerritoryVisualizationResponse:
+      type: object
+      required: [mode, modeLabel, selectedBranchIds, maxSelectableBranches, availableBranches, summary, territories, branches, points, customers]
+      properties:
+        mode:
+          type: string
+        modeLabel:
+          type: string
+        customerView:
+          type: string
+        selectedBranchIds:
+          type: array
+          items:
+            type: string
+        maxSelectableBranches:
+          type: integer
+        availableBranches:
+          type: array
+          items:
+            type: object
+            required: [id, city, customerCount]
+            properties:
+              id:
+                type: string
+              city:
+                type: string
+              customerCount:
+                type: integer
+        summary:
+          type: object
+          additionalProperties: true
+        territories:
+          $ref: '#/components/schemas/GeoJsonFeatureCollection'
+        branches:
+          $ref: '#/components/schemas/GeoJsonFeatureCollection'
+        points:
+          $ref: '#/components/schemas/GeoJsonFeatureCollection'
+        customers:
+          $ref: '#/components/schemas/GeoJsonFeatureCollection'
+    CustomerMapping:
+      type: object
+      required:
+        - id
+        - job_id
+        - customer_id
+        - customer_lat
+        - customer_lon
+        - pocket_id
+        - distance_customer_to_pocket
+        - nearest_branch_id
+        - distance_pocket_to_branch
+        - distance_customer_to_branch
+        - created_at
+      properties:
+        id:
+          type: integer
+        job_id:
+          type: string
+        customer_id:
+          type: string
+        customer_lat:
+          type: number
+        customer_lon:
+          type: number
+        pocket_id:
+          type: string
+        distance_customer_to_pocket:
+          type: number
+        nearest_branch_id:
+          type: string
+        branch_name:
+          type: string
+          nullable: true
+        uploaded_branch_code:
+          type: string
+          nullable: true
+        existing_branch_id:
+          type: string
+          nullable: true
+        existing_branch_name:
+          type: string
+          nullable: true
+        distance_customer_to_existing_branch:
+          type: number
+          nullable: true
+        branch_change_type:
+          type: string
+        distance_reduction:
+          type: number
+          nullable: true
+        distance_pocket_to_branch:
+          type: number
+        distance_customer_to_branch:
+          type: number
+        created_at:
+          type: string
+          format: date-time
+    MappingImpactStats:
+      type: object
+      additionalProperties: false
+      properties:
+        comparableAccounts:
+          type: integer
+        sameBranchAccounts:
+          type: integer
+        differentBranchAccounts:
+          type: integer
+        sameBranchCount:
+          type: integer
+        differentBranchCount:
+          type: integer
+        totalBranchCount:
+          type: integer
+        avgExistingBranchDistance:
+          type: number
+        avgRevisedBranchDistance:
+          type: number
+        avgDistanceReduction:
+          type: number
+        totalDistanceReduction:
+          type: number
+        improvedAccounts:
+          type: integer
+        unchangedDistanceAccounts:
+          type: integer
+        worsenedAccounts:
+          type: integer
+        sameBranchAvgOriginalDistance:
+          type: number
+        sameBranchAvgChangedDistance:
+          type: number
+        differentBranchAvgOriginalDistance:
+          type: number
+        differentBranchAvgChangedDistance:
+          type: number
+        sameBranchAvgImpact:
+          type: number
+        differentBranchAvgImpact:
+          type: number
+    MappingImpactByExistingBranchRow:
+      type: object
+      properties:
+        existingBranchId:
+          type: string
+        existingBranchName:
+          type: string
+          nullable: true
+        comparableAccounts:
+          type: integer
+        sameBranchAccounts:
+          type: integer
+        differentBranchAccounts:
+          type: integer
+        avgExistingBranchDistance:
+          type: number
+        avgRevisedBranchDistance:
+          type: number
+        avgDistanceReduction:
+          type: number
+        totalDistanceReduction:
+          type: number
+    MappingsResponse:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/CustomerMapping'
+        pagination:
+          type: object
+          required: [page, pageSize, totalRecords, totalPages]
+          properties:
+            page:
+              type: integer
+            pageSize:
+              type: integer
+            totalRecords:
+              type: integer
+            totalPages:
+              type: integer
+        stats:
+          type: object
+          properties:
+            uniqueCustomers:
+              type: integer
+            uniquePockets:
+              type: integer
+            uniqueBranches:
+              type: integer
+            avgDistance:
+              type: number
+            impact:
+              $ref: '#/components/schemas/MappingImpactStats'
+            byExistingBranch:
+              type: array
+              items:
+                $ref: '#/components/schemas/MappingImpactByExistingBranchRow'
+    CustomerMappingBatchItem:
+      type: object
+      required:
+        - customerId
+        - customerLat
+        - customerLon
+        - pocketId
+        - distanceCustomerToPocket
+        - nearestBranchId
+        - distancePocketToBranch
+        - distanceCustomerToBranch
+      properties:
+        customerId:
+          type: string
+        customerLat:
+          type: number
+        customerLon:
+          type: number
+        pocketId:
+          type: string
+        distanceCustomerToPocket:
+          type: number
+        nearestBranchId:
+          type: string
+        distancePocketToBranch:
+          type: number
+        distanceCustomerToBranch:
+          type: number
+        uploadedBranchCode:
+          type: string
+          nullable: true
+        existingBranchId:
+          type: string
+          nullable: true
+        distanceCustomerToExistingBranch:
+          type: number
+          nullable: true
+    CustomerMappingsBatchRequest:
+      type: object
+      required: [jobId, mappings]
+      properties:
+        jobId:
+          type: string
+        mappings:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CustomerMappingBatchItem'
+    CustomerMappingsBatchResponse:
+      type: object
+      required: [success, insertedCount, errors]
+      properties:
+        success:
+          type: boolean
+        insertedCount:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    HealthResponse:
+      type: object
+      required: [status, timestamp, uptime, environment]
+      properties:
+        status:
+          type: string
+          enum: [ok, error]
+        timestamp:
+          type: string
+          format: date-time
+        uptime:
+          type: number
+        environment:
+          type: string
+        database:
+          type: object
+          additionalProperties: true
+        postgis:
+          type: object
+          additionalProperties: true
