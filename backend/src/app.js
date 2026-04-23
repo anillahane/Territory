@@ -1,4 +1,12 @@
 require('dotenv').config();
+const {
+  initializeTelemetry,
+  captureException,
+  shutdownTelemetry,
+} = require('./utils/tracing');
+
+initializeTelemetry();
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -133,6 +141,23 @@ app.use((req, res) => {
   });
 });
 
+app.use((err, req, res, next) => {
+  captureException(err, {
+    tags: {
+      route: req.route?.path || req.path,
+      method: req.method,
+    },
+    extra: {
+      path: req.originalUrl,
+      statusCode: err.statusCode || err.status || 500,
+      authenticatedUserId: req.user?.id,
+      authenticatedUserRole: req.user?.role,
+    },
+    user: req.user ? { id: req.user.id } : undefined,
+  });
+  next(err);
+});
+
 // Error handling middleware (must be last)
 app.use(errorHandler);
 
@@ -152,15 +177,21 @@ if (require.main === module) {
 const shutdown = (signal) => {
   logger.info(`${signal} signal received: closing HTTP server`);
 
+  const finishShutdown = () => {
+    void shutdownTelemetry().finally(() => {
+      process.exit(0);
+    });
+  };
+
   if (!server) {
     logger.info('No active HTTP server instance to close');
-    process.exit(0);
+    finishShutdown();
     return;
   }
 
   server.close(() => {
     logger.info('HTTP server closed');
-    process.exit(0);
+    finishShutdown();
   });
 };
 

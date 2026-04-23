@@ -23,6 +23,11 @@
   "author": "Development Team",
   "license": "PROPRIETARY",
   "dependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/auto-instrumentations-node": "^0.73.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.215.0",
+    "@opentelemetry/sdk-node": "^0.215.0",
+    "@sentry/node": "^10.49.0",
     "bcryptjs": "^2.4.3",
     "bull": "^4.12.0",
     "cors": "^2.8.5",

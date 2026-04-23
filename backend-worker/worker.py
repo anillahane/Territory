@@ -14,6 +14,28 @@ import math
 import sys
 from datetime import datetime
 
+try:
+    import sentry_sdk
+except ImportError:
+    sentry_sdk = None
+
+try:
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.instrumentation.redis import RedisInstrumentor
+    from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+except ImportError:
+    trace = None
+    OTLPSpanExporter = None
+    RedisInstrumentor = None
+    SQLAlchemyInstrumentor = None
+    Resource = None
+    TracerProvider = None
+    BatchSpanProcessor = None
+
 # Configuration
 REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379')
 DB_URL = os.getenv('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5434/location_pockets')
@@ -41,12 +63,118 @@ UPSERT_UPDATE_COLUMNS = tuple(
     column for column in MAPPING_COLUMNS if column != 'customer_id'
 )
 
+def parse_float_env(name, default):
+    """Parse floating-point env vars with a fallback."""
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    try:
+        return float(raw_value)
+    except (TypeError, ValueError):
+        return default
+
+def parse_otlp_headers(raw_value):
+    """Parse OTLP exporter headers from OTEL_EXPORTER_OTLP_HEADERS."""
+    if not raw_value:
+        return None
+
+    headers = {}
+    for entry in raw_value.split(','):
+        entry = entry.strip()
+        if not entry or '=' not in entry:
+            continue
+
+        key, value = entry.split('=', 1)
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            headers[key] = value
+
+    return headers or None
+
+def resolve_otlp_traces_endpoint():
+    """Resolve the OTLP traces endpoint using standard env vars."""
+    explicit_endpoint = os.getenv('OTEL_EXPORTER_OTLP_TRACES_ENDPOINT')
+    if explicit_endpoint:
+        return explicit_endpoint
+
+    base_endpoint = os.getenv('OTEL_EXPORTER_OTLP_ENDPOINT')
+    if not base_endpoint:
+        return None
+
+    normalized_base = base_endpoint.rstrip('/')
+    if normalized_base.endswith('/v1/traces'):
+        return normalized_base
+
+    return f"{normalized_base}/v1/traces"
+
+def init_sentry():
+    """Initialize Sentry error reporting when a DSN is available."""
+    if sentry_sdk is None:
+        return False
+
+    sentry_dsn = os.getenv('SENTRY_DSN')
+    if not sentry_dsn:
+        return False
+
+    sentry_sdk.init(
+        dsn=sentry_dsn,
+        environment=os.getenv('SENTRY_ENVIRONMENT') or os.getenv('NODE_ENV') or 'development',
+        release=os.getenv('SENTRY_RELEASE'),
+        sample_rate=parse_float_env('SENTRY_SAMPLE_RATE', 1.0),
+        traces_sample_rate=parse_float_env('SENTRY_TRACES_SAMPLE_RATE', 0.0),
+    )
+    return True
+
+def init_open_telemetry():
+    """Initialize OTLP trace exporting for Redis and SQLAlchemy calls."""
+    if (
+        trace is None
+        or OTLPSpanExporter is None
+        or Resource is None
+        or TracerProvider is None
+        or BatchSpanProcessor is None
+    ):
+        return None
+
+    otlp_endpoint = resolve_otlp_traces_endpoint()
+    if not otlp_endpoint:
+        return None
+
+    provider = TracerProvider(
+        resource=Resource.create({
+            "service.name": os.getenv('OTEL_SERVICE_NAME', 'territory-batch-worker'),
+        })
+    )
+    provider.add_span_processor(
+        BatchSpanProcessor(
+            OTLPSpanExporter(
+                endpoint=otlp_endpoint,
+                headers=parse_otlp_headers(os.getenv('OTEL_EXPORTER_OTLP_HEADERS')),
+            )
+        )
+    )
+    trace.set_tracer_provider(provider)
+
+    if RedisInstrumentor is not None:
+        RedisInstrumentor().instrument()
+
+    return provider
+
+SENTRY_ENABLED = init_sentry()
+TRACER_PROVIDER = init_open_telemetry()
+TRACER = trace.get_tracer("territory.backend_worker") if trace is not None else None
+
 # Initialize connections
 print(f"🔌 Connecting to Redis: {REDIS_URL}")
 redis_client = redis.from_url(REDIS_URL)
 
 print(f"🔌 Connecting to PostgreSQL: {DB_URL.split('@')[1]}")  # Hide password
 db_engine = create_engine(DB_URL, pool_pre_ping=True)
+
+if SQLAlchemyInstrumentor is not None:
+    SQLAlchemyInstrumentor().instrument(engine=db_engine)
 
 def parse_bool_flag(value, default=False):
     """Parse booleans from mixed string/bool payload values."""
@@ -368,6 +496,11 @@ def process_job(job_data):
     config = job_data['config']
     replace_existing = parse_bool_flag(job_data.get('replaceExisting', False), False)
     confirm_wipe_all = parse_bool_flag(job_data.get('confirmWipeAll', False), False)
+    span = TRACER.start_span('python_batch.process_job') if TRACER is not None else None
+    if span is not None:
+        span.set_attribute('territory.job.id', job_id)
+        span.set_attribute('territory.job.replace_existing', bool(replace_existing))
+        span.set_attribute('territory.job.confirm_wipe_all', bool(confirm_wipe_all))
     
     # Normalize file path to avoid cwd-dependent failures from manually requeued jobs.
     if not os.path.isabs(file_path):
@@ -632,6 +765,10 @@ def process_job(job_data):
         }
     
     except Exception as e:
+        if span is not None:
+            span.record_exception(e)
+        if SENTRY_ENABLED:
+            sentry_sdk.capture_exception(e)
         print(f"❌ Job {job_id} failed: {str(e)}")
         import traceback
         traceback.print_exc()
@@ -644,6 +781,9 @@ def process_job(job_data):
             conn.commit()
         
         raise
+    finally:
+        if span is not None:
+            span.end()
 
 def main():
     """Main worker loop"""
@@ -675,10 +815,18 @@ def main():
             print("\n\n👋 Shutting down worker...")
             break
         except Exception as e:
+            if SENTRY_ENABLED:
+                sentry_sdk.capture_exception(e)
             print(f"❌ Queue error: {str(e)}")
             import traceback
             traceback.print_exc()
             print()
+
+    if TRACER_PROVIDER is not None:
+        TRACER_PROVIDER.force_flush()
+        TRACER_PROVIDER.shutdown()
+    if SENTRY_ENABLED:
+        sentry_sdk.flush(timeout=2.0)
 
 if __name__ == '__main__':
     main()
