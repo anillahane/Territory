@@ -1,14 +1,35 @@
 // Customer Mapping API Client
 // Requirements: 2.1, 3.1
 
-import axios, { AxiosInstance, AxiosError } from 'axios';
+import axios, { AxiosError, type AxiosInstance } from 'axios';
 import {
-  FetchMappingsParams,
-  MappingsApiResponse,
-  ApiError,
+  type ApiError,
+  type FetchMappingsParams,
+  type MappingImpactByExistingBranchRow,
+  type MappingImpactStats,
+  type MappingsApiResponse,
 } from '../types/customerMapping';
+import { getErrorMessage, isRecord } from '../utils/errors';
+import logger from '../utils/logger';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api/v1';
+
+type MappingApiRecord = Record<string, unknown>;
+type MappingStatsRecord = Record<string, unknown>;
+type QueryParams = Record<string, number | string>;
+
+const toNumber = (value: unknown, fallback = 0): number => {
+  const parsedValue = Number(value);
+  return Number.isFinite(parsedValue) ? parsedValue : fallback;
+};
+
+const toNullableNumber = (value: unknown): number | null =>
+  value === undefined || value === null ? null : toNumber(value);
+
+const toStringValue = <T extends string | null | undefined>(
+  value: unknown,
+  fallback: T = '' as T
+): string | T => (typeof value === 'string' ? value : fallback);
 
 class CustomerMappingApiService {
   private client: AxiosInstance;
@@ -24,27 +45,22 @@ class CustomerMappingApiService {
       },
     });
 
-    // Response interceptor for error handling
     this.client.interceptors.response.use(
       (response) => response,
       (error: AxiosError) => {
         if (error.response) {
-          console.error('API Error:', error.response.data);
+          logger.error('Customer mapping API request failed', error.response.data);
         } else if (error.request) {
-          console.error('Network Error:', error.message);
+          logger.error('Customer mapping network request failed', { message: error.message });
         }
         return Promise.reject(error);
       }
     );
   }
 
-  /**
-   * Fetch customer mappings with filters and pagination
-   * Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6
-   */
   async fetchMappings(params: FetchMappingsParams = {}): Promise<MappingsApiResponse> {
     return this.retryRequest(async () => {
-      const queryParams: Record<string, any> = {};
+      const queryParams: QueryParams = {};
 
       if (params.page !== undefined) queryParams.page = params.page;
       if (params.pageSize !== undefined) queryParams.pageSize = params.pageSize;
@@ -57,102 +73,138 @@ class CustomerMappingApiService {
         { params: queryParams }
       );
 
-      // Validate response structure
       if (!response.data || !response.data.data || !response.data.pagination) {
         throw new Error('Invalid API response structure');
       }
-      const normalizedData = response.data.data.map((item: any) => ({
-        id: item.id,
-        job_id: item.job_id ?? item.jobId ?? params.jobId ?? '',
-        customer_id: item.customer_id ?? item.customerId ?? '',
-        customer_lat: Number(item.customer_lat ?? item.customerLat ?? 0),
-        customer_lon: Number(item.customer_lon ?? item.customerLon ?? 0),
-        pocket_id: item.pocket_id ?? item.pocketId ?? '',
-        distance_customer_to_pocket: Number(
-          item.distance_customer_to_pocket ?? item.distanceCustomerToPocket ?? 0
-        ),
-        nearest_branch_id: item.nearest_branch_id ?? item.nearestBranchId ?? '',
-        branch_name: item.branch_name ?? item.branchName ?? undefined,
-        uploaded_branch_code: item.uploaded_branch_code ?? item.uploadedBranchCode ?? null,
-        existing_branch_id: item.existing_branch_id ?? item.existingBranchId ?? null,
-        existing_branch_name: item.existing_branch_name ?? item.existingBranchName ?? null,
-        distance_customer_to_existing_branch:
-          item.distance_customer_to_existing_branch !== undefined &&
-          item.distance_customer_to_existing_branch !== null
-            ? Number(item.distance_customer_to_existing_branch)
-            : (
-              item.distanceCustomerToExistingBranch !== undefined &&
-              item.distanceCustomerToExistingBranch !== null
-                ? Number(item.distanceCustomerToExistingBranch)
-                : null
-            ),
-        branch_change_type: item.branch_change_type ?? item.branchChangeType ?? 'not_comparable',
-        distance_reduction:
-          item.distance_reduction !== undefined && item.distance_reduction !== null
-            ? Number(item.distance_reduction)
-            : (item.distanceReduction !== undefined && item.distanceReduction !== null
-              ? Number(item.distanceReduction)
-              : null),
-        distance_pocket_to_branch: Number(
-          item.distance_pocket_to_branch ?? item.distancePocketToBranch ?? 0
-        ),
-        distance_customer_to_branch: Number(
-          item.distance_customer_to_branch ?? item.distanceCustomerToBranch ?? 0
-        ),
-        created_at: item.created_at ?? item.createdAt ?? '',
-      }));
 
-      const rawStats = response.data.stats as any | undefined;
-      const rawImpact = rawStats?.impact;
-      const normalizedImpact = rawImpact
+      const normalizedData = response.data.data.map((item) => {
+        const record = item as unknown as MappingApiRecord;
+
+        return {
+          id: toNumber(record.id),
+          job_id: toStringValue(record.job_id ?? record.jobId, params.jobId ?? ''),
+          customer_id: toStringValue(record.customer_id ?? record.customerId, ''),
+          customer_lat: toNumber(record.customer_lat ?? record.customerLat),
+          customer_lon: toNumber(record.customer_lon ?? record.customerLon),
+          pocket_id: toStringValue(record.pocket_id ?? record.pocketId, ''),
+          distance_customer_to_pocket: toNumber(
+            record.distance_customer_to_pocket ?? record.distanceCustomerToPocket
+          ),
+          nearest_branch_id: toStringValue(record.nearest_branch_id ?? record.nearestBranchId, ''),
+          branch_name: toStringValue(record.branch_name ?? record.branchName, undefined),
+          uploaded_branch_code: toStringValue(record.uploaded_branch_code ?? record.uploadedBranchCode, null),
+          existing_branch_id: toStringValue(record.existing_branch_id ?? record.existingBranchId, null),
+          existing_branch_name: toStringValue(record.existing_branch_name ?? record.existingBranchName, null),
+          distance_customer_to_existing_branch: toNullableNumber(
+            record.distance_customer_to_existing_branch ?? record.distanceCustomerToExistingBranch
+          ),
+          branch_change_type: toStringValue(
+            record.branch_change_type ?? record.branchChangeType,
+            'not_comparable'
+          ),
+          distance_reduction: toNullableNumber(
+            record.distance_reduction ?? record.distanceReduction
+          ),
+          distance_pocket_to_branch: toNumber(
+            record.distance_pocket_to_branch ?? record.distancePocketToBranch
+          ),
+          distance_customer_to_branch: toNumber(
+            record.distance_customer_to_branch ?? record.distanceCustomerToBranch
+          ),
+          created_at: toStringValue(record.created_at ?? record.createdAt, ''),
+        };
+      });
+
+      const rawStats = isRecord(response.data.stats) ? response.data.stats as MappingStatsRecord : undefined;
+      const rawImpact =
+        rawStats && isRecord(rawStats.impact) ? rawStats.impact as MappingStatsRecord : undefined;
+      const normalizedImpact: MappingImpactStats | undefined = rawImpact
         ? {
-            comparableAccounts: Number(rawImpact.comparableAccounts ?? rawImpact.comparable_accounts ?? 0),
-            sameBranchAccounts: Number(rawImpact.sameBranchAccounts ?? rawImpact.same_branch_accounts ?? 0),
-            differentBranchAccounts: Number(rawImpact.differentBranchAccounts ?? rawImpact.different_branch_accounts ?? 0),
-            sameBranchCount: Number(rawImpact.sameBranchCount ?? rawImpact.same_branch_count ?? 0),
-            differentBranchCount: Number(rawImpact.differentBranchCount ?? rawImpact.different_branch_count ?? 0),
-            totalBranchCount: Number(rawImpact.totalBranchCount ?? rawImpact.total_branch_count ?? 0),
-            avgExistingBranchDistance: Number(rawImpact.avgExistingBranchDistance ?? rawImpact.avg_existing_branch_distance ?? 0),
-            avgRevisedBranchDistance: Number(rawImpact.avgRevisedBranchDistance ?? rawImpact.avg_revised_branch_distance ?? 0),
-            avgDistanceReduction: Number(rawImpact.avgDistanceReduction ?? rawImpact.avg_distance_reduction ?? 0),
-            totalDistanceReduction: Number(rawImpact.totalDistanceReduction ?? rawImpact.total_distance_reduction ?? 0),
-            improvedAccounts: Number(rawImpact.improvedAccounts ?? rawImpact.improved_accounts ?? 0),
-            unchangedDistanceAccounts: Number(rawImpact.unchangedDistanceAccounts ?? rawImpact.unchanged_distance_accounts ?? 0),
-            worsenedAccounts: Number(rawImpact.worsenedAccounts ?? rawImpact.worsened_accounts ?? 0),
-            sameBranchAvgOriginalDistance: Number(
-              rawImpact.sameBranchAvgOriginalDistance ?? rawImpact.same_branch_avg_original_distance ?? 0
+            comparableAccounts: toNumber(rawImpact.comparableAccounts ?? rawImpact.comparable_accounts),
+            sameBranchAccounts: toNumber(rawImpact.sameBranchAccounts ?? rawImpact.same_branch_accounts),
+            differentBranchAccounts: toNumber(
+              rawImpact.differentBranchAccounts ?? rawImpact.different_branch_accounts
             ),
-            sameBranchAvgChangedDistance: Number(
-              rawImpact.sameBranchAvgChangedDistance ?? rawImpact.same_branch_avg_changed_distance ?? 0
+            sameBranchCount: toNumber(rawImpact.sameBranchCount ?? rawImpact.same_branch_count),
+            differentBranchCount: toNumber(
+              rawImpact.differentBranchCount ?? rawImpact.different_branch_count
             ),
-            differentBranchAvgOriginalDistance: Number(
-              rawImpact.differentBranchAvgOriginalDistance ?? rawImpact.different_branch_avg_original_distance ?? 0
+            totalBranchCount: toNumber(rawImpact.totalBranchCount ?? rawImpact.total_branch_count),
+            avgExistingBranchDistance: toNumber(
+              rawImpact.avgExistingBranchDistance ?? rawImpact.avg_existing_branch_distance
             ),
-            differentBranchAvgChangedDistance: Number(
-              rawImpact.differentBranchAvgChangedDistance ?? rawImpact.different_branch_avg_changed_distance ?? 0
+            avgRevisedBranchDistance: toNumber(
+              rawImpact.avgRevisedBranchDistance ?? rawImpact.avg_revised_branch_distance
             ),
-            sameBranchAvgImpact: Number(
-              rawImpact.sameBranchAvgImpact ?? rawImpact.same_branch_avg_impact ?? 0
+            avgDistanceReduction: toNumber(
+              rawImpact.avgDistanceReduction ?? rawImpact.avg_distance_reduction
             ),
-            differentBranchAvgImpact: Number(
-              rawImpact.differentBranchAvgImpact ?? rawImpact.different_branch_avg_impact ?? 0
+            totalDistanceReduction: toNumber(
+              rawImpact.totalDistanceReduction ?? rawImpact.total_distance_reduction
+            ),
+            improvedAccounts: toNumber(rawImpact.improvedAccounts ?? rawImpact.improved_accounts),
+            unchangedDistanceAccounts: toNumber(
+              rawImpact.unchangedDistanceAccounts ?? rawImpact.unchanged_distance_accounts
+            ),
+            worsenedAccounts: toNumber(rawImpact.worsenedAccounts ?? rawImpact.worsened_accounts),
+            sameBranchAvgOriginalDistance: toNumber(
+              rawImpact.sameBranchAvgOriginalDistance ?? rawImpact.same_branch_avg_original_distance
+            ),
+            sameBranchAvgChangedDistance: toNumber(
+              rawImpact.sameBranchAvgChangedDistance ?? rawImpact.same_branch_avg_changed_distance
+            ),
+            differentBranchAvgOriginalDistance: toNumber(
+              rawImpact.differentBranchAvgOriginalDistance ?? rawImpact.different_branch_avg_original_distance
+            ),
+            differentBranchAvgChangedDistance: toNumber(
+              rawImpact.differentBranchAvgChangedDistance ?? rawImpact.different_branch_avg_changed_distance
+            ),
+            sameBranchAvgImpact: toNumber(
+              rawImpact.sameBranchAvgImpact ?? rawImpact.same_branch_avg_impact
+            ),
+            differentBranchAvgImpact: toNumber(
+              rawImpact.differentBranchAvgImpact ?? rawImpact.different_branch_avg_impact
             ),
           }
         : undefined;
 
-      const rawByExistingBranch = rawStats?.byExistingBranch ?? rawStats?.by_existing_branch;
-      const normalizedByExistingBranch = Array.isArray(rawByExistingBranch)
-        ? rawByExistingBranch.map((row: any) => ({
-            existingBranchId: row.existingBranchId ?? row.existing_branch_id ?? '',
-            existingBranchName: row.existingBranchName ?? row.existing_branch_name ?? null,
-            comparableAccounts: Number(row.comparableAccounts ?? row.comparable_accounts ?? 0),
-            sameBranchAccounts: Number(row.sameBranchAccounts ?? row.same_branch_accounts ?? 0),
-            differentBranchAccounts: Number(row.differentBranchAccounts ?? row.different_branch_accounts ?? 0),
-            avgExistingBranchDistance: Number(row.avgExistingBranchDistance ?? row.avg_existing_branch_distance ?? 0),
-            avgRevisedBranchDistance: Number(row.avgRevisedBranchDistance ?? row.avg_revised_branch_distance ?? 0),
-            avgDistanceReduction: Number(row.avgDistanceReduction ?? row.avg_distance_reduction ?? 0),
-            totalDistanceReduction: Number(row.totalDistanceReduction ?? row.total_distance_reduction ?? 0),
-          }))
+      const rawByExistingBranch =
+        rawStats?.byExistingBranch ?? rawStats?.by_existing_branch;
+      const normalizedByExistingBranch: MappingImpactByExistingBranchRow[] = Array.isArray(rawByExistingBranch)
+        ? rawByExistingBranch.map((row) => {
+            const branchRow = row as MappingStatsRecord;
+
+            return {
+              existingBranchId: toStringValue(
+                branchRow.existingBranchId ?? branchRow.existing_branch_id
+              ),
+              existingBranchName: toStringValue(
+                branchRow.existingBranchName ?? branchRow.existing_branch_name,
+                null
+              ),
+              comparableAccounts: toNumber(
+                branchRow.comparableAccounts ?? branchRow.comparable_accounts
+              ),
+              sameBranchAccounts: toNumber(
+                branchRow.sameBranchAccounts ?? branchRow.same_branch_accounts
+              ),
+              differentBranchAccounts: toNumber(
+                branchRow.differentBranchAccounts ?? branchRow.different_branch_accounts
+              ),
+              avgExistingBranchDistance: toNumber(
+                branchRow.avgExistingBranchDistance ?? branchRow.avg_existing_branch_distance
+              ),
+              avgRevisedBranchDistance: toNumber(
+                branchRow.avgRevisedBranchDistance ?? branchRow.avg_revised_branch_distance
+              ),
+              avgDistanceReduction: toNumber(
+                branchRow.avgDistanceReduction ?? branchRow.avg_distance_reduction
+              ),
+              totalDistanceReduction: toNumber(
+                branchRow.totalDistanceReduction ?? branchRow.total_distance_reduction
+              ),
+            };
+          })
         : [];
 
       return {
@@ -160,10 +212,10 @@ class CustomerMappingApiService {
         pagination: response.data.pagination,
         stats: rawStats
           ? {
-              uniqueCustomers: Number(rawStats.uniqueCustomers ?? rawStats.unique_customers ?? 0),
-              uniquePockets: Number(rawStats.uniquePockets ?? rawStats.unique_pockets ?? 0),
-              uniqueBranches: Number(rawStats.uniqueBranches ?? rawStats.unique_branches ?? 0),
-              avgDistance: Number(rawStats.avgDistance ?? rawStats.avg_distance ?? 0),
+              uniqueCustomers: toNumber(rawStats.uniqueCustomers ?? rawStats.unique_customers),
+              uniquePockets: toNumber(rawStats.uniquePockets ?? rawStats.unique_pockets),
+              uniqueBranches: toNumber(rawStats.uniqueBranches ?? rawStats.unique_branches),
+              avgDistance: toNumber(rawStats.avgDistance ?? rawStats.avg_distance),
               impact: normalizedImpact,
               byExistingBranch: normalizedByExistingBranch,
             }
@@ -172,9 +224,6 @@ class CustomerMappingApiService {
     });
   }
 
-  /**
-   * Retry logic for failed requests
-   */
   private async retryRequest<T>(
     requestFn: () => Promise<T>,
     retries = this.maxRetries
@@ -190,44 +239,49 @@ class CustomerMappingApiService {
     }
   }
 
-  /**
-   * Check if error is retryable (network errors, 5xx errors)
-   */
-  private isRetryableError(error: any): boolean {
+  private isRetryableError(error: unknown): boolean {
+    if (!axios.isAxiosError(error)) {
+      if (!isRecord(error)) {
+        return false;
+      }
+
+      if (!isRecord(error.response)) {
+        return 'request' in error;
+      }
+
+      return typeof error.response.status === 'number'
+        && error.response.status >= 500
+        && error.response.status < 600;
+    }
+
     if (!error.response) {
-      // Network error
       return true;
     }
-    const status = error.response.status;
-    // Retry on 5xx server errors
-    return status >= 500 && status < 600;
+
+    return error.response.status >= 500 && error.response.status < 600;
   }
 
-  /**
-   * Format error for consistent error handling
-   */
-  private formatError(error: any): ApiError {
+  private formatError(error: unknown): ApiError {
     if (axios.isAxiosError(error)) {
-      const axiosError = error as AxiosError;
-      if (axiosError.response) {
+      if (error.response) {
         return {
-          message: (axiosError.response.data as any)?.error || 'Server error occurred',
-          status: axiosError.response.status,
+          message: getErrorMessage(error, 'Server error occurred'),
+          status: error.response.status,
         };
-      } else if (axiosError.request) {
+      }
+
+      if (error.request) {
         return {
           message: 'Network error - please check your connection',
         };
       }
     }
+
     return {
-      message: error.message || 'An unexpected error occurred',
+      message: getErrorMessage(error, 'An unexpected error occurred'),
     };
   }
 
-  /**
-   * Delay helper for retry logic
-   */
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }

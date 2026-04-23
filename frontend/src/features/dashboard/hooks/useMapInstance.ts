@@ -15,6 +15,7 @@ import {
 } from '../constants';
 import { addGridOverlaySources, buildGridOverlayLabel, syncGridOverlay } from '../layers/GridOverlayLayer';
 import { buildMapStatusMessage } from '../mapDiagnostics';
+import logger from '../../../utils/logger';
 
 setWorkerUrl(maplibreCspWorkerUrl);
 
@@ -119,7 +120,7 @@ export const useMapInstance = ({
         typedEvent.error ?? event
       );
 
-      console.error('Map render error:', typedEvent.error ?? event);
+      logger.error('Map render error', typedEvent.error ?? event);
       setMapLoaded(false);
       setMapError(statusMessage);
     });
@@ -254,7 +255,7 @@ export const useMapInstance = ({
         setMapLoaded(true);
         queueGridOverlayUpdate();
       } catch (error) {
-        console.error('Error adding India map layers:', error);
+        logger.error('Error adding India map layers', error);
         setMapLoaded(false);
         setMapError(buildMapStatusMessage('India layer failed to render', mapRef.current, undefined, error));
       }

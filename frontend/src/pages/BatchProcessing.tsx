@@ -25,6 +25,7 @@ import {
   Card,
   CardContent,
   Grid,
+  type ChipProps,
 } from '@mui/material';
 import {
   Upload as UploadIcon,
@@ -38,28 +39,13 @@ import {
 } from '@mui/icons-material';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useStore } from '../store/useStore';
-import api, { queryKeys, type JobsStreamPayload } from '../services/api';
+import api, { queryKeys, type JobRecord, type JobsStreamPayload } from '../services/api';
 import DataState from '../components/DataState';
 import { formatIndiaDateTime } from '../utils/datetime';
+import { getErrorMessage, getErrorSummary } from '../utils/errors';
+import logger from '../utils/logger';
 
-interface Job {
-  jobId: string;
-  type: string;
-  status: string;
-  progress: number;
-  createdAt: string;
-  finishedAt?: string;
-  error?: string | null;
-  data?: {
-    fileName?: string;
-    pocketStats?: { [key: string]: number };
-    totalPockets?: number;
-    totalAccounts?: number;
-    territoryUrl?: string;
-  };
-}
-
-const filterBatchJobs = (jobs: Job[]) =>
+const filterBatchJobs = (jobs: JobRecord[]) =>
   jobs.filter((job) => job.type === 'batch-process' || job.type === 'batch-processing');
 
 export default function BatchProcessing() {
@@ -70,7 +56,7 @@ export default function BatchProcessing() {
   const [uploading, setUploading] = useState(false);
   const [replaceExisting, setReplaceExisting] = useState(false);
   const [showHistory, setShowHistory] = useState(true);
-  const [selectedJobStats, setSelectedJobStats] = useState<Job | null>(null);
+  const [selectedJobStats, setSelectedJobStats] = useState<JobRecord | null>(null);
   const [statsDialogOpen, setStatsDialogOpen] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null); // Track currently processing job
   const [liveUpdateMode, setLiveUpdateMode] = useState<'stream' | 'polling' | 'manual'>('manual');
@@ -89,8 +75,7 @@ export default function BatchProcessing() {
         limit: 20,
         type: 'batch-process',
       });
-      const allJobs = (response.jobs || response || []) as Job[];
-      const batchJobs = filterBatchJobs(allJobs);
+      const batchJobs = filterBatchJobs(response.jobs);
       return {
         jobs: batchJobs,
         total: batchJobs.length,
@@ -108,7 +93,7 @@ export default function BatchProcessing() {
   }, [jobsQuery.refetch]);
 
   const setJobHistoryCache = useCallback((payload: Pick<JobsStreamPayload, 'jobs'>) => {
-    const batchJobs = filterBatchJobs((payload.jobs || []) as Job[]);
+    const batchJobs = filterBatchJobs(payload.jobs);
     queryClient.setQueryData(jobsQueryKey, {
       jobs: batchJobs,
       total: batchJobs.length,
@@ -187,7 +172,7 @@ export default function BatchProcessing() {
               return;
             }
 
-            console.error('Job stream error:', error);
+            logger.error('Job stream error', error);
             stopJobsStream();
 
             if (activeJobId) {
@@ -219,7 +204,7 @@ export default function BatchProcessing() {
           return;
         }
 
-        console.error('Failed to start job stream:', error);
+        logger.error('Failed to start job stream', error);
         if (activeJobId) {
           await startFallbackPolling();
         } else {
@@ -241,7 +226,7 @@ export default function BatchProcessing() {
     if (activeJobId && jobs.length > 0) {
       const activeJob = jobs.find(j => j.jobId === activeJobId);
       if (activeJob && (activeJob.status === 'completed' || activeJob.status === 'failed')) {
-        console.log('Job finished:', activeJob.status);
+        logger.info('Batch job finished', { jobId: activeJob.jobId, status: activeJob.status });
         setActiveJobId(null);
 
         if (activeJob.status === 'completed') {
@@ -272,22 +257,19 @@ export default function BatchProcessing() {
     }
     const shouldReplaceExisting = replaceExisting;
 
-    console.log('Starting upload...', selectedFile.name);
+    logger.info('Starting batch upload', { fileName: selectedFile.name });
     setUploading(true);
 
     // Store file reference before clearing
     const fileToUpload = selectedFile;
 
     try {
-      console.log('Calling API...');
       // Upload file - backend parses and queues immediately
       const response = await api.batchEncode(fileToUpload, shouldReplaceExisting);
-      console.log('API response:', response);
 
       // Backend always returns jobId immediately (non-blocking)
-      if (response && typeof response === 'object' && response.jobId) {
-        console.log('Upload successful, jobId:', response.jobId);
-        
+      if (response.jobId) {
+        logger.info('Batch upload accepted', { jobId: response.jobId, fileName: response.fileName });
         // Close dialog and reset state immediately
         setUploading(false);
         setUploadDialogOpen(false);
@@ -309,19 +291,14 @@ export default function BatchProcessing() {
         void loadJobHistory();
       } else {
         // Unexpected response format
-        console.error('Unexpected response:', response);
+        logger.error('Unexpected batch upload response', response);
         setUploading(false);
         throw new Error('Unexpected response format from server');
       }
-    } catch (error: any) {
+    } catch (error) {
       setUploading(false);
-      console.error('Upload error:', error);
-      console.error('Error details:', {
-        message: error.message,
-        response: error.response?.data,
-        status: error.response?.status
-      });
-      setError(error.response?.data?.message || error.message || 'Failed to upload file');
+      logger.error('Batch upload failed', getErrorSummary(error));
+      setError(getErrorMessage(error, 'Failed to upload file'));
     }
   };
 
@@ -337,8 +314,8 @@ export default function BatchProcessing() {
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
       setSuccess('Results downloaded successfully');
-    } catch (error: any) {
-      setError(error.message || 'Failed to download results');
+    } catch (error) {
+      setError(getErrorMessage(error, 'Failed to download results'));
     }
   };
 
@@ -357,8 +334,8 @@ export default function BatchProcessing() {
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
       setSuccess('Territory polygons downloaded successfully');
-    } catch (error: any) {
-      setError(error.message || 'Failed to download territory polygons');
+    } catch (error) {
+      setError(getErrorMessage(error, 'Failed to download territory polygons'));
     }
   };
 
@@ -368,8 +345,8 @@ export default function BatchProcessing() {
       setSuccess('Job queued for retry');
       setActiveJobId(jobId);
       void loadJobHistory();
-    } catch (error: any) {
-      setError(error.message || 'Failed to retry job');
+    } catch (error) {
+      setError(getErrorMessage(error, 'Failed to retry job'));
     }
   };
 
@@ -385,12 +362,12 @@ export default function BatchProcessing() {
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
       setSuccess('Template downloaded successfully');
-    } catch (error: any) {
-      setError(error.message || 'Failed to download template');
+    } catch (error) {
+      setError(getErrorMessage(error, 'Failed to download template'));
     }
   };
 
-  const handleViewStats = (job: Job) => {
+  const handleViewStats = (job: JobRecord) => {
     setSelectedJobStats(job);
     setStatsDialogOpen(true);
   };
@@ -407,8 +384,8 @@ export default function BatchProcessing() {
         setActiveJobId(null);
       }
       void loadJobHistory();
-    } catch (error: any) {
-      setError(error.message || 'Failed to delete job');
+    } catch (error) {
+      setError(getErrorMessage(error, 'Failed to delete job'));
     }
   };
 
@@ -429,12 +406,12 @@ export default function BatchProcessing() {
       const result = await api.bulkDeleteJobs({ status });
       setSuccess(result.message || `${count} job(s) deleted successfully`);
       void loadJobHistory();
-    } catch (error: any) {
-      setError(error.message || 'Failed to delete jobs');
+    } catch (error) {
+      setError(getErrorMessage(error, 'Failed to delete jobs'));
     }
   };
 
-  const getStatusColor = (status: string) => {
+  const getStatusColor = (status: string): ChipProps['color'] => {
     switch (status) {
       case 'completed':
         return 'success';
@@ -690,7 +667,7 @@ export default function BatchProcessing() {
                         <Chip
                           label={job.status}
                           size="small"
-                          color={getStatusColor(job.status) as any}
+                          color={getStatusColor(job.status)}
                         />
                       </TableCell>
                       <TableCell>

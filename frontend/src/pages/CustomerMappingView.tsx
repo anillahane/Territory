@@ -30,7 +30,7 @@ import {
   MappingImpactStats
 } from '../types/customerMapping';
 import { useStore } from '../store/useStore';
-import api, { queryKeys } from '../services/api';
+import api, { queryKeys, type JobRecord } from '../services/api';
 
 export default function CustomerMappingView() {
   const { setSuccess } = useStore();
@@ -85,7 +85,7 @@ export default function CustomerMappingView() {
     queryKey: queryKeys.jobs({ limit: 100 }),
     queryFn: async () => {
       const response = await api.listJobs({ limit: 100 });
-      return response.jobs.map((job: any) => ({
+      return response.jobs.map((job: JobRecord) => ({
         id: job.jobId,
         name: `${job.type} - ${new Date(job.createdAt).toLocaleDateString()}`,
       }));
