@@ -53,7 +53,7 @@ Statuses:
 | --- | --- | --- | --- | --- |
 | 22 | ✅ | API Docs (OpenAPI/Swagger) ([PR #22](https://github.com/anillahane/Territory/pull/22)) | new `backend/src/docs/openapi.yaml`, mount `/api/docs` with `swagger-ui-express` | Generate an OpenAPI 3.0 spec covering every route under `backend/src/routes/*`. |
 | 23 | ✅ | Rate Limit & CORS Hardening ([PR #23](https://github.com/anillahane/Territory/pull/23)) | `backend/src/app.js` | Replace blanket rate limit with per-route tiers. Tighten CORS via explicit `ALLOWED_ORIGINS`. Add stricter Helmet CSP. |
-| 24 | ⬜ | Docs & Ops Script Cleanup | repo root markdown files and `scripts/` directory | Consolidate duplicate docs, move history under `docs/history/`, delete empties, audit scripts. |
+| 24 | ✅ | Docs & Ops Script Cleanup ([PR #24](https://github.com/anillahane/Territory/pull/24)) | repo root markdown files and `scripts/` directory | Consolidate duplicate docs, move history under `docs/history/`, delete empties, audit scripts. |
 | 25 | ⬜ | CI Hardening | `.github/workflows/ci.yml`, add `.github/workflows/deploy.yml` | Fail on high vulnerabilities, add image scanning, Dependabot, and real deploy workflow or remove stubs. |
 
 ## Progress Summaries
