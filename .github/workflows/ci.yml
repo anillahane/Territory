@@ -6,8 +6,10 @@ on:
   pull_request:
     branches: [main, develop]
 
+permissions:
+  contents: read
+
 jobs:
-  # Backend tests and linting
   backend-test:
     name: Backend Tests
     runs-on: ubuntu-latest
@@ -75,7 +77,6 @@ jobs:
           files: ./backend/coverage/lcov.info
           flags: backend
 
-  # Frontend tests and linting
   frontend-test:
     name: Frontend Tests
     runs-on: ubuntu-latest
@@ -113,104 +114,155 @@ jobs:
           files: ./frontend/coverage/lcov.info
           flags: frontend
 
-  # Security scanning
   security-scan:
-    name: Security Scan
+    name: Security Scan (${{ matrix.app }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: backend
+            path: backend
+            cache_dependency: backend/package-lock.json
+          - app: frontend
+            path: frontend
+            cache_dependency: frontend/package-lock.json
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Run npm audit (backend)
-        working-directory: ./backend
-        run: npm audit --audit-level=moderate
-        continue-on-error: true
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ${{ matrix.cache_dependency }}
 
-      - name: Run npm audit (frontend)
-        working-directory: ./frontend
-        run: npm audit --audit-level=moderate
-        continue-on-error: true
+      - name: Install dependencies
+        working-directory: ./${{ matrix.path }}
+        run: npm ci
 
-  # Build Docker images
-  build-docker:
-    name: Build Docker Images
+      - name: Run production npm audit with allowlist enforcement
+        working-directory: ./${{ matrix.path }}
+        shell: bash
+        env:
+          AUDIT_APP: ${{ matrix.app }}
+        run: |
+          npm audit --omit=dev --json > audit.json || true
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const report = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'audit.json'), 'utf8'));
+          const allowlist = JSON.parse(
+            fs.readFileSync(
+              path.join(process.env.GITHUB_WORKSPACE, '.github', 'security', 'npm-audit-allowlist.json'),
+              'utf8'
+            )
+          );
+
+          const allowedEntries = allowlist[process.env.AUDIT_APP] || [];
+          const allowedMap = new Map(
+            allowedEntries.map((entry) => [`${entry.package}:${entry.advisory}`, entry.reason])
+          );
+          const failures = [];
+
+          for (const vulnerability of Object.values(report.vulnerabilities || {})) {
+            const packageName = vulnerability.name;
+            const viaEntries = Array.isArray(vulnerability.via) ? vulnerability.via : [];
+
+            for (const viaEntry of viaEntries) {
+              if (!viaEntry || typeof viaEntry !== 'object') {
+                continue;
+              }
+
+              const severity = String(viaEntry.severity || vulnerability.severity || '').toLowerCase();
+              if (!['high', 'critical'].includes(severity)) {
+                continue;
+              }
+
+              const advisoryId = typeof viaEntry.url === 'string'
+                ? viaEntry.url.split('/').pop()
+                : String(viaEntry.source || '');
+              const key = `${packageName}:${advisoryId}`;
+              const isAllowlisted = allowedMap.has(key) && vulnerability.fixAvailable === false;
+
+              if (isAllowlisted) {
+                console.log(`allowlisted ${key}: ${allowedMap.get(key)}`);
+                continue;
+              }
+
+              failures.push({
+                packageName,
+                advisoryId,
+                severity,
+                fixAvailable: vulnerability.fixAvailable,
+              });
+            }
+          }
+
+          if (failures.length > 0) {
+            console.error('Blocking high/critical production vulnerabilities detected:');
+            for (const failure of failures) {
+              console.error(
+                `- ${failure.packageName} ${failure.advisoryId} (${failure.severity}) fixAvailable=${JSON.stringify(failure.fixAvailable)}`
+              );
+            }
+            process.exit(1);
+          }
+
+          console.log('No unallowlisted high/critical production vulnerabilities detected.');
+          NODE
+
+  image-scan:
+    name: Image Scan (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: [backend-test, frontend-test]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            context: ./backend
+            dockerfile: ./backend/Dockerfile
+            image: territory-backend:${{ github.sha }}
+          - name: frontend
+            context: ./frontend
+            dockerfile: ./frontend/Dockerfile
+            image: territory-frontend:${{ github.sha }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Build image
+        run: docker build -t "${{ matrix.image }}" -f "${{ matrix.dockerfile }}" "${{ matrix.context }}"
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
+      - name: Generate Trivy SARIF report
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          image-ref: ${{ matrix.image }}
+          format: sarif
+          output: trivy-${{ matrix.name }}.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          vuln-type: os
 
-      - name: Build and push backend image
-        uses: docker/build-push-action@v5
+      - name: Upload Trivy SARIF report
+        uses: github/codeql-action/upload-sarif@v4
         with:
-          context: ./backend
-          push: true
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/location-pockets-backend:latest
-            ${{ secrets.DOCKER_USERNAME }}/location-pockets-backend:${{ github.sha }}
-          cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/location-pockets-backend:buildcache
-          cache-to: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/location-pockets-backend:buildcache,mode=max
+          sarif_file: trivy-${{ matrix.name }}.sarif
 
-      - name: Build and push frontend image
-        uses: docker/build-push-action@v5
+      - name: Enforce clean image scan
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
-          context: ./frontend
-          push: true
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/location-pockets-frontend:latest
-            ${{ secrets.DOCKER_USERNAME }}/location-pockets-frontend:${{ github.sha }}
-          cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/location-pockets-frontend:buildcache
-          cache-to: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/location-pockets-frontend:buildcache,mode=max
-
-  # Deploy to staging
-  deploy-staging:
-    name: Deploy to Staging
-    runs-on: ubuntu-latest
-    needs: [build-docker]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    environment:
-      name: staging
-      url: https://staging.location-pockets.example.com
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Deploy to staging
-        run: |
-          echo "Deploying to staging environment..."
-          # Add your deployment commands here
-          # Example: kubectl apply -f k8s/staging/
-          # Or: ssh user@staging-server "docker-compose pull && docker-compose up -d"
-
-  # Deploy to production
-  deploy-production:
-    name: Deploy to Production
-    runs-on: ubuntu-latest
-    needs: [deploy-staging]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    environment:
-      name: production
-      url: https://location-pockets.example.com
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Deploy to production
-        run: |
-          echo "Deploying to production environment..."
-          # Add your deployment commands here
-          # Example: kubectl apply -f k8s/production/
+          image-ref: ${{ matrix.image }}
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          vuln-type: os
