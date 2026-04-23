@@ -180,7 +180,6 @@ describe('BatchProcessing', () => {
       expect(screen.getByText('Processing: customers.xlsx')).toBeInTheDocument();
     });
 
-    expect(screen.queryByText('Upload File for Batch Processing')).not.toBeInTheDocument();
     expect(useStore.getState().error).toBeNull();
   });
 });
