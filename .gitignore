@@ -49,6 +49,8 @@ uploads/
 
 # Docker
 .dockerignore
+!backend/.dockerignore
+!frontend/.dockerignore
 
 # OS
 Thumbs.db

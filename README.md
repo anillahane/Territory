@@ -12,6 +12,15 @@ Territory is a full-stack application for branch management, pocket ID generatio
 
 ## Local Development
 
+For Docker Compose, copy `.env.example` to `.env` before the first run:
+
+```bash
+cp .env.example .env
+docker compose up -d
+```
+
+The compose file also includes development-safe defaults for the local database password and JWT secret so a plain `docker compose up -d` still works if `.env` is missing.
+
 Backend:
 
 ```bash
