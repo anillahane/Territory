@@ -31,7 +31,7 @@ const healthRoutes = require('./routes/health');
 const customerMappingsRoutes = require('./routes/customerMappings');
 
 // Import middleware
-const { errorHandler } = require('./middleware/errorHandler');
+const { errorHandler, AppError } = require('./middleware/errorHandler');
 
 assertJwtConfiguration();
 
@@ -48,17 +48,67 @@ const PORT = process.env.PORT || 3000;
 const API_VERSION = process.env.API_VERSION || 'v1';
 const openApiDocumentPath = path.join(__dirname, 'docs', 'openapi.yaml');
 const openApiDocumentUrl = `/api/${API_VERSION}/docs/openapi.yaml`;
+const isProductionEnv = process.env.NODE_ENV === 'production';
+
+const parsePositiveInteger = (value, fallback) => {
+  const parsedValue = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
+};
+
+const createRateLimiter = (maxEnvKey, fallbackMax) =>
+  rateLimit({
+    windowMs: parsePositiveInteger(process.env.RATE_LIMIT_WINDOW_MS, 60000),
+    max: parsePositiveInteger(process.env[maxEnvKey], fallbackMax),
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: (_req, res) => {
+      res.status(429).json({
+        error: 'Too many requests from this IP, please try again later.',
+        code: 'RATE_LIMIT_EXCEEDED',
+      });
+    },
+  });
+
+const docsLimiter = createRateLimiter('RATE_LIMIT_PUBLIC_MAX_REQUESTS', 120);
+const healthLimiter = createRateLimiter('RATE_LIMIT_PUBLIC_MAX_REQUESTS', 300);
+const rootLimiter = createRateLimiter('RATE_LIMIT_PUBLIC_MAX_REQUESTS', 120);
+const authLimiter = createRateLimiter('RATE_LIMIT_AUTH_MAX_REQUESTS', 10);
+const standardLimiter = createRateLimiter('RATE_LIMIT_STANDARD_MAX_REQUESTS', 120);
+const adminLimiter = createRateLimiter('RATE_LIMIT_ADMIN_MAX_REQUESTS', 60);
+const heavyLimiter = createRateLimiter('RATE_LIMIT_HEAVY_MAX_REQUESTS', 20);
 
 // Security middleware
-app.use(helmet());
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        baseUri: ["'self'"],
+        connectSrc: ["'self'"],
+        fontSrc: ["'self'", 'https:', 'data:'],
+        formAction: ["'self'"],
+        frameAncestors: ["'none'"],
+        imgSrc: ["'self'", 'data:'],
+        objectSrc: ["'none'"],
+        scriptSrc: ["'self'"],
+        scriptSrcAttr: ["'none'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        upgradeInsecureRequests: isProductionEnv ? [] : null,
+      },
+    },
+    referrerPolicy: {
+      policy: 'no-referrer',
+    },
+  })
+);
 
 // CORS configuration
-const configuredOrigins = (process.env.CORS_ORIGIN || '')
+const configuredOrigins = (process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGIN || '')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
 
-const defaultOrigins = ['http://localhost:5173', 'http://localhost:5174'];
+const defaultOrigins = isProductionEnv ? [] : ['http://localhost:5173', 'http://localhost:5174'];
 const allowedOrigins = configuredOrigins.length > 0 ? configuredOrigins : defaultOrigins;
 const localhostDevOriginPattern = /^http:\/\/localhost:\d+$/;
 
@@ -79,21 +129,14 @@ const corsOptions = {
       return;
     }
 
-    callback(new Error(`CORS blocked for origin: ${origin}`));
+    callback(
+      new AppError(`CORS blocked for origin: ${origin}`, 403, 'CORS_BLOCKED')
+    );
   },
   credentials: true,
+  optionsSuccessStatus: 204,
 };
 app.use(cors(corsOptions));
-
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '60', 10),
-  message: 'Too many requests from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use(`/api/${API_VERSION}/`, limiter);
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
@@ -108,13 +151,14 @@ app.use(
   })
 );
 
-app.get(openApiDocumentUrl, (_req, res) => {
+app.get(openApiDocumentUrl, docsLimiter, (_req, res) => {
   res.type('application/yaml');
   res.sendFile(openApiDocumentPath);
 });
 
 app.use(
   `/api/${API_VERSION}/docs`,
+  docsLimiter,
   swaggerUi.serve,
   swaggerUi.setup(null, {
     swaggerOptions: {
@@ -124,23 +168,23 @@ app.use(
 );
 
 // API routes
-app.use(`/api/${API_VERSION}/auth`, authRoutes);
-app.use(`/api/${API_VERSION}/config`, requireAuth, requireRole('admin'), configRoutes);
-app.use(`/api/${API_VERSION}/branches`, requireAuth, requireRole('admin'), branchRoutes);
-app.use(`/api/${API_VERSION}/pocket`, requireAuth, pocketRoutes);
-app.use(`/api/${API_VERSION}/nearest`, requireAuth, nearestRoutes);
-app.use(`/api/${API_VERSION}/batch`, requireAuth, batchRoutes);
-app.use(`/api/${API_VERSION}/jobs`, requireAuth, requireRole('admin'), jobsRoutes);
-app.use(`/api/${API_VERSION}/templates`, requireAuth, templatesRoutes);
-app.use(`/api/${API_VERSION}/customer-mappings`, requireAuth, customerMappingsRoutes);
-app.use('/health', healthRoutes);
+app.use(`/api/${API_VERSION}/auth`, authLimiter, authRoutes);
+app.use(`/api/${API_VERSION}/config`, adminLimiter, requireAuth, requireRole('admin'), configRoutes);
+app.use(`/api/${API_VERSION}/branches`, adminLimiter, requireAuth, requireRole('admin'), branchRoutes);
+app.use(`/api/${API_VERSION}/pocket`, standardLimiter, requireAuth, pocketRoutes);
+app.use(`/api/${API_VERSION}/nearest`, standardLimiter, requireAuth, nearestRoutes);
+app.use(`/api/${API_VERSION}/batch`, heavyLimiter, requireAuth, batchRoutes);
+app.use(`/api/${API_VERSION}/jobs`, adminLimiter, requireAuth, requireRole('admin'), jobsRoutes);
+app.use(`/api/${API_VERSION}/templates`, standardLimiter, requireAuth, templatesRoutes);
+app.use(`/api/${API_VERSION}/customer-mappings`, standardLimiter, requireAuth, customerMappingsRoutes);
+app.use('/health', healthLimiter, healthRoutes);
 
 if (queueAdminRouter) {
-  app.use('/admin/queues', requireAuth, requireRole('admin'), queueAdminRouter);
+  app.use('/admin/queues', adminLimiter, requireAuth, requireRole('admin'), queueAdminRouter);
 }
 
 // Root endpoint
-app.get('/', (req, res) => {
+app.get('/', rootLimiter, (req, res) => {
   res.json({
     name: 'Location Pockets API',
     version: API_VERSION,
