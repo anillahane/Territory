@@ -3,7 +3,6 @@ import ReactDOM from 'react-dom/client';
 import * as Sentry from '@sentry/react';
 import { BrowserRouter } from 'react-router-dom';
 import { ThemeProvider, CssBaseline } from '@mui/material';
-import { SnackbarProvider } from 'notistack';
 import App from './App';
 import theme from './theme';
 import './index.css';
@@ -60,9 +59,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <BrowserRouter>
       <ThemeProvider theme={theme}>
         <CssBaseline />
-        <SnackbarProvider maxSnack={3} anchorOrigin={{ vertical: 'top', horizontal: 'right' }}>
-          <App />
-        </SnackbarProvider>
+        <App />
       </ThemeProvider>
     </BrowserRouter>
   </React.StrictMode>

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import { getStoredSession, type AuthSession, type AuthUser } from '../services/api';
 
 export interface Config {
@@ -121,7 +122,9 @@ interface AppState {
   toggleDashboardGridLevel: (id: DashboardGridLevelId) => void;
 }
 
-export const useStore = create<AppState>((set) => ({
+export const useStore = create<AppState>()(
+  persist(
+    (set) => ({
   // Auth
   authSession: defaultAuthSession,
   currentUser: defaultAuthSession?.user ?? null,
@@ -209,4 +212,18 @@ export const useStore = create<AppState>((set) => ({
         ? state.dashboardSelectedGridLevels.filter((existingId) => existingId !== id)
         : [...state.dashboardSelectedGridLevels, id]
     })),
-}));
+    }),
+    {
+      name: 'location-pockets:ui-prefs',
+      version: 1,
+      storage: createJSONStorage(() => window.localStorage),
+      partialize: (state) => ({
+        selectedGridLevel: state.selectedGridLevel,
+        showGrid: state.showGrid,
+        showBranches: state.showBranches,
+        showCustomers: state.showCustomers,
+        dashboardSelectedGridLevels: state.dashboardSelectedGridLevels,
+      }),
+    }
+  )
+);

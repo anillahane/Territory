@@ -4,10 +4,13 @@
   box-sizing: border-box;
 }
 
+html,
 body {
-  font-family: 'Roboto', 'Helvetica', 'Arial', sans-serif;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 #root {
@@ -16,53 +19,37 @@ body {
   overflow: hidden;
 }
 
-/* Leaflet map styles */
-.leaflet-container {
-  width: 100%;
-  height: 100%;
-  z-index: 0;
+:focus-visible {
+  outline: 2px solid #1e40af;
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
-/* Custom marker cluster styles */
-.marker-cluster-small {
-  background-color: rgba(181, 226, 140, 0.6);
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
-.marker-cluster-small div {
-  background-color: rgba(110, 204, 57, 0.6);
-}
-
-.marker-cluster-medium {
-  background-color: rgba(241, 211, 87, 0.6);
-}
-
-.marker-cluster-medium div {
-  background-color: rgba(240, 194, 12, 0.6);
-}
-
-.marker-cluster-large {
-  background-color: rgba(253, 156, 115, 0.6);
-}
-
-.marker-cluster-large div {
-  background-color: rgba(241, 128, 23, 0.6);
-}
-
-/* Scrollbar styles */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #f1f1f1;
+  background: #f1f5f9;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #888;
+  background: #cbd5e1;
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #555;
+  background: #94a3b8;
 }
