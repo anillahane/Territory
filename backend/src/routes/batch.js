@@ -7,10 +7,17 @@ const fs = require('fs');
 const { query, transaction } = require('../config/database');
 const { encodePocketId, decodePocketId, findNearestPocket, haversineDistance } = require('../utils/geometry');
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
+const { requireRole } = require('../middleware/auth');
 const logger = require('../config/logger');
 const { batchProcessQueue } = require('../config/queue');
 const mappingService = require('../services/MappingService');
 const branchFinderService = require('../services/BranchFinderService');
+const {
+  allocateBranchCoverage,
+  DEFAULT_GRID_SIZE_KM
+} = require('../services/branchCoverageGridAllocator');
+const { handleTerritoryAllocate } = require('./territoryAllocator');
+const { sanitizeUploadedFilename, validateUploadedExcelFile } = require('../utils/fileValidation');
 
 const router = express.Router();
 
@@ -35,20 +42,17 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// Configure multer with hybrid storage strategy
+// Configure multer with in-memory storage so validation happens before any file is persisted.
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => cb(null, `${uuidv4()}-${file.originalname}`)
-  }),
+  storage: multer.memoryStorage(),
   limits: {
-    fileSize: parseInt(process.env.MAX_FILE_SIZE_MB || '50', 10) * 1024 * 1024, // Increased to 50MB
+    fileSize: 10 * 1024 * 1024,
   },
 });
 
 // Threshold for switching to Python worker (rows)
 const PYTHON_WORKER_THRESHOLD = parseInt(process.env.PYTHON_WORKER_THRESHOLD || '5000', 10);
-const MAX_VISUALIZATION_BRANCHES = 1;
+const MAX_VISUALIZATION_BRANCHES = 5;
 const TARGET_POCKET_LEVEL_METERS = 5000;
 // --- ORIGINAL BACKUP ---
 // const BRANCH_CATCHMENT_RADIUS_METERS = 40000;
@@ -81,21 +85,72 @@ const CANONICAL_POCKET_CODE_SQL_PATTERN = '^[0-9A-Z]{2}(?:-[0-9A-Z]{2}){0,4}$';
 const EMPLOYEE_GRID_CELL_TABLE = 'employee_grid_cells';
 const BRANCH_TERRITORY_TABLE = 'branch_territories';
 const EMPLOYEE_TERRITORY_TABLE = 'employee_territories';
+const BRANCH_COVERAGE_DATASET_TABLE = 'branch_coverage_datasets';
 const TERRITORY_VISUALIZATION_MODE = Object.freeze({
   EXISTING_CUSTOMERS: 'existing_customers',
   NEAREST_POCKETS: 'nearest_pockets',
   CUSTOMER_AVAILABILITY: 'customer_availability'
 });
+const BRANCH_COVERAGE_BASIS = Object.freeze({
+  CURRENT_OWNERSHIP: 'current_ownership',
+  CLOSEST_BRANCH: 'closest_branch',
+  STRONGEST_PRESENCE: 'strongest_presence',
+  MUTUALLY_EXCLUSIVE: 'mutually_exclusive'
+});
+const BRANCH_COVERAGE_DATASET_STATUS = Object.freeze({
+  READY: 'ready',
+  FAILED: 'failed'
+});
+const TERRITORY_COVERAGE_STYLE = Object.freeze({
+  OVERLAP: 'overlap',
+  EXCLUSIVE: 'exclusive'
+});
 const CUSTOMER_VISUALIZATION_VIEW = Object.freeze({
   SELECTED_POCKETS: 'selected_pockets',
   ORIGINAL_CUSTOMERS: 'original_customers'
 });
+const TERRITORY_ALLOCATION_SCOPE = Object.freeze({
+  FULL_NETWORK: 'full_network',
+  SELECTED_ONLY: 'selected_only'
+});
+const SELECTED_ONLY_ALLOCATION_CACHE_TTL_MS = 5 * 60 * 1000;
+const selectedOnlyAllocationCache = new Map();
 const INDIA_STATE_BOUNDS_GEOJSON_CANDIDATE_PATHS = [
   path.resolve(__dirname, '../../data/indiaStateBounds_official.geojson'),
   path.resolve(__dirname, '../../public/data/indiaStateBounds_official.geojson'),
   path.resolve(__dirname, '../../../frontend/public/data/indiaStateBounds_official.geojson')
 ];
 let cachedIndiaStateBoundsGeoJson = null;
+const EMPTY_FEATURE_COLLECTION = Object.freeze({
+  type: 'FeatureCollection',
+  features: []
+});
+const BRANCH_COVERAGE_BASIS_CONFIGS = Object.freeze([
+  {
+    basisType: BRANCH_COVERAGE_BASIS.CURRENT_OWNERSHIP,
+    mode: TERRITORY_VISUALIZATION_MODE.EXISTING_CUSTOMERS,
+    customerView: CUSTOMER_VISUALIZATION_VIEW.ORIGINAL_CUSTOMERS,
+    coverageStyle: TERRITORY_COVERAGE_STYLE.OVERLAP
+  },
+  {
+    basisType: BRANCH_COVERAGE_BASIS.CLOSEST_BRANCH,
+    mode: TERRITORY_VISUALIZATION_MODE.NEAREST_POCKETS,
+    customerView: CUSTOMER_VISUALIZATION_VIEW.SELECTED_POCKETS,
+    coverageStyle: TERRITORY_COVERAGE_STYLE.OVERLAP
+  },
+  {
+    basisType: BRANCH_COVERAGE_BASIS.STRONGEST_PRESENCE,
+    mode: TERRITORY_VISUALIZATION_MODE.CUSTOMER_AVAILABILITY,
+    customerView: CUSTOMER_VISUALIZATION_VIEW.SELECTED_POCKETS,
+    coverageStyle: TERRITORY_COVERAGE_STYLE.OVERLAP
+  },
+  {
+    basisType: BRANCH_COVERAGE_BASIS.MUTUALLY_EXCLUSIVE,
+    mode: TERRITORY_VISUALIZATION_MODE.EXISTING_CUSTOMERS,
+    customerView: CUSTOMER_VISUALIZATION_VIEW.ORIGINAL_CUSTOMERS,
+    coverageStyle: TERRITORY_COVERAGE_STYLE.EXCLUSIVE
+  }
+]);
 
 // Use the shared batch process queue
 const batchQueue = batchProcessQueue;
@@ -291,6 +346,63 @@ const parseBooleanFlag = (value, defaultValue = false) => {
   return ['1', 'true', 'yes', 'y', 'on'].includes(normalized);
 };
 
+const persistUploadedBufferToDisk = ({ buffer, fileName, jobId }) => {
+  const sanitizedBaseName = sanitizeUploadedFilename(fileName);
+  const persistedFileName = `${jobId}-${sanitizedBaseName}`;
+  const filePath = path.join(uploadDir, persistedFileName);
+  fs.writeFileSync(filePath, buffer);
+  return {
+    fileName: sanitizedBaseName,
+    filePath
+  };
+};
+
+const parseUploadWorkbookRows = (buffer) => {
+  const workbook = xlsx.read(buffer, { type: 'buffer' });
+  const firstSheetName = workbook.SheetNames[0];
+  if (!firstSheetName) {
+    return [];
+  }
+
+  return xlsx.utils.sheet_to_json(workbook.Sheets[firstSheetName], { defval: '' });
+};
+
+const resolveReferencedBranchIdsForRows = async (rows) => {
+  const rawBranchCodes = new Set();
+  rows.forEach((row) => {
+    const branchCodeRaw = getFirstDefinedValue(row, [
+      'branch_code',
+      'BRANCH_CODE',
+      'Branch_Code',
+      'branchCode',
+      'BranchCode',
+      'Branch Code',
+      'branch_id',
+      'Branch ID',
+      'BranchID'
+    ]);
+    const branchCode = branchCodeRaw === undefined || branchCodeRaw === null
+      ? ''
+      : String(branchCodeRaw).trim();
+    if (branchCode) {
+      rawBranchCodes.add(branchCode.toUpperCase());
+    }
+  });
+
+  if (rawBranchCodes.size === 0) {
+    return [];
+  }
+
+  const branchLookupResult = await query(
+    'SELECT id FROM branches WHERE UPPER(id) = ANY($1::text[])',
+    [[...rawBranchCodes]]
+  );
+
+  return branchLookupResult.rows
+    .map((row) => String(row.id || '').trim())
+    .filter(Boolean);
+};
+
 const parseTerritoryVisualizationMode = (rawMode) => {
   if (typeof rawMode !== 'string' || rawMode.trim() === '') {
     return TERRITORY_VISUALIZATION_MODE.EXISTING_CUSTOMERS;
@@ -333,6 +445,94 @@ const parseCustomerVisualizationView = (rawView) => {
 
   return aliasMap[normalized] || null;
 };
+
+const parseTerritoryCoverageStyle = (rawStyle) => {
+  if (typeof rawStyle !== 'string' || rawStyle.trim() === '') {
+    return TERRITORY_COVERAGE_STYLE.OVERLAP;
+  }
+
+  const normalized = rawStyle.trim().toLowerCase().replace(/-/g, '_');
+  const aliasMap = {
+    overlap: TERRITORY_COVERAGE_STYLE.OVERLAP,
+    overlapping: TERRITORY_COVERAGE_STYLE.OVERLAP,
+    exclusive: TERRITORY_COVERAGE_STYLE.EXCLUSIVE,
+    mutually_exclusive: TERRITORY_COVERAGE_STYLE.EXCLUSIVE,
+    mutuallyexclusive: TERRITORY_COVERAGE_STYLE.EXCLUSIVE
+  };
+
+  return aliasMap[normalized] || null;
+};
+
+const parseTerritoryAllocationScope = (rawScope) => {
+  if (typeof rawScope !== 'string' || rawScope.trim() === '') {
+    return TERRITORY_ALLOCATION_SCOPE.FULL_NETWORK;
+  }
+
+  const normalized = rawScope.trim().toLowerCase().replace(/-/g, '_');
+  if (normalized === TERRITORY_ALLOCATION_SCOPE.FULL_NETWORK) {
+    return TERRITORY_ALLOCATION_SCOPE.FULL_NETWORK;
+  }
+  if (
+    normalized === TERRITORY_ALLOCATION_SCOPE.SELECTED_ONLY
+    || normalized === 'selected'
+    || normalized === 'selected_branches_only'
+  ) {
+    return TERRITORY_ALLOCATION_SCOPE.SELECTED_ONLY;
+  }
+
+  return null;
+};
+
+const getBranchCoverageBasisConfig = (basisType) => (
+  BRANCH_COVERAGE_BASIS_CONFIGS.find((configEntry) => configEntry.basisType === basisType) || null
+);
+
+const parseBranchCoverageBasisTypes = (rawBasisTypes) => {
+  if (rawBasisTypes === undefined || rawBasisTypes === null) {
+    return [];
+  }
+
+  const candidates = Array.isArray(rawBasisTypes)
+    ? rawBasisTypes
+    : String(rawBasisTypes).split(',');
+
+  const validBasisTypes = new Set(BRANCH_COVERAGE_BASIS_CONFIGS.map((configEntry) => configEntry.basisType));
+  const uniqueBasisTypes = new Set();
+
+  candidates.forEach((entry) => {
+    const value = String(entry || '').trim().toLowerCase();
+    if (validBasisTypes.has(value)) {
+      uniqueBasisTypes.add(value);
+    }
+  });
+
+  return Array.from(uniqueBasisTypes);
+};
+
+const resolveBranchCoverageBasisType = (mode, coverageStyle) => {
+  const normalizedCoverageStyle = coverageStyle === TERRITORY_COVERAGE_STYLE.EXCLUSIVE
+    ? TERRITORY_COVERAGE_STYLE.EXCLUSIVE
+    : TERRITORY_COVERAGE_STYLE.OVERLAP;
+
+  if (
+    mode === TERRITORY_VISUALIZATION_MODE.EXISTING_CUSTOMERS
+    && normalizedCoverageStyle === TERRITORY_COVERAGE_STYLE.EXCLUSIVE
+  ) {
+    return BRANCH_COVERAGE_BASIS.MUTUALLY_EXCLUSIVE;
+  }
+
+  const matchingConfig = BRANCH_COVERAGE_BASIS_CONFIGS.find((configEntry) => (
+    configEntry.mode === mode
+    && configEntry.coverageStyle === normalizedCoverageStyle
+  ));
+
+  return matchingConfig?.basisType || null;
+};
+
+const cloneEmptyFeatureCollection = () => ({
+  type: 'FeatureCollection',
+  features: []
+});
 
 const parseBranchIds = (rawBranchIds) => {
   if (rawBranchIds === undefined || rawBranchIds === null) {
@@ -405,6 +605,29 @@ const resolvePaddedCatchmentRadiusMeters = (levelMeters) => {
     : DEFAULT_PERSISTENT_TERRITORY_LEVEL_METERS;
   const halfCellPadding = normalizedLevelMeters / 2;
   return Number(BRANCH_CATCHMENT_RADIUS_METERS) + Number(halfCellPadding);
+};
+
+const resolveEmployeeGridLevelKm = (
+  levelMeters,
+  fallbackLevelMeters = DEFAULT_PERSISTENT_TERRITORY_LEVEL_METERS
+) => {
+  const normalizedLevelMeters = Number.isFinite(Number(levelMeters)) && Number(levelMeters) > 0
+    ? Math.round(Number(levelMeters))
+    : Math.round(Number(fallbackLevelMeters));
+
+  if (!Number.isFinite(normalizedLevelMeters) || normalizedLevelMeters <= 0) {
+    throw new AppError('Employee grid level is invalid.', 400, 'INVALID_EMPLOYEE_GRID_LEVEL');
+  }
+
+  if (normalizedLevelMeters % 1000 !== 0) {
+    throw new AppError(
+      `Employee grid level ${normalizedLevelMeters}m is unsupported. Levels must be whole kilometers.`,
+      400,
+      'INVALID_EMPLOYEE_GRID_LEVEL'
+    );
+  }
+
+  return Math.max(1, Math.round(normalizedLevelMeters / 1000));
 };
 
 const acquireBranchTerritoryLock = async (client, branchId) => {
@@ -630,6 +853,54 @@ const findNearestBranchForCoordinates = (lat, lon, branchRows) => {
   return nearestBranch;
 };
 
+const buildCustomerPocketMappingRecord = ({
+  customerId,
+  customerLat,
+  customerLon,
+  uploadedBranchCode = null,
+  existingBranchId = null,
+  distanceCustomerToExistingBranch = null,
+  nearestPocket,
+  selectedBranch,
+  customerBucket = null
+}) => {
+  if (!nearestPocket || !selectedBranch) {
+    throw new Error('Both nearestPocket and selectedBranch are required to build a mapping record');
+  }
+
+  const distancePocketToBranch = haversineDistance(
+    Number(nearestPocket.centerLat),
+    Number(nearestPocket.centerLon),
+    Number(selectedBranch.lat),
+    Number(selectedBranch.lon)
+  );
+  const distanceCustomerToBranch = haversineDistance(
+    Number(customerLat),
+    Number(customerLon),
+    Number(selectedBranch.lat),
+    Number(selectedBranch.lon)
+  );
+
+  if (!Number.isFinite(distancePocketToBranch) || !Number.isFinite(distanceCustomerToBranch)) {
+    throw new Error('Resolved branch distance was invalid for mapped pocket');
+  }
+
+  return {
+    customerId,
+    customerLat,
+    customerLon,
+    uploadedBranchCode,
+    existingBranchId,
+    distanceCustomerToExistingBranch,
+    pocketId: nearestPocket.pocketId,
+    distanceCustomerToPocket: nearestPocket.distance,
+    nearestBranchId: selectedBranch.id,
+    distancePocketToBranch,
+    distanceCustomerToBranch,
+    customerBucket,
+  };
+};
+
 const getPocketCenterSafely = (pocketId, config) => {
   if (!pocketId) {
     return null;
@@ -719,6 +990,11 @@ const refreshBranchEmployeeGridCells = async (client, branchId, jobId, pocketCon
       'MIXED_POCKET_LEVELS_UNSUPPORTED'
     );
   }
+  const assignmentLevelMeters = Number(distinctPocketLevels[0] || GLOBAL_EMPTY_GRID_LEVEL_METERS);
+  const assignmentLevelKm = resolveEmployeeGridLevelKm(
+    assignmentLevelMeters,
+    GLOBAL_EMPTY_GRID_LEVEL_METERS
+  );
 
   const fetchMasterGeometryRows = async (codes, levels) => {
     if (!Array.isArray(codes) || codes.length === 0 || !Array.isArray(levels) || levels.length === 0) {
@@ -940,9 +1216,9 @@ const refreshBranchEmployeeGridCells = async (client, branchId, jobId, pocketCon
     `
       DELETE FROM ${EMPLOYEE_GRID_CELL_TABLE}
       WHERE branch_id = $1
-        AND COALESCE(level_km, 1) = 1
+        AND COALESCE(level_km, 1) = $2::integer
     `,
-    [branchId]
+    [branchId, assignmentLevelKm]
   );
 
   await client.query(
@@ -958,7 +1234,7 @@ const refreshBranchEmployeeGridCells = async (client, branchId, jobId, pocketCon
       SELECT
         $1::varchar AS branch_id,
         pockets.pocket_id::varchar,
-        1::integer AS level_km,
+        $3::integer AS level_km,
         GREATEST(COALESCE(pockets.account_count, 0), 0)::integer AS account_count,
         NULL::varchar AS assigned_employee_id,
         ST_GeometryN(
@@ -980,15 +1256,15 @@ const refreshBranchEmployeeGridCells = async (client, branchId, jobId, pocketCon
         account_count integer,
         geometry jsonb
       )
-    `,
-    [branchId, JSON.stringify(assignmentPocketRows)]
+      `,
+    [branchId, JSON.stringify(assignmentPocketRows), assignmentLevelKm]
   );
 
   return {
     totalPocketCount: assignmentPocketRows.length,
     masterGeometryCount: assignmentPocketRows.length,
     fallbackGeometryCount: 0,
-    assignmentLevelMeters: Number(distinctPocketLevels[0] || GLOBAL_EMPTY_GRID_LEVEL_METERS)
+    assignmentLevelMeters
   };
 };
 
@@ -1035,6 +1311,10 @@ const refreshBranchEmployeeGridCellsFromPersistentTerritories = async (
       'NO_PERSISTED_BRANCH_TERRITORIES'
     );
   }
+  const assignmentLevelKm = resolveEmployeeGridLevelKm(
+    assignmentLevelMeters,
+    GLOBAL_EMPTY_GRID_LEVEL_METERS
+  );
 
   const persistentRowsResult = await client.query(
     `
@@ -1105,9 +1385,9 @@ const refreshBranchEmployeeGridCellsFromPersistentTerritories = async (
     `
       DELETE FROM ${EMPLOYEE_GRID_CELL_TABLE}
       WHERE branch_id = $1
-        AND COALESCE(level_km, 1) = 1
+        AND COALESCE(level_km, 1) = $2::integer
     `,
-    [branchId]
+    [branchId, assignmentLevelKm]
   );
 
   await client.query(
@@ -1123,7 +1403,7 @@ const refreshBranchEmployeeGridCellsFromPersistentTerritories = async (
       SELECT
         $1::varchar AS branch_id,
         pockets.pocket_id::varchar,
-        1::integer AS level_km,
+        $3::integer AS level_km,
         GREATEST(COALESCE(pockets.account_count, 0), 0)::integer AS account_count,
         NULL::varchar AS assigned_employee_id,
         ST_GeometryN(
@@ -1145,8 +1425,8 @@ const refreshBranchEmployeeGridCellsFromPersistentTerritories = async (
         account_count integer,
         geometry jsonb
       )
-    `,
-    [branchId, JSON.stringify(assignmentPocketRows)]
+      `,
+    [branchId, JSON.stringify(assignmentPocketRows), assignmentLevelKm]
   );
 
   return {
@@ -1167,6 +1447,10 @@ const fillBranchTerritoryEmptyGridCoverage = async (
   const effectiveLevelMeters = Number.isFinite(normalizedAssignmentLevel) && normalizedAssignmentLevel > 0
     ? Math.round(normalizedAssignmentLevel)
     : GLOBAL_EMPTY_GRID_LEVEL_METERS;
+  const effectiveLevelKm = resolveEmployeeGridLevelKm(
+    effectiveLevelMeters,
+    GLOBAL_EMPTY_GRID_LEVEL_METERS
+  );
   const paddedCatchmentRadiusMeters = resolvePaddedCatchmentRadiusMeters(effectiveLevelMeters);
 
   const schemaCheckResult = await client.query(
@@ -1328,7 +1612,7 @@ const fillBranchTerritoryEmptyGridCoverage = async (
             SELECT 1
             FROM employee_grid_cells egc
             WHERE egc.branch_id = $1
-              AND COALESCE(egc.level_km, 1) = 1
+              AND COALESCE(egc.level_km, 1) = $6::integer
               AND egc.pocket_id IS NOT NULL
               AND egc.pocket_id = catchment_grid_cells.pocket_id
           )
@@ -1381,7 +1665,7 @@ const fillBranchTerritoryEmptyGridCoverage = async (
         SELECT
           $1::varchar AS branch_id,
           nearest_assignment.pocket_id,
-          1::integer AS level_km,
+          $6::integer AS level_km,
           0::integer AS account_count,
           nearest_assignment.employee_id AS assigned_employee_id,
           nearest_assignment.geom
@@ -1442,7 +1726,8 @@ const fillBranchTerritoryEmptyGridCoverage = async (
       // BRANCH_CATCHMENT_FETCH_RADIUS_METERS,
       paddedCatchmentRadiusMeters,
       effectiveLevelMeters,
-      CANONICAL_POCKET_CODE_SQL_PATTERN
+      CANONICAL_POCKET_CODE_SQL_PATTERN,
+      effectiveLevelKm
     ]
   );
 
@@ -1486,6 +1771,10 @@ const persistBranchEmployeeTerritories = async (
   const effectiveLevelMeters = Number.isFinite(normalizedLevelMeters) && normalizedLevelMeters > 0
     ? Math.round(normalizedLevelMeters)
     : GLOBAL_EMPTY_GRID_LEVEL_METERS;
+  const effectiveLevelKm = resolveEmployeeGridLevelKm(
+    effectiveLevelMeters,
+    GLOBAL_EMPTY_GRID_LEVEL_METERS
+  );
 
   const deleteEmployeeAssignmentsResult = await client.query(
     `
@@ -1521,7 +1810,7 @@ const persistBranchEmployeeTerritories = async (
         $2::integer AS level_m
       FROM ${EMPLOYEE_GRID_CELL_TABLE} egc
       WHERE egc.branch_id = $1
-        AND COALESCE(egc.level_km, 1) = 1
+        AND COALESCE(egc.level_km, 1) = $4::integer
         AND egc.pocket_id IS NOT NULL
         AND btrim(egc.pocket_id) <> ''
         AND egc.pocket_id ~ $3::text
@@ -1531,7 +1820,7 @@ const persistBranchEmployeeTerritories = async (
         updated_at = CURRENT_TIMESTAMP
       RETURNING 1
     `,
-    [branchId, effectiveLevelMeters, CANONICAL_POCKET_CODE_SQL_PATTERN]
+    [branchId, effectiveLevelMeters, CANONICAL_POCKET_CODE_SQL_PATTERN, effectiveLevelKm]
   );
 
   await client.query(
@@ -1542,7 +1831,7 @@ const persistBranchEmployeeTerritories = async (
           egc.assigned_employee_id::varchar AS employee_code
         FROM ${EMPLOYEE_GRID_CELL_TABLE} egc
         WHERE egc.branch_id = $1
-          AND COALESCE(egc.level_km, 1) = 1
+          AND COALESCE(egc.level_km, 1) = $2::integer
           AND egc.assigned_employee_id IS NOT NULL
           AND btrim(egc.assigned_employee_id) <> ''
       ),
@@ -1589,7 +1878,7 @@ const persistBranchEmployeeTerritories = async (
         is_active = TRUE,
         updated_at = CURRENT_TIMESTAMP
     `,
-    [branchId]
+    [branchId, effectiveLevelKm]
   );
 
   const insertEmployeeTerritoriesResult = await client.query(
@@ -1613,7 +1902,7 @@ const persistBranchEmployeeTerritories = async (
         ON be.branch_id = egc.branch_id
        AND be.employee_id = egc.assigned_employee_id::varchar
       WHERE egc.branch_id = $1
-        AND COALESCE(egc.level_km, 1) = 1
+        AND COALESCE(egc.level_km, 1) = $2::integer
         AND egc.pocket_id IS NOT NULL
         AND btrim(egc.pocket_id) <> ''
         AND egc.assigned_employee_id IS NOT NULL
@@ -1626,7 +1915,7 @@ const persistBranchEmployeeTerritories = async (
         updated_at = CURRENT_TIMESTAMP
       RETURNING 1
     `,
-    [branchId]
+    [branchId, effectiveLevelKm]
   );
 
   return {
@@ -1863,6 +2152,10 @@ const pruneBranchEmployeeGridCellsToCatchment = async (
   const effectiveLevelMeters = Number.isFinite(Number(levelMeters)) && Number(levelMeters) > 0
     ? Math.round(Number(levelMeters))
     : DEFAULT_PERSISTENT_TERRITORY_LEVEL_METERS;
+  const effectiveLevelKm = resolveEmployeeGridLevelKm(
+    effectiveLevelMeters,
+    DEFAULT_PERSISTENT_TERRITORY_LEVEL_METERS
+  );
   const paddedCatchmentRadiusMeters = resolvePaddedCatchmentRadiusMeters(effectiveLevelMeters);
 
   const pruneResult = await client.query(
@@ -1879,7 +2172,7 @@ const pruneBranchEmployeeGridCellsToCatchment = async (
       removed_rows AS (
         DELETE FROM ${EMPLOYEE_GRID_CELL_TABLE} egc
         WHERE egc.branch_id = $1
-          AND COALESCE(egc.level_km, 1) = 1
+          AND COALESCE(egc.level_km, 1) = $4::integer
           AND (
             egc.pocket_id IS NULL
             OR btrim(egc.pocket_id::text) = ''
@@ -1908,7 +2201,7 @@ const pruneBranchEmployeeGridCellsToCatchment = async (
           SELECT COUNT(*)::int
           FROM ${EMPLOYEE_GRID_CELL_TABLE} egc
           WHERE egc.branch_id = $1
-            AND COALESCE(egc.level_km, 1) = 1
+            AND COALESCE(egc.level_km, 1) = $4::integer
         ) AS remaining_rows
     `,
     [
@@ -1916,7 +2209,8 @@ const pruneBranchEmployeeGridCellsToCatchment = async (
       effectiveLevelMeters,
       // --- ORIGINAL BACKUP ---
       // BRANCH_CATCHMENT_RADIUS_METERS
-      paddedCatchmentRadiusMeters
+      paddedCatchmentRadiusMeters,
+      effectiveLevelKm
     ]
   );
 
@@ -2670,6 +2964,7 @@ const fetchPersistentBranchTerritoryPayload = async (
           FROM ${EMPLOYEE_GRID_CELL_TABLE} egc
           WHERE egc.branch_id = bt.branch_id
             AND egc.pocket_id = bt.grid_code
+            AND COALESCE(egc.level_km, 1) = GREATEST(1, bt.level_m / 1000)
           ORDER BY egc.updated_at DESC NULLS LAST, egc.id DESC
           LIMIT 1
         ) egc_snapshot
@@ -2886,8 +3181,12 @@ const buildCustomerCoverageByBranch = async (customerAssignments) => {
 const buildVoronoiTerritoriesForSelectedBranches = async (
   selectedBranches,
   indiaStateBoundsGeoJson,
-  coverageGeometriesByBranch = []
+  coverageGeometriesByBranch = [],
+  options = {}
 ) => {
+  const coverageStyle = options.coverageStyle === TERRITORY_COVERAGE_STYLE.EXCLUSIVE
+    ? TERRITORY_COVERAGE_STYLE.EXCLUSIVE
+    : TERRITORY_COVERAGE_STYLE.OVERLAP;
   if (selectedBranches.length === 0) {
     return [];
   }
@@ -2913,34 +3212,7 @@ const buildVoronoiTerritoriesForSelectedBranches = async (
         }
       ];
     }
-
-    const fullStateResult = await query(
-      `
-        WITH state_polygons AS (
-          SELECT ST_SetSRID(ST_MakeValid(ST_GeomFromGeoJSON((feature->'geometry')::text)), 4326) AS geom
-          FROM jsonb_array_elements(($1::jsonb)->'features') AS feature
-        ),
-        clip_geometry AS (
-          SELECT ST_CollectionExtract(ST_Collect(geom), 3) AS geom
-          FROM state_polygons
-        )
-        SELECT ST_AsGeoJSON(geom)::json AS geometry
-        FROM clip_geometry
-      `,
-      [stateGeoJsonParam]
-    );
-
-    if (fullStateResult.rows.length === 0 || !fullStateResult.rows[0].geometry) {
-      return [];
-    }
-
-    return [
-      {
-        branch_id: selectedBranch.id,
-        city: selectedBranch.city,
-        geometry: fullStateResult.rows[0].geometry
-      }
-    ];
+    return [];
   }
 
   const coverageParam = JSON.stringify(
@@ -3021,12 +3293,11 @@ const buildVoronoiTerritoriesForSelectedBranches = async (
         SELECT
           merged_territories.branch_id,
           merged_territories.city,
-          CASE
-            WHEN branch_coverage.geom IS NULL THEN merged_territories.geom
-            ELSE ST_Intersection(merged_territories.geom, branch_coverage.geom)
-          END AS geom
+          ${coverageStyle === TERRITORY_COVERAGE_STYLE.EXCLUSIVE
+            ? 'ST_Intersection(merged_territories.geom, branch_coverage.geom)'
+            : 'branch_coverage.geom'} AS geom
         FROM merged_territories
-        LEFT JOIN branch_coverage
+        JOIN branch_coverage
           ON branch_coverage.branch_id = merged_territories.branch_id
       )
       SELECT
@@ -3043,9 +3314,1421 @@ const buildVoronoiTerritoriesForSelectedBranches = async (
   return territoryResult.rows;
 };
 
+const normalizeFeatureCollection = (candidate) => (
+  candidate
+  && candidate.type === 'FeatureCollection'
+  && Array.isArray(candidate.features)
+    ? candidate
+    : buildEmptyFeatureCollection()
+);
+
+const collectFeaturesByBranchId = (featureCollection) => {
+  const branchFeaturesById = new Map();
+  const normalizedCollection = normalizeFeatureCollection(featureCollection);
+
+  normalizedCollection.features.forEach((feature) => {
+    const branchId = String(
+      feature?.properties?.branchId
+      ?? feature?.properties?.existingBranchId
+      ?? feature?.properties?.nearestBranchId
+      ?? ''
+    ).trim();
+
+    if (!branchId) {
+      return;
+    }
+
+    if (!branchFeaturesById.has(branchId)) {
+      branchFeaturesById.set(branchId, []);
+    }
+
+    branchFeaturesById.get(branchId).push(feature);
+  });
+
+  return branchFeaturesById;
+};
+
+const buildBranchPointFeature = (branchRow, customerCount = 0) => ({
+  type: 'Feature',
+  properties: {
+    branchId: branchRow.id,
+    city: branchRow.city,
+    customerCount: Number(customerCount || 0)
+  },
+  geometry: {
+    type: 'Point',
+    coordinates: [Number(branchRow.lon), Number(branchRow.lat)]
+  }
+});
+
+const buildBranchCoverageMetricsFromCustomers = (customerFeatures, branchPointFeature) => {
+  const metrics = {
+    nativeCustomerCount: 0,
+    catchmentCustomerCount: 0,
+    totalCustomerCount: 0,
+    farthestCustomerDistanceKm: 0
+  };
+
+  const branchCoordinates = Array.isArray(branchPointFeature?.geometry?.coordinates)
+    ? branchPointFeature.geometry.coordinates
+    : [];
+  const branchLon = Number(branchCoordinates[0]);
+  const branchLat = Number(branchCoordinates[1]);
+
+  (Array.isArray(customerFeatures) ? customerFeatures : []).forEach((feature) => {
+    const assignedBranchId = String(feature?.properties?.branchId || '').trim();
+    const existingBranchId = String(feature?.properties?.existingBranchId || '').trim();
+    const coordinates = Array.isArray(feature?.geometry?.coordinates)
+      ? feature.geometry.coordinates
+      : [];
+    const customerLon = Number(coordinates[0]);
+    const customerLat = Number(coordinates[1]);
+
+    if (!assignedBranchId) {
+      return;
+    }
+
+    if (!existingBranchId || existingBranchId === assignedBranchId) {
+      metrics.nativeCustomerCount += 1;
+    } else {
+      metrics.catchmentCustomerCount += 1;
+    }
+    metrics.totalCustomerCount += 1;
+
+    if (
+      Number.isFinite(branchLat)
+      && Number.isFinite(branchLon)
+      && Number.isFinite(customerLat)
+      && Number.isFinite(customerLon)
+    ) {
+      metrics.farthestCustomerDistanceKm = Math.max(
+        metrics.farthestCustomerDistanceKm,
+        haversineDistance(branchLat, branchLon, customerLat, customerLon) / 1000
+      );
+    }
+  });
+
+  return metrics;
+};
+
+const buildAllocationBoxFeatureCollection = (allocations) => ({
+  type: 'FeatureCollection',
+  features: (Array.isArray(allocations) ? allocations : []).map((allocation) => ({
+    type: 'Feature',
+    properties: {
+      branchId: allocation.winner_branch_id,
+      winner_branch_id: allocation.winner_branch_id,
+      color: allocation.color,
+      branchColor: allocation.color,
+      score: Number(allocation.score || 0),
+      had_customers: Boolean(allocation.had_customers),
+      customer_count_in_box: Number(allocation.customer_count_in_box || 0),
+      box_id: allocation.box_id
+    },
+    geometry: {
+      type: 'Polygon',
+      coordinates: allocation.polygon
+    }
+  }))
+});
+
+const dissolveAllocationBoxFeatureCollection = async (boxFeatureCollection) => {
+  const normalizedCollection = normalizeFeatureCollection(boxFeatureCollection);
+  if (normalizedCollection.features.length === 0) {
+    return {
+      featureCollection: cloneEmptyFeatureCollection(),
+      polygonOverlapAreaKm2: 0
+    };
+  }
+
+  const serializedFeatures = normalizedCollection.features.map((feature) => ({
+    branch_id: String(feature.properties?.branchId || '').trim(),
+    color: String(feature.properties?.color || feature.properties?.branchColor || '').trim() || '#EF4444',
+    score: Number(feature.properties?.score || 0),
+    had_customers: Boolean(feature.properties?.had_customers),
+    customer_count_in_box: Number(feature.properties?.customer_count_in_box || 0),
+    geometry: feature.geometry
+  }));
+
+  const result = await query(
+    `
+      WITH input AS (
+        SELECT *
+        FROM jsonb_to_recordset($1::jsonb) AS rows(
+          branch_id text,
+          color text,
+          score double precision,
+          had_customers boolean,
+          customer_count_in_box integer,
+          geometry jsonb
+        )
+      ),
+      boxes AS (
+        SELECT
+          branch_id,
+          color,
+          score,
+          had_customers,
+          customer_count_in_box,
+          ST_SetSRID(ST_GeomFromGeoJSON(geometry::text), 4326) AS geom
+        FROM input
+      ),
+      merged AS (
+        SELECT
+          branch_id,
+          MAX(color) AS color,
+          AVG(score) AS score,
+          BOOL_OR(had_customers) AS had_customers,
+          SUM(customer_count_in_box)::int AS customer_count_in_box,
+          COUNT(*)::int AS box_count,
+          ST_UnaryUnion(ST_Collect(geom)) AS geom
+        FROM boxes
+        GROUP BY branch_id
+      ),
+      feature_rows AS (
+        SELECT
+          branch_id,
+          color,
+          score,
+          had_customers,
+          customer_count_in_box,
+          box_count,
+          ST_AsGeoJSON(geom)::jsonb AS geometry
+        FROM merged
+      ),
+      area_stats AS (
+        SELECT
+          COALESCE(SUM(ST_Area(geom::geography)), 0)::double precision / 1000000.0 AS total_area_km2,
+          COALESCE(ST_Area(ST_UnaryUnion(ST_Collect(geom))::geography), 0)::double precision / 1000000.0 AS union_area_km2
+        FROM merged
+      )
+      SELECT
+        COALESCE((
+          SELECT jsonb_agg(
+            jsonb_build_object(
+              'type', 'Feature',
+              'properties', jsonb_build_object(
+                'branchId', branch_id,
+                'winner_branch_id', branch_id,
+                'color', color,
+                'branchColor', color,
+                'score', score,
+                'had_customers', had_customers,
+                'customer_count_in_box', customer_count_in_box,
+                'box_count', box_count
+              ),
+              'geometry', geometry
+            )
+          )
+          FROM feature_rows
+        ), '[]'::jsonb) AS features,
+        COALESCE((SELECT total_area_km2 FROM area_stats), 0) AS total_area_km2,
+        COALESCE((SELECT union_area_km2 FROM area_stats), 0) AS union_area_km2
+    `,
+    [JSON.stringify(serializedFeatures)]
+  );
+
+  const row = result.rows[0] || {};
+  const totalAreaKm2 = Number(row.total_area_km2 || 0);
+  const unionAreaKm2 = Number(row.union_area_km2 || 0);
+  const polygonOverlapAreaKm2 = Math.max(totalAreaKm2 - unionAreaKm2, 0);
+
+  return {
+    featureCollection: normalizeFeatureCollection({
+      type: 'FeatureCollection',
+      features: Array.isArray(row.features) ? row.features : []
+    }),
+    polygonOverlapAreaKm2
+  };
+};
+
+const assertValidAllocationDiagnostics = ({
+  candidateBranchIds,
+  stats
+}) => {
+  const normalizedCandidateBranchIds = Array.isArray(candidateBranchIds)
+    ? candidateBranchIds.map((branchId) => String(branchId || '').trim()).filter(Boolean)
+    : [];
+  const boxesPerBranch = stats?.boxes_per_branch || {};
+  const branchesWithZeroBoxes = normalizedCandidateBranchIds.filter(
+    (branchId) => Number(boxesPerBranch[branchId] || 0) <= 0
+  );
+  const unassignedBoxes = Number(stats?.unassigned_boxes || 0);
+  const polygonOverlapAreaKm2 = Number(stats?.polygon_overlap_area_km2 || 0);
+
+  if (branchesWithZeroBoxes.length > 0) {
+    throw new AppError(
+      `Allocation invariant failed: every candidate branch must own at least one box. Offending branch IDs: ${branchesWithZeroBoxes.join(', ')}`,
+      500,
+      'INVALID_BRANCH_BOX_OWNERSHIP'
+    );
+  }
+
+  if (unassignedBoxes > 0) {
+    throw new AppError(
+      `Allocation invariant failed: ${unassignedBoxes} boxes are unassigned.`,
+      500,
+      'UNASSIGNED_BOXES'
+    );
+  }
+
+  if (polygonOverlapAreaKm2 > 1e-6) {
+    throw new AppError(
+      `Allocation invariant failed: polygon overlap detected (${polygonOverlapAreaKm2.toFixed(6)} sq km).`,
+      500,
+      'POLYGON_OVERLAP_DETECTED'
+    );
+  }
+};
+
+const normalizeCoverageCustomerRow = (row) => ({
+  id: String(row.customer_id || row.customerId || '').trim(),
+  customerId: String(row.customer_id || row.customerId || '').trim(),
+  lat: Number(row.customer_lat ?? row.customerLat),
+  lon: Number(row.customer_lon ?? row.customerLon),
+  customerLat: Number(row.customer_lat ?? row.customerLat),
+  customerLon: Number(row.customer_lon ?? row.customerLon),
+  homeBranchId: String(row.existing_branch_id ?? row.existingBranchId ?? '').trim() || null,
+  existingBranchId: String(row.existing_branch_id ?? row.existingBranchId ?? '').trim() || null,
+  nearestBranchId: String(row.nearest_branch_id ?? row.nearestBranchId ?? '').trim() || null,
+  pocketId: String(row.pocket_id ?? row.pocketId ?? '').trim() || null,
+  uploadedBranchCode: row.uploaded_branch_code === null || row.uploaded_branch_code === undefined
+    ? null
+    : String(row.uploaded_branch_code).trim() || null
+});
+
+const loadCoverageBranchRows = async () => {
+  const branchesResult = await query(
+    'SELECT id, city, lat, lon, updated_at FROM branches ORDER BY id'
+  );
+
+  const branchRows = branchesResult.rows
+    .map((row) => ({
+      id: String(row.id || '').trim(),
+      city: String(row.city || '').trim(),
+      lat: Number(row.lat),
+      lon: Number(row.lon),
+      updatedAt: row.updated_at || null
+    }))
+    .filter((row) => row.id && Number.isFinite(row.lat) && Number.isFinite(row.lon));
+
+  if (branchRows.length === 0) {
+    throw new AppError('No branches with valid coordinates available', 400, 'INVALID_BRANCH_COORDINATES');
+  }
+
+  return branchRows;
+};
+
+const loadCoverageCustomersForJob = async ({ jobId, bounds = null, branchIds = null }) => {
+  const params = [jobId];
+  const whereClauses = [
+    'job_id = $1',
+    'customer_lat IS NOT NULL',
+    'customer_lon IS NOT NULL'
+  ];
+
+  if (Array.isArray(branchIds) && branchIds.length > 0) {
+    params.push(branchIds);
+    whereClauses.push(`(
+      nearest_branch_id = ANY($${params.length}::text[])
+      OR existing_branch_id = ANY($${params.length}::text[])
+    )`);
+  }
+
+  if (bounds) {
+    params.push(bounds.minLng, bounds.maxLng, bounds.minLat, bounds.maxLat);
+    const minLngIndex = params.length - 3;
+    const maxLngIndex = params.length - 2;
+    const minLatIndex = params.length - 1;
+    const maxLatIndex = params.length;
+    whereClauses.push(`
+      customer_lon BETWEEN $${minLngIndex} AND $${maxLngIndex}
+      AND customer_lat BETWEEN $${minLatIndex} AND $${maxLatIndex}
+    `);
+  }
+
+  const result = await query(
+    `
+      SELECT
+        customer_id,
+        customer_lat,
+        customer_lon,
+        pocket_id,
+        nearest_branch_id,
+        existing_branch_id,
+        uploaded_branch_code
+      FROM customer_pocket_mappings
+      WHERE ${whereClauses.join(' AND ')}
+      ORDER BY id
+    `,
+    params
+  );
+
+  return result.rows.map(normalizeCoverageCustomerRow)
+    .filter((row) => Number.isFinite(row.customerLat) && Number.isFinite(row.customerLon));
+};
+
+const buildClosestBranchGridCoverageData = async ({
+  requestedBranchIds,
+  requestedJobId,
+  customerView,
+  allocationScope = TERRITORY_ALLOCATION_SCOPE.FULL_NETWORK,
+  gridSizeKm = DEFAULT_GRID_SIZE_KM,
+  mergeAdjacent = true
+}) => {
+  let effectiveJobId = requestedJobId;
+  if (effectiveJobId) {
+    const jobExistsResult = await query(
+      'SELECT job_id FROM jobs WHERE job_id = $1',
+      [effectiveJobId]
+    );
+    if (jobExistsResult.rows.length === 0) {
+      throw new AppError('Job not found', 404, 'JOB_NOT_FOUND');
+    }
+  } else {
+    effectiveJobId = await resolveLatestMappingsJobId();
+    if (!effectiveJobId) {
+      throw new AppError('No customer mappings available for visualization', 404, 'NO_MAPPINGS');
+    }
+  }
+
+  const allBranches = await loadCoverageBranchRows();
+  const branchById = new Map(allBranches.map((branch) => [branch.id, branch]));
+  const invalidRequestedBranchIds = requestedBranchIds.filter((branchId) => !branchById.has(branchId));
+  if (invalidRequestedBranchIds.length > 0) {
+    throw new AppError(
+      `Unknown branch ID(s): ${invalidRequestedBranchIds.join(', ')}`,
+      400,
+      'INVALID_BRANCH_SELECTION'
+    );
+  }
+
+  const selectedBranches = requestedBranchIds
+    .map((branchId) => branchById.get(branchId))
+    .filter(Boolean);
+
+  if (selectedBranches.length === 0) {
+    return {
+      generatedAt: new Date().toISOString(),
+      jobId: effectiveJobId,
+      mode: TERRITORY_VISUALIZATION_MODE.NEAREST_POCKETS,
+      modeLabel: getTerritoryModeLabel(TERRITORY_VISUALIZATION_MODE.NEAREST_POCKETS),
+      coverageStyle: TERRITORY_COVERAGE_STYLE.EXCLUSIVE,
+      customerView,
+      maxSelectableBranches: MAX_VISUALIZATION_BRANCHES,
+      selectedBranchIds: [],
+      availableBranches: [],
+      summary: {
+        territories: 0,
+        branches: 0,
+        points: 0,
+        customers: 0,
+        customersVisible: 0,
+        selectedPocketCustomersVisible: 0,
+        originalCustomersVisible: 0,
+        pockets: 0,
+        sourceType: 'grid_boxes'
+      },
+      territories: cloneEmptyFeatureCollection(),
+      branches: cloneEmptyFeatureCollection(),
+      points: cloneEmptyFeatureCollection(),
+      customers: cloneEmptyFeatureCollection(),
+      customerViews: {
+        selected_pockets: cloneEmptyFeatureCollection(),
+        original_customers: cloneEmptyFeatureCollection()
+      },
+      allocationMode: allocationScope,
+      stats: {
+        total_boxes: 0,
+        boxes_per_branch: {},
+        boxes_with_customers: 0,
+        boxes_fallback_proximity: 0,
+        compute_time_ms: 0
+      },
+      warnings: ['No branches selected.']
+    };
+  }
+
+  let scopedCustomers = [];
+  let allCustomersInScope = [];
+
+  if (allocationScope === TERRITORY_ALLOCATION_SCOPE.FULL_NETWORK) {
+    allCustomersInScope = await loadCoverageCustomersForJob({
+      jobId: effectiveJobId
+    });
+  } else {
+    scopedCustomers = await loadCoverageCustomersForJob({
+      jobId: effectiveJobId,
+      branchIds: requestedBranchIds
+    });
+
+    const scopeGrid = allocateBranchCoverage({
+      allBranches,
+      candidateBranches: selectedBranches,
+      customers: scopedCustomers,
+      gridSizeKm,
+      mergeAdjacent: false
+    }).grid;
+
+    const localBounds = scopeGrid
+      ? {
+        minLng: scopeGrid.minLon,
+        maxLng: scopeGrid.maxLon,
+        minLat: scopeGrid.minLat,
+        maxLat: scopeGrid.maxLat
+      }
+      : null;
+
+    allCustomersInScope = await loadCoverageCustomersForJob({
+      jobId: effectiveJobId,
+      bounds: localBounds
+    });
+  }
+
+  const allocationResult = allocateBranchCoverage({
+    allBranches,
+    candidateBranches: allocationScope === TERRITORY_ALLOCATION_SCOPE.FULL_NETWORK
+      ? allBranches
+      : selectedBranches,
+    customers: allCustomersInScope,
+    gridSizeKm,
+    mergeAdjacent: false
+  });
+
+  const boxFeatureCollection = buildAllocationBoxFeatureCollection(allocationResult.allocations);
+  const dissolvedAllocation = mergeAdjacent
+    ? await dissolveAllocationBoxFeatureCollection(boxFeatureCollection)
+    : {
+      featureCollection: boxFeatureCollection,
+      polygonOverlapAreaKm2: 0
+    };
+  allocationResult.stats = {
+    ...allocationResult.stats,
+    polygon_overlap_area_km2: Number(dissolvedAllocation.polygonOverlapAreaKm2.toFixed(6))
+  };
+  assertValidAllocationDiagnostics({
+    candidateBranchIds: allocationResult.stats.candidate_branch_ids,
+    stats: allocationResult.stats
+  });
+
+  const filteredTerritoryFeatures = dissolvedAllocation.featureCollection.features.filter((feature) =>
+    requestedBranchIds.includes(String(feature.properties?.branchId || '').trim())
+  );
+  const filteredSelectedCustomers = allocationResult.selectedCustomers.features.filter((feature) =>
+    requestedBranchIds.includes(String(feature.properties?.branchId || '').trim())
+  );
+  const filteredOriginalCustomers = allocationResult.originalCustomers.features.filter((feature) =>
+    requestedBranchIds.includes(String(feature.properties?.branchId || '').trim())
+  );
+  const filteredBranches = allocationResult.branches.features.filter((feature) =>
+    requestedBranchIds.includes(String(feature.properties?.branchId || '').trim())
+  );
+  const availableBranches = requestedBranchIds
+    .map((branchId) => allocationResult.availableBranches.find((branch) => branch.id === branchId)
+      || {
+        id: branchId,
+        city: branchById.get(branchId)?.city || '',
+        customerCount: 0
+      })
+    .sort((left, right) => (right.customerCount - left.customerCount) || left.id.localeCompare(right.id));
+  const activeCustomers = customerView === CUSTOMER_VISUALIZATION_VIEW.ORIGINAL_CUSTOMERS
+    ? filteredOriginalCustomers
+    : filteredSelectedCustomers;
+
+  return {
+    generatedAt: new Date().toISOString(),
+    jobId: effectiveJobId,
+    mode: TERRITORY_VISUALIZATION_MODE.NEAREST_POCKETS,
+    modeLabel: getTerritoryModeLabel(TERRITORY_VISUALIZATION_MODE.NEAREST_POCKETS),
+    coverageStyle: TERRITORY_COVERAGE_STYLE.EXCLUSIVE,
+    customerView,
+    maxSelectableBranches: MAX_VISUALIZATION_BRANCHES,
+    selectedBranchIds: requestedBranchIds,
+    availableBranches: availableBranches.map((branch) => ({
+      id: branch.id,
+      city: branch.city,
+      customerCount: Number(branch.customerCount || 0)
+    })),
+    summary: {
+      territories: filteredTerritoryFeatures.length,
+      branches: filteredBranches.length,
+      points: 0,
+      customers: filteredSelectedCustomers.length,
+      customersVisible: activeCustomers.length,
+      selectedPocketCustomersVisible: filteredSelectedCustomers.length,
+      originalCustomersVisible: filteredOriginalCustomers.length,
+      pockets: Number(allocationResult.stats.total_boxes || 0),
+      sourceType: 'grid_boxes'
+    },
+    territories: {
+      type: 'FeatureCollection',
+      features: filteredTerritoryFeatures
+    },
+    branches: {
+      type: 'FeatureCollection',
+      features: filteredBranches
+    },
+    points: cloneEmptyFeatureCollection(),
+    customers: {
+      type: 'FeatureCollection',
+      features: activeCustomers
+    },
+    customerViews: {
+      selected_pockets: {
+        type: 'FeatureCollection',
+        features: filteredSelectedCustomers
+      },
+      original_customers: {
+        type: 'FeatureCollection',
+        features: filteredOriginalCustomers
+      }
+    },
+    allocationMode: allocationScope,
+    stats: allocationResult.stats,
+    warnings: allocationResult.warnings || []
+  };
+};
+
+const buildTerritoryVisualizationData = async ({
+  mode,
+  customerView,
+  coverageStyle,
+  requestedBranchIds,
+  requestedJobId
+}) => {
+  const normalizedCoverageStyle = coverageStyle === TERRITORY_COVERAGE_STYLE.EXCLUSIVE
+    ? TERRITORY_COVERAGE_STYLE.EXCLUSIVE
+    : TERRITORY_COVERAGE_STYLE.OVERLAP;
+  const normalizedCustomerView = customerView || CUSTOMER_VISUALIZATION_VIEW.SELECTED_POCKETS;
+
+  let effectiveJobId = requestedJobId;
+  if (effectiveJobId) {
+    const jobExistsResult = await query(
+      'SELECT job_id FROM jobs WHERE job_id = $1',
+      [effectiveJobId]
+    );
+    if (jobExistsResult.rows.length === 0) {
+      throw new AppError('Job not found', 404, 'JOB_NOT_FOUND');
+    }
+  } else {
+    effectiveJobId = await resolveLatestMappingsJobId();
+    if (!effectiveJobId) {
+      throw new AppError('No customer mappings available for visualization', 404, 'NO_MAPPINGS');
+    }
+  }
+
+  const branchesResult = await query(
+    'SELECT id, city, lat, lon, updated_at FROM branches ORDER BY id'
+  );
+  if (branchesResult.rows.length === 0) {
+    throw new AppError('No branches available to generate territories', 400, 'NO_BRANCHES');
+  }
+
+  const branchRows = branchesResult.rows
+    .map((row) => ({
+      id: String(row.id),
+      city: String(row.city || ''),
+      lat: Number(row.lat),
+      lon: Number(row.lon),
+      updatedAt: row.updated_at || null
+    }))
+    .filter((row) => Number.isFinite(row.lat) && Number.isFinite(row.lon));
+
+  if (branchRows.length === 0) {
+    throw new AppError('No branches with valid coordinates available', 400, 'INVALID_BRANCH_COORDINATES');
+  }
+
+  const branchById = new Map(branchRows.map((branch) => [branch.id, branch]));
+  const invalidRequestedBranchIds = requestedBranchIds.filter((branchId) => !branchById.has(branchId));
+  if (invalidRequestedBranchIds.length > 0) {
+    throw new AppError(
+      `Unknown branch ID(s): ${invalidRequestedBranchIds.join(', ')}`,
+      400,
+      'INVALID_BRANCH_SELECTION'
+    );
+  }
+
+  const mappingsResult = await query(
+    `
+      SELECT
+        customer_id,
+        customer_lat,
+        customer_lon,
+        pocket_id,
+        nearest_branch_id,
+        existing_branch_id,
+        uploaded_branch_code
+      FROM customer_pocket_mappings
+      WHERE job_id = $1
+        AND (
+          nearest_branch_id = ANY($2::text[])
+          OR existing_branch_id = ANY($2::text[])
+        )
+      ORDER BY id
+    `,
+    [effectiveJobId, requestedBranchIds]
+  );
+
+  if (mappingsResult.rows.length === 0) {
+    throw new AppError('No customer mappings found for the selected job', 404, 'NO_MAPPINGS_FOR_JOB');
+  }
+
+  const mappingRows = mappingsResult.rows.map((row) => ({
+    customerId: String(row.customer_id || ''),
+    customerLat: Number(row.customer_lat),
+    customerLon: Number(row.customer_lon),
+    pocketId: String(row.pocket_id || ''),
+    assignedBranchId: String(row.nearest_branch_id || '').trim(),
+    existingBranchId: String(row.existing_branch_id || '').trim(),
+    uploadedBranchCode: row.uploaded_branch_code === null || row.uploaded_branch_code === undefined
+      ? null
+      : String(row.uploaded_branch_code).trim() || null
+  }));
+
+  const pocketDataById = new Map();
+  mappingRows.forEach((mapping) => {
+    if (!mapping.pocketId) {
+      return;
+    }
+
+    if (!pocketDataById.has(mapping.pocketId)) {
+      pocketDataById.set(mapping.pocketId, {
+        pocketId: mapping.pocketId,
+        customers: [],
+        center: null
+      });
+    }
+
+    pocketDataById.get(mapping.pocketId).customers.push(mapping);
+  });
+
+  if (mode !== TERRITORY_VISUALIZATION_MODE.EXISTING_CUSTOMERS) {
+    const configResult = await query('SELECT * FROM config WHERE id = 1');
+    if (configResult.rows.length === 0) {
+      throw new AppError('System configuration not found', 500, 'CONFIG_NOT_FOUND');
+    }
+
+    const config = {
+      originLat: configResult.rows[0].origin_lat,
+      originLon: configResult.rows[0].origin_lon,
+      alphabet: configResult.rows[0].alphabet
+    };
+
+    pocketDataById.forEach((pocketData) => {
+      pocketData.center = getPocketCenterSafely(pocketData.pocketId, config);
+    });
+  }
+
+  const requestedBranchIdSet = new Set(requestedBranchIds);
+  const scopedNearestBranchRows = branchRows.filter((branch) => requestedBranchIdSet.has(branch.id));
+  const shouldCollectDetailedArtifacts = (branchId) => requestedBranchIdSet.has(branchId);
+
+  const customerCountByBranchId = new Map();
+  const pointFeatures = [];
+  const customerFeatures = [];
+  const customerAssignments = [];
+  const sourceType = mode === TERRITORY_VISUALIZATION_MODE.EXISTING_CUSTOMERS ? 'customers' : 'pockets';
+
+  const addCustomerAssignment = (mapping, branchId, assignmentSource) => {
+    if (!branchId || !branchById.has(branchId)) {
+      return;
+    }
+
+    incrementCount(customerCountByBranchId, branchId, 1);
+    if (!shouldCollectDetailedArtifacts(branchId)) {
+      return;
+    }
+
+    customerAssignments.push({
+      branchId,
+      customerId: mapping.customerId,
+      pocketId: mapping.pocketId,
+      customerLat: mapping.customerLat,
+      customerLon: mapping.customerLon,
+      assignmentSource
+    });
+
+    if (!Number.isFinite(mapping.customerLat) || !Number.isFinite(mapping.customerLon)) {
+      return;
+    }
+
+    customerFeatures.push({
+      type: 'Feature',
+      properties: {
+        branchId,
+        customerId: mapping.customerId,
+        pocketId: mapping.pocketId,
+        pointType: 'customer',
+        assignmentSource,
+        existingBranchId: mapping.existingBranchId || null,
+        nearestBranchId: mapping.assignedBranchId || null
+      },
+      geometry: {
+        type: 'Point',
+        coordinates: [mapping.customerLon, mapping.customerLat]
+      }
+    });
+  };
+
+  if (mode === TERRITORY_VISUALIZATION_MODE.EXISTING_CUSTOMERS) {
+    mappingRows.forEach((mapping) => {
+      addCustomerAssignment(mapping, mapping.existingBranchId, 'existing_mapping');
+    });
+
+    pointFeatures.push(...customerFeatures);
+  } else if (mode === TERRITORY_VISUALIZATION_MODE.NEAREST_POCKETS) {
+    pocketDataById.forEach((pocketData) => {
+      if (!pocketData.center || pocketData.customers.length === 0) {
+        return;
+      }
+
+      const nearestBranch = findNearestBranchForCoordinates(
+        pocketData.center.lat,
+        pocketData.center.lon,
+        scopedNearestBranchRows
+      );
+      if (!nearestBranch) {
+        return;
+      }
+
+      pocketData.customers.forEach((mapping) => {
+        addCustomerAssignment(mapping, nearestBranch.id, 'nearest_pocket');
+      });
+
+      if (shouldCollectDetailedArtifacts(nearestBranch.id)) {
+        pointFeatures.push({
+          type: 'Feature',
+          properties: {
+            branchId: nearestBranch.id,
+            pocketId: pocketData.pocketId,
+            customerCount: pocketData.customers.length,
+            pointType: 'pocket_center',
+            mappingMode: TERRITORY_VISUALIZATION_MODE.NEAREST_POCKETS
+          },
+          geometry: {
+            type: 'Point',
+            coordinates: [pocketData.center.lon, pocketData.center.lat]
+          }
+        });
+      }
+    });
+  } else {
+    pocketDataById.forEach((pocketData) => {
+      if (pocketData.customers.length === 0) {
+        return;
+      }
+
+      const voteCounter = new Map();
+      pocketData.customers.forEach((mapping) => {
+        if (mapping.existingBranchId && branchById.has(mapping.existingBranchId)) {
+          incrementCount(voteCounter, mapping.existingBranchId, 1);
+        }
+      });
+
+      let selectedBranchId = findPreferredBranchByVotes(voteCounter);
+      let assignmentSource = voteCounter.size > 0 ? 'customer_availability' : 'nearest_fallback';
+
+      if (!selectedBranchId) {
+        if (!pocketData.center) {
+          return;
+        }
+
+        const nearestBranch = findNearestBranchForCoordinates(
+          pocketData.center.lat,
+          pocketData.center.lon,
+          scopedNearestBranchRows
+        );
+        if (!nearestBranch) {
+          return;
+        }
+
+        selectedBranchId = nearestBranch.id;
+        assignmentSource = 'nearest_fallback';
+      }
+
+      pocketData.customers.forEach((mapping) => {
+        addCustomerAssignment(mapping, selectedBranchId, assignmentSource);
+      });
+
+      if (pocketData.center && shouldCollectDetailedArtifacts(selectedBranchId)) {
+        pointFeatures.push({
+          type: 'Feature',
+          properties: {
+            branchId: selectedBranchId,
+            pocketId: pocketData.pocketId,
+            customerCount: pocketData.customers.length,
+            pointType: 'pocket_center',
+            mappingMode: TERRITORY_VISUALIZATION_MODE.CUSTOMER_AVAILABILITY,
+            assignmentSource
+          },
+          geometry: {
+            type: 'Point',
+            coordinates: [pocketData.center.lon, pocketData.center.lat]
+          }
+        });
+      }
+    });
+  }
+
+  const selectedBranches = requestedBranchIds
+    .map((branchId) => branchById.get(branchId))
+    .filter(Boolean);
+
+  if (selectedBranches.length === 0) {
+    throw new AppError('No valid branches selected for visualization', 400, 'INVALID_BRANCH_SELECTION');
+  }
+
+  const availableBranches = selectedBranches
+    .map((branch) => ({
+      id: branch.id,
+      city: branch.city,
+      lat: branch.lat,
+      lon: branch.lon,
+      customerCount: Number(customerCountByBranchId.get(branch.id) || 0)
+    }))
+    .sort((a, b) => (b.customerCount - a.customerCount) || a.id.localeCompare(b.id));
+
+  const selectedBranchIdSet = new Set(requestedBranchIds);
+  const filteredPointFeatures = pointFeatures.filter((feature) =>
+    selectedBranchIdSet.has(String(feature.properties.branchId))
+  );
+  const filteredCustomerFeatures = customerFeatures.filter((feature) =>
+    selectedBranchIdSet.has(String(feature.properties.branchId))
+  );
+  const originalCustomerFeatures = mappingRows
+    .filter((mapping) => selectedBranchIdSet.has(mapping.existingBranchId))
+    .filter((mapping) => Number.isFinite(mapping.customerLat) && Number.isFinite(mapping.customerLon))
+    .map((mapping) => ({
+      type: 'Feature',
+      properties: {
+        branchId: mapping.existingBranchId,
+        customerId: mapping.customerId,
+        pocketId: mapping.pocketId,
+        pointType: 'customer_original',
+        assignmentSource: 'uploaded_branch',
+        existingBranchId: mapping.existingBranchId || null,
+        nearestBranchId: mapping.assignedBranchId || null
+      },
+      geometry: {
+        type: 'Point',
+        coordinates: [mapping.customerLon, mapping.customerLat]
+      }
+    }));
+
+  const activeCustomerFeatures = normalizedCustomerView === CUSTOMER_VISUALIZATION_VIEW.ORIGINAL_CUSTOMERS
+    ? originalCustomerFeatures
+    : filteredCustomerFeatures;
+
+  const coverageByBranch = await buildCustomerCoverageByBranch(
+    customerAssignments.filter((assignment) =>
+      selectedBranchIdSet.has(assignment.branchId)
+    )
+  );
+  const singleBranchCoverageAvailable = selectedBranches.length === 1
+    && coverageByBranch.some((coverageEntry) => (
+      coverageEntry
+      && coverageEntry.branchId === selectedBranches[0].id
+      && coverageEntry.geometry
+    ));
+
+  let indiaStateBoundsGeoJson = null;
+  if (!singleBranchCoverageAvailable) {
+    try {
+      indiaStateBoundsGeoJson = loadIndiaStateBoundsGeoJson();
+    } catch (error) {
+      logger.error('Failed to load state boundary GeoJSON for visualization', {
+        error: error.message
+      });
+      throw new AppError('Failed to load state boundary data', 500, 'STATE_BOUNDARY_LOAD_FAILED');
+    }
+  }
+
+  const territoryRows = await buildVoronoiTerritoriesForSelectedBranches(
+    selectedBranches,
+    indiaStateBoundsGeoJson,
+    coverageByBranch,
+    { coverageStyle: normalizedCoverageStyle }
+  );
+  const territories = buildTerritoryFeatureCollection(territoryRows, customerCountByBranchId);
+  const branches = {
+    type: 'FeatureCollection',
+    features: selectedBranches.map((branch) => buildBranchPointFeature(
+      branch,
+      Number(customerCountByBranchId.get(branch.id) || 0)
+    ))
+  };
+  const points = {
+    type: 'FeatureCollection',
+    features: filteredPointFeatures
+  };
+  const customers = {
+    type: 'FeatureCollection',
+    features: activeCustomerFeatures
+  };
+  const customerViews = {
+    selected_pockets: {
+      type: 'FeatureCollection',
+      features: filteredCustomerFeatures
+    },
+    original_customers: {
+      type: 'FeatureCollection',
+      features: originalCustomerFeatures
+    }
+  };
+
+  return {
+    jobId: effectiveJobId,
+    mode,
+    modeLabel: getTerritoryModeLabel(mode),
+    coverageStyle: normalizedCoverageStyle,
+    customerView: normalizedCustomerView,
+    maxSelectableBranches: MAX_VISUALIZATION_BRANCHES,
+    selectedBranchIds: requestedBranchIds,
+    availableBranches: availableBranches.map((branch) => ({
+      id: branch.id,
+      city: branch.city,
+      customerCount: branch.customerCount
+    })),
+    summary: {
+      territories: territories.features.length,
+      branches: branches.features.length,
+      points: points.features.length,
+      customers: mappingRows.length,
+      customersVisible: customers.features.length,
+      selectedPocketCustomersVisible: filteredCustomerFeatures.length,
+      originalCustomersVisible: originalCustomerFeatures.length,
+      pockets: pocketDataById.size,
+      sourceType
+    },
+    territories,
+    branches,
+    points,
+    customers,
+    customerViews
+  };
+};
+
+const persistBranchCoverageDatasets = async (options = {}) => {
+  const latestJobId = options.latestJobId || await resolveLatestMappingsJobId();
+  if (!latestJobId) {
+    throw new AppError(
+      'No customer mappings available. Upload/process customer mappings before refreshing branch coverage datasets.',
+      404,
+      'NO_MAPPINGS'
+    );
+  }
+
+  const activeBranchesResult = await query(
+    'SELECT id, city, lat, lon FROM branches ORDER BY id'
+  );
+  const allBranches = activeBranchesResult.rows
+    .map((row) => ({
+      id: String(row.id || '').trim(),
+      city: String(row.city || '').trim(),
+      lat: Number(row.lat),
+      lon: Number(row.lon)
+    }))
+    .filter((row) => row.id && Number.isFinite(row.lat) && Number.isFinite(row.lon));
+
+  if (allBranches.length === 0) {
+    return {
+      generatedAt: new Date().toISOString(),
+      latestJobId,
+      totalBranches: 0,
+      refreshedBranches: 0,
+      basisTypes: []
+    };
+  }
+
+  const requestedBranchIds = Array.isArray(options.branchIds) && options.branchIds.length > 0
+    ? parseBranchIds(options.branchIds)
+    : [];
+  const persistBranchIds = requestedBranchIds.length > 0
+    ? requestedBranchIds
+    : allBranches.map((branch) => branch.id);
+  const requestedBasisTypes = Array.isArray(options.basisTypes) && options.basisTypes.length > 0
+    ? parseBranchCoverageBasisTypes(options.basisTypes)
+    : [];
+  const basisConfigsToRefresh = requestedBasisTypes.length > 0
+    ? BRANCH_COVERAGE_BASIS_CONFIGS.filter((configEntry) => requestedBasisTypes.includes(configEntry.basisType))
+    : BRANCH_COVERAGE_BASIS_CONFIGS;
+  const persistBranchIdSet = new Set(persistBranchIds);
+  const invalidBranchIds = persistBranchIds.filter((branchId) => !allBranches.some((branch) => branch.id === branchId));
+  if (invalidBranchIds.length > 0) {
+    throw new AppError(
+      `Unknown branch ID(s): ${invalidBranchIds.join(', ')}`,
+      400,
+      'INVALID_BRANCH_SELECTION'
+    );
+  }
+
+  const allBranchIds = allBranches.map((branch) => branch.id);
+  const refreshSummary = [];
+
+  for (const basisConfig of basisConfigsToRefresh) {
+    const payload = basisConfig.basisType === BRANCH_COVERAGE_BASIS.CLOSEST_BRANCH
+      ? await buildClosestBranchGridCoverageData({
+        requestedBranchIds: allBranchIds,
+        requestedJobId: latestJobId,
+        customerView: basisConfig.customerView,
+        allocationScope: TERRITORY_ALLOCATION_SCOPE.FULL_NETWORK,
+        gridSizeKm: DEFAULT_GRID_SIZE_KM,
+        mergeAdjacent: true
+      })
+      : await buildTerritoryVisualizationData({
+        mode: basisConfig.mode,
+        customerView: basisConfig.customerView,
+        coverageStyle: basisConfig.coverageStyle,
+        requestedBranchIds: allBranchIds,
+        requestedJobId: latestJobId
+      });
+
+    const territoryFeaturesByBranchId = collectFeaturesByBranchId(payload.territories);
+    const territoryCustomersByBranchId = collectFeaturesByBranchId(payload.customerViews?.selected_pockets);
+    const originalCustomersByBranchId = collectFeaturesByBranchId(payload.customerViews?.original_customers);
+    const branchFeatureByBranchId = collectFeaturesByBranchId(payload.branches);
+    const branchSummaryById = new Map(
+      (payload.availableBranches || []).map((branch) => [
+        String(branch.id || '').trim(),
+        branch
+      ])
+    );
+
+    await transaction(async (client) => {
+      for (const branch of allBranches) {
+        if (!persistBranchIdSet.has(branch.id)) {
+          continue;
+        }
+
+        const territoryGeoJson = {
+          type: 'FeatureCollection',
+          features: territoryFeaturesByBranchId.get(branch.id) || []
+        };
+        const territoryCustomersGeoJson = {
+          type: 'FeatureCollection',
+          features: territoryCustomersByBranchId.get(branch.id) || []
+        };
+        const originalCustomersGeoJson = {
+          type: 'FeatureCollection',
+          features: originalCustomersByBranchId.get(branch.id) || []
+        };
+        const branchFeatureGeoJson = {
+          type: 'FeatureCollection',
+          features: branchFeatureByBranchId.get(branch.id) || [
+            buildBranchPointFeature(
+              branch,
+              Number(branchSummaryById.get(branch.id)?.customerCount || 0)
+            )
+          ]
+        };
+        const metrics = buildBranchCoverageMetricsFromCustomers(
+          territoryCustomersGeoJson.features,
+          branchFeatureGeoJson.features[0] || null
+        );
+
+        await client.query(
+          `
+            INSERT INTO ${BRANCH_COVERAGE_DATASET_TABLE} (
+              branch_id,
+              basis_type,
+              source_mode,
+              coverage_style,
+              source_job_id,
+              status,
+              error_message,
+              native_customer_count,
+              catchment_customer_count,
+              total_customer_count,
+              farthest_customer_distance_km,
+              territory_geojson,
+              territory_customers_geojson,
+              original_customers_geojson,
+              branch_feature_geojson,
+              metadata,
+              computed_at
+            ) VALUES (
+              $1, $2, $3, $4, $5, $6, NULL, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb, CURRENT_TIMESTAMP
+            )
+            ON CONFLICT (branch_id, basis_type)
+            DO UPDATE SET
+              source_mode = EXCLUDED.source_mode,
+              coverage_style = EXCLUDED.coverage_style,
+              source_job_id = EXCLUDED.source_job_id,
+              status = EXCLUDED.status,
+              error_message = NULL,
+              native_customer_count = EXCLUDED.native_customer_count,
+              catchment_customer_count = EXCLUDED.catchment_customer_count,
+              total_customer_count = EXCLUDED.total_customer_count,
+              farthest_customer_distance_km = EXCLUDED.farthest_customer_distance_km,
+              territory_geojson = EXCLUDED.territory_geojson,
+              territory_customers_geojson = EXCLUDED.territory_customers_geojson,
+              original_customers_geojson = EXCLUDED.original_customers_geojson,
+              branch_feature_geojson = EXCLUDED.branch_feature_geojson,
+              metadata = EXCLUDED.metadata,
+              computed_at = CURRENT_TIMESTAMP
+          `,
+          [
+            branch.id,
+            basisConfig.basisType,
+            basisConfig.mode,
+            basisConfig.coverageStyle,
+            latestJobId,
+            BRANCH_COVERAGE_DATASET_STATUS.READY,
+            metrics.nativeCustomerCount,
+            metrics.catchmentCustomerCount,
+            metrics.totalCustomerCount,
+            Number(metrics.farthestCustomerDistanceKm.toFixed(2)),
+            JSON.stringify(territoryGeoJson),
+            JSON.stringify(territoryCustomersGeoJson),
+            JSON.stringify(originalCustomersGeoJson),
+            JSON.stringify(branchFeatureGeoJson),
+            JSON.stringify({
+              modeLabel: payload.modeLabel,
+              sourceType: payload.summary?.sourceType || null,
+              territories: Array.isArray(territoryGeoJson.features) ? territoryGeoJson.features.length : 0,
+              allocationMode: payload.allocationMode || TERRITORY_ALLOCATION_SCOPE.FULL_NETWORK,
+              stats: payload.stats || null,
+              warnings: payload.warnings || []
+            })
+          ]
+        );
+      }
+    });
+
+    refreshSummary.push({
+      basisType: basisConfig.basisType,
+      refreshedBranches: persistBranchIds.length
+    });
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    latestJobId,
+    totalBranches: allBranches.length,
+    refreshedBranches: persistBranchIds.length,
+    basisTypes: refreshSummary
+  };
+};
+
+const resolvePersistedBranchCoveragePayload = async ({
+  mode,
+  customerView,
+  coverageStyle,
+  requestedBranchIds
+}) => {
+  const basisType = resolveBranchCoverageBasisType(mode, coverageStyle);
+  if (!basisType) {
+    throw new AppError(
+      'Unsupported territory basis for persisted branch coverage.',
+      400,
+      'UNSUPPORTED_BRANCH_COVERAGE_BASIS'
+    );
+  }
+
+  const latestJobId = await resolveLatestMappingsJobId();
+  const branchResult = await query(
+    `
+      SELECT id, city, lat, lon, updated_at
+      FROM branches
+      WHERE id = ANY($1::text[])
+      ORDER BY id
+    `,
+    [requestedBranchIds]
+  );
+  const selectedBranches = branchResult.rows.map((row) => ({
+    id: String(row.id || '').trim(),
+    city: String(row.city || '').trim(),
+    lat: Number(row.lat),
+    lon: Number(row.lon),
+    updatedAt: row.updated_at || null
+  }));
+
+  if (selectedBranches.length === 0) {
+    throw new AppError('No valid branches selected for visualization', 400, 'INVALID_BRANCH_SELECTION');
+  }
+
+  const missingRequestedBranchIds = requestedBranchIds.filter(
+    (branchId) => !selectedBranches.some((branch) => branch.id === branchId)
+  );
+  if (missingRequestedBranchIds.length > 0) {
+    throw new AppError(
+      `Unknown branch ID(s): ${missingRequestedBranchIds.join(', ')}`,
+      400,
+      'INVALID_BRANCH_SELECTION'
+    );
+  }
+
+  const readDatasetRows = async () => {
+    const datasetResult = await query(
+      `
+        SELECT
+          branch_id,
+          basis_type,
+          source_mode,
+          coverage_style,
+          source_job_id,
+          status,
+          native_customer_count,
+          catchment_customer_count,
+          total_customer_count,
+          farthest_customer_distance_km,
+          territory_geojson,
+          territory_customers_geojson,
+          original_customers_geojson,
+          branch_feature_geojson,
+          metadata,
+          computed_at,
+          updated_at
+        FROM ${BRANCH_COVERAGE_DATASET_TABLE}
+        WHERE basis_type = $1
+          AND branch_id = ANY($2::text[])
+      `,
+      [basisType, requestedBranchIds]
+    );
+
+    return datasetResult.rows;
+  };
+
+  let datasetRows = await readDatasetRows();
+  const datasetByBranchId = new Map(datasetRows.map((row) => [String(row.branch_id || '').trim(), row]));
+  const staleOrMissingBranchIds = selectedBranches
+    .filter((branch) => {
+      const datasetRow = datasetByBranchId.get(branch.id);
+      if (!datasetRow) {
+        return true;
+      }
+
+      if (String(datasetRow.status || '') !== BRANCH_COVERAGE_DATASET_STATUS.READY) {
+        return true;
+      }
+
+      if (latestJobId && String(datasetRow.source_job_id || '') !== String(latestJobId)) {
+        return true;
+      }
+
+      const computedAt = datasetRow.computed_at ? new Date(datasetRow.computed_at) : null;
+      const branchUpdatedAt = branch.updatedAt ? new Date(branch.updatedAt) : null;
+      if (
+        computedAt
+        && branchUpdatedAt
+        && !Number.isNaN(computedAt.getTime())
+        && !Number.isNaN(branchUpdatedAt.getTime())
+        && computedAt.getTime() < branchUpdatedAt.getTime()
+      ) {
+        return true;
+      }
+
+      return false;
+    })
+    .map((branch) => branch.id);
+
+  if (staleOrMissingBranchIds.length > 0) {
+    await persistBranchCoverageDatasets({
+      basisTypes: [basisType]
+    });
+    datasetRows = await readDatasetRows();
+  }
+
+  const refreshedDatasetByBranchId = new Map(datasetRows.map((row) => [String(row.branch_id || '').trim(), row]));
+  const territories = cloneEmptyFeatureCollection();
+  const branches = cloneEmptyFeatureCollection();
+  const selectedCustomers = cloneEmptyFeatureCollection();
+  const originalCustomers = cloneEmptyFeatureCollection();
+  const availableBranches = [];
+
+  selectedBranches.forEach((branch) => {
+    const datasetRow = refreshedDatasetByBranchId.get(branch.id);
+    const territoryGeoJson = normalizeFeatureCollection(datasetRow?.territory_geojson);
+    const territoryCustomersGeoJson = normalizeFeatureCollection(datasetRow?.territory_customers_geojson);
+    const originalCustomersGeoJson = normalizeFeatureCollection(datasetRow?.original_customers_geojson);
+    const branchFeatureGeoJson = normalizeFeatureCollection(datasetRow?.branch_feature_geojson);
+
+    territories.features.push(...territoryGeoJson.features);
+    selectedCustomers.features.push(...territoryCustomersGeoJson.features);
+    originalCustomers.features.push(...originalCustomersGeoJson.features);
+
+    if (branchFeatureGeoJson.features.length > 0) {
+      branches.features.push(...branchFeatureGeoJson.features);
+    } else {
+      branches.features.push(buildBranchPointFeature(
+        branch,
+        Number(datasetRow?.total_customer_count || 0)
+      ));
+    }
+
+    availableBranches.push({
+      id: branch.id,
+      city: branch.city,
+      customerCount: Number(datasetRow?.total_customer_count || 0)
+    });
+  });
+
+  const customers = customerView === CUSTOMER_VISUALIZATION_VIEW.ORIGINAL_CUSTOMERS
+    ? originalCustomers
+    : selectedCustomers;
+  const basisConfig = getBranchCoverageBasisConfig(basisType);
+  const metadataRows = datasetRows
+    .map((row) => (row && typeof row.metadata === 'object' ? row.metadata : null))
+    .filter(Boolean);
+  const metadataStats = metadataRows.find((entry) => entry.stats && typeof entry.stats === 'object')?.stats || null;
+  const warnings = metadataRows.flatMap((entry) => (
+    Array.isArray(entry.warnings)
+      ? entry.warnings.map((warning) => String(warning || '').trim()).filter(Boolean)
+      : []
+  ));
+  if (metadataStats) {
+    assertValidAllocationDiagnostics({
+      candidateBranchIds: metadataStats.candidate_branch_ids,
+      stats: metadataStats
+    });
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    jobId: latestJobId || null,
+    mode,
+    modeLabel: getTerritoryModeLabel(mode),
+    coverageStyle,
+    customerView,
+    maxSelectableBranches: MAX_VISUALIZATION_BRANCHES,
+    selectedBranchIds: requestedBranchIds,
+    availableBranches,
+    summary: {
+      territories: territories.features.length,
+      branches: branches.features.length,
+      points: 0,
+      customers: selectedCustomers.features.length,
+      customersVisible: customers.features.length,
+      selectedPocketCustomersVisible: selectedCustomers.features.length,
+      originalCustomersVisible: originalCustomers.features.length,
+      pockets: Number(metadataStats?.total_boxes || 0),
+      sourceType: basisConfig?.mode === TERRITORY_VISUALIZATION_MODE.EXISTING_CUSTOMERS ? 'customers' : 'pockets'
+    },
+    territories,
+    branches,
+    points: cloneEmptyFeatureCollection(),
+    customers,
+    customerViews: {
+      selected_pockets: selectedCustomers,
+      original_customers: originalCustomers
+    },
+    stats: metadataStats,
+    warnings
+  };
+};
+
 // Process jobs (Node.js worker for small files)
 batchQueue.process(async (job) => {
-  const { jobId, data, config, fileName, filePath, replaceExisting = false } = job.data;
+  const {
+    jobId,
+    data,
+    config,
+    fileName,
+    filePath,
+    replaceExisting = false,
+    confirmWipeAll = false,
+    replaceScopeBranchIds = []
+  } = job.data;
   let rows = data;
 
   if (!rows) {
@@ -3072,6 +4755,7 @@ batchQueue.process(async (job) => {
   const mappings = []; // Collect mappings for persistence
   const pocketCenters = new Map(); // Cache pocket centers to avoid recalculation
   const branchLookupForExisting = new Map();
+  const branchRows = [];
   // --- ORIGINAL BACKUP ---
   // [IST 2026-03-09] fallback metric had been disabled with the pocket logic.
   // let fallbackPocketConfigHits = 0;
@@ -3090,6 +4774,9 @@ batchQueue.process(async (job) => {
       };
       branchLookupForExisting.set(id, payload);
       branchLookupForExisting.set(id.toUpperCase(), payload);
+      if (Number.isFinite(payload.lat) && Number.isFinite(payload.lon)) {
+        branchRows.push(payload);
+      }
 
       // Sequence guard: branch pocket references are resolved before processing customers.
       if (Number.isFinite(payload.lat) && Number.isFinite(payload.lon)) {
@@ -3116,8 +4803,15 @@ batchQueue.process(async (job) => {
       }
     });
 
+    if (branchRows.length === 0) {
+      throw new Error('No valid branch coordinates were found. Verify branch latitude and longitude values.');
+    }
+
     if (branchPocketCatalog.length === 0) {
-      throw new Error('No valid branch pocket mappings were generated. Verify branch coordinates and pocket origin configuration.');
+      logger.warn('Branch pocket catalog could not be precomputed; falling back to raw branch coordinates.', {
+        jobId,
+        branchCount: branchRows.length
+      });
     }
 
     for (let i = 0; i < rows.length; i++) {
@@ -3286,15 +4980,15 @@ batchQueue.process(async (job) => {
 
           const cachedPocket = pocketCenters.get(nearestPocket.pocketId);
           if (!cachedPocket.nearestBranch) {
-            cachedPocket.nearestBranch = findNearestBranchFromPocketCatalog(
+            cachedPocket.nearestBranch = findNearestBranchForCoordinates(
               nearestPocket.centerLat,
               nearestPocket.centerLon,
-              branchPocketCatalog
+              branchRows
             );
           }
 
-          const selectedBranchInfo = cachedPocket.nearestBranch;
-          if (!selectedBranchInfo || !selectedBranchInfo.branchId) {
+          const selectedBranch = cachedPocket.nearestBranch;
+          if (!selectedBranch || !selectedBranch.id) {
             logger.warn('No nearest branch resolved for mapped pocket', {
               pocketId: nearestPocket.pocketId,
               customerRow: i + 2
@@ -3317,20 +5011,43 @@ batchQueue.process(async (job) => {
               ? ''
               : String(customerIdRaw).trim();
           const customerId = normalizedCustomerId !== '' ? normalizedCustomerId : `CUST_${i + 1}`;
+          const customerBucketRaw = getFirstDefinedValue(row, [
+            'customer_bucket',
+            'Customer Bucket',
+            'CustomerBucket',
+            'customerBucket',
+            'bucket',
+            'Bucket',
+            'tag',
+            'Tag',
+            'customer_tag',
+            'Customer Tag',
+            'customerTag'
+          ]);
+          const customerBucket = customerBucketRaw === undefined || customerBucketRaw === null
+            ? null
+            : String(customerBucketRaw).trim() || null;
 
-          mappings.push({
-            customerId,
-            customerLat: lat,
-            customerLon: lon,
-            uploadedBranchCode: branchCode,
-            existingBranchId,
-            distanceCustomerToExistingBranch,
-            pocketId: nearestPocket.pocketId,
-            distanceCustomerToPocket: nearestPocket.distance,
-            nearestBranchId: selectedBranchInfo.branchId,
-            distancePocketToBranch: selectedBranchInfo.distance,
-            distanceCustomerToBranch: selectedBranchInfo.distance,
-          });
+          try {
+            mappings.push(buildCustomerPocketMappingRecord({
+              customerId,
+              customerLat: lat,
+              customerLon: lon,
+              uploadedBranchCode: branchCode,
+              existingBranchId,
+              distanceCustomerToExistingBranch,
+              nearestPocket,
+              selectedBranch,
+              customerBucket,
+            }));
+          } catch (mappingError) {
+            logger.warn(mappingError.message, {
+              pocketId: nearestPocket.pocketId,
+              customerRow: i + 2,
+              branchId: selectedBranch.id
+            });
+            continue;
+          }
         }
       } catch (error) {
         errors.push({ row: i + 2, error: error.message });
@@ -3451,7 +5168,7 @@ batchQueue.process(async (job) => {
       //   // Continue with Excel export even if persistence fails
       // }
       try {
-        logger.info('Starting mapping persistence (branch pockets resolved first)', {
+        logger.info('Starting mapping persistence (actual branch distances)', {
           jobId,
           mappingCount: mappings.length,
           fallbackPocketConfigHits,
@@ -3459,29 +5176,27 @@ batchQueue.process(async (job) => {
           branchPocketCount: branchPocketCatalog.length
         });
 
-        if (replaceExisting) {
-          const deleteMappingsResult = await query('DELETE FROM customer_pocket_mappings');
-          replacedMappingsCount = deleteMappingsResult.rowCount || 0;
-          logger.info('Cleared existing customer mappings before replacement upload', {
-            jobId,
-            deletedMappings: replacedMappingsCount
-          });
-        }
-
-        const saveResult = await mappingService.saveMappings(jobId, mappings);
+        const saveResult = await mappingService.saveMappings(jobId, mappings, {
+          replaceExisting: Boolean(replaceExisting),
+          wipeAll: Boolean(confirmWipeAll),
+          replaceScopeBranchIds: Array.isArray(replaceScopeBranchIds) ? replaceScopeBranchIds : []
+        });
         mappingsPersisted = saveResult.insertedCount;
+        replacedMappingsCount = Number(saveResult.replacedCount || 0);
 
         if (!saveResult.success) {
           logger.error('Mapping persistence had errors', {
             jobId,
             insertedCount: saveResult.insertedCount,
             totalMappings: mappings.length,
-            errors: saveResult.errors
+            errors: saveResult.errors,
+            replacedMappingsCount
           });
         } else {
           logger.info('Mapping persistence successful', {
             jobId,
-            insertedCount: saveResult.insertedCount
+            insertedCount: saveResult.insertedCount,
+            replacedMappingsCount
           });
         }
       } catch (error) {
@@ -3597,19 +5312,31 @@ batchQueue.on('failed', async (job, err) => {
  */
 router.post(
   '/encode',
+  requireRole('admin'),
   upload.single('file'),
   asyncHandler(async (req, res) => {
-    console.log("1. Route hit, file uploaded to disk:", req.file?.path);
-    
     if (!req.file) {
       throw new AppError('No file uploaded', 400, 'NO_FILE');
     }
 
-    const fileName = req.file.originalname;
-    const filePath = req.file.path;
+    const validation = await validateUploadedExcelFile(req.file);
+    const parsedRows = parseUploadWorkbookRows(req.file.buffer);
+    const scopedBranchIds = await resolveReferencedBranchIdsForRows(parsedRows);
     const fileSizeMB = req.file.size / (1024 * 1024);
     const replaceExisting = parseBooleanFlag(req.body?.replaceExisting, false);
-    
+    const confirmWipeAll = parseBooleanFlag(
+      req.body?.confirmWipeAll ?? req.query?.confirmWipeAll,
+      false
+    );
+
+    if (replaceExisting && !confirmWipeAll && scopedBranchIds.length === 0) {
+      throw new AppError(
+        'replaceExisting requires at least one resolvable branch reference in the upload, or confirmWipeAll=true.',
+        422,
+        'REPLACE_SCOPE_REQUIRED'
+      );
+    }
+
     // We cannot use xlsx.read() here because large files will crash the Node.js event loop.
     // Instead, we use file size as a fast, safe proxy for the Python worker threshold.
     // 0.5 MB is approximately 5000 rows of standard location data.
@@ -3624,26 +5351,33 @@ router.post(
     } : {};
 
     const jobId = uuidv4();
+    const persistedUpload = persistUploadedBufferToDisk({
+      buffer: req.file.buffer,
+      fileName: validation.sanitizedFileName,
+      jobId
+    });
+    const persistedFilePath = persistedUpload.filePath;
+    const persistedFileName = persistedUpload.fileName;
 
-    console.log("2. About to run DB insert...");
     // Create job in database (Setting total to 0, the worker will update it with exact count)
     await query(
       `INSERT INTO jobs (job_id, type, status, total, data)
        VALUES ($1, 'batch_encode', 'pending', 0, $2)`,
       [jobId, JSON.stringify({ 
-        fileName,
+        fileName: persistedFileName,
         replaceExisting,
+        confirmWipeAll,
+        replaceScopeBranchIds: scopedBranchIds,
         worker: usePythonWorker ? 'python' : 'nodejs'
       })]
     );
-    console.log("3. DB insert finished. About to push to Redis...");
 
     if (usePythonWorker) {
-      logger.info('Routing to Python worker (large file)', { jobId, fileSizeMB, fileName });
+      logger.info('Routing to Python worker (large file)', { jobId, fileSizeMB, fileName: persistedFileName });
 
       // Python worker runs in Docker/Linux in many deployments. Send basename so the worker
       // resolves against its UPLOAD_DIR mount instead of a host-absolute Windows path.
-      const pythonWorkerFilePath = path.basename(filePath);
+      const pythonWorkerFilePath = path.basename(persistedFilePath);
       // --- ORIGINAL BACKUP ---
       // const jobPayload = {
       //   jobId,
@@ -3652,14 +5386,16 @@ router.post(
       //   config,
       //   replaceExisting
       // };
-      const jobPayload = {
-        jobId,
-        filePath: pythonWorkerFilePath,
-        originalFilePath: filePath,
-        fileName,
-        config,
-        replaceExisting
-      };
+        const jobPayload = {
+          jobId,
+          filePath: pythonWorkerFilePath,
+          originalFilePath: persistedFilePath,
+          fileName: persistedFileName,
+          config,
+          replaceExisting,
+          confirmWipeAll,
+          replaceScopeBranchIds: scopedBranchIds
+        };
       
       // CRITICAL FIX: Use Bull's existing Redis client instead of separate pythonRedisClient
       // This avoids the "ready" status issue that was causing uploads to hang
@@ -3669,18 +5405,17 @@ router.post(
           10000,
           'Timed out while queueing Python job'
         );
-        console.log("4. Raw Redis push finished using Bull's client.");
         logger.info('Python job queued successfully', { jobId });
       } catch (err) {
         logger.error('Failed to queue Python job', { error: err.message, stack: err.stack, jobId });
         
         // Clean up uploaded file on error
-        if (fs.existsSync(filePath)) {
+        if (fs.existsSync(persistedFilePath)) {
           try {
-            fs.unlinkSync(filePath);
-            logger.info('Cleaned up uploaded file after Redis error', { jobId, filePath });
+            fs.unlinkSync(persistedFilePath);
+            logger.info('Cleaned up uploaded file after Redis error', { jobId, filePath: persistedFilePath });
           } catch (cleanupErr) {
-            logger.warn('Failed to clean up file after Redis error', { jobId, filePath });
+            logger.warn('Failed to clean up file after Redis error', { jobId, filePath: persistedFilePath });
           }
         }
         
@@ -3696,13 +5431,16 @@ router.post(
       res.json({
         message: 'Large file uploaded successfully. Processing with optimized Python worker.',
         jobId,
-        fileName,
+        fileName: persistedFileName,
         replaceExisting,
+        confirmWipeAll,
+        replaceScopeBranchIds: scopedBranchIds,
+        rowCount: validation.rowCount,
         worker: 'python',
         statusUrl: `/api/v1/batch/status/${jobId}`,
       });
     } else {
-      logger.info('Routing to Node.js worker (small file)', { jobId, fileSizeMB, fileName });
+      logger.info('Routing to Node.js worker (small file)', { jobId, fileSizeMB, fileName: persistedFileName });
 
       // Queue file path for background parsing/processing to return response immediately.
       try {
@@ -3710,9 +5448,12 @@ router.post(
           batchQueue.add({
             jobId,
             config,
-            fileName,
-            filePath,
-            replaceExisting
+            fileName: persistedFileName,
+            filePath: persistedFilePath,
+            data: parsedRows.length <= 5000 ? parsedRows : undefined,
+            replaceExisting,
+            confirmWipeAll,
+            replaceScopeBranchIds: scopedBranchIds
           }),
           10000,
           'Timed out while queueing Node.js job'
@@ -3724,12 +5465,12 @@ router.post(
           jobId,
         });
 
-        if (fs.existsSync(filePath)) {
+        if (fs.existsSync(persistedFilePath)) {
           try {
-            fs.unlinkSync(filePath);
-            logger.info('Cleaned up uploaded file after queue error', { jobId, filePath });
+            fs.unlinkSync(persistedFilePath);
+            logger.info('Cleaned up uploaded file after queue error', { jobId, filePath: persistedFilePath });
           } catch (cleanupErr) {
-            logger.warn('Failed to clean up file after queue error', { jobId, filePath });
+            logger.warn('Failed to clean up file after queue error', { jobId, filePath: persistedFilePath });
           }
         }
 
@@ -3744,8 +5485,11 @@ router.post(
       res.status(202).json({
         message: 'File uploaded successfully. Processing in background.',
         jobId,
-        fileName,
+        fileName: persistedFileName,
         replaceExisting,
+        confirmWipeAll,
+        replaceScopeBranchIds: scopedBranchIds,
+        rowCount: validation.rowCount,
         worker: 'nodejs',
         statusUrl: `/api/v1/batch/status/${jobId}`,
       });
@@ -5376,14 +7120,20 @@ const materializeClockwiseContiguousAllocation = async (
       'ALLOCATION_EMPTY'
     );
   }
+  const assignmentLevelMeters = Number(allocationResult?.assignmentLevelMeters || 0)
+    || DEFAULT_PERSISTENT_TERRITORY_LEVEL_METERS;
+  const assignmentLevelKm = resolveEmployeeGridLevelKm(
+    assignmentLevelMeters,
+    DEFAULT_PERSISTENT_TERRITORY_LEVEL_METERS
+  );
 
   await client.query(
     `
       DELETE FROM ${EMPLOYEE_GRID_CELL_TABLE}
       WHERE branch_id = $1
-        AND COALESCE(level_km, 1) = 1
+        AND COALESCE(level_km, 1) = $2::integer
     `,
-    [branchId]
+    [branchId, assignmentLevelKm]
   );
 
   await client.query(
@@ -5399,7 +7149,7 @@ const materializeClockwiseContiguousAllocation = async (
       SELECT
         $1::varchar AS branch_id,
         assignments.pocket_id::varchar,
-        1::integer AS level_km,
+        $3::integer AS level_km,
         GREATEST(COALESCE(assignments.account_count, 0), 0)::integer AS account_count,
         assignments.employee_id::varchar AS assigned_employee_id,
         ST_GeometryN(
@@ -5422,8 +7172,8 @@ const materializeClockwiseContiguousAllocation = async (
         account_count integer,
         geometry jsonb
       )
-    `,
-    [branchId, JSON.stringify(assignmentRows)]
+      `,
+    [branchId, JSON.stringify(assignmentRows), assignmentLevelKm]
   );
 
   await client.query(
@@ -5442,9 +7192,9 @@ const materializeClockwiseContiguousAllocation = async (
         )::geometry(MULTIPOLYGON, 4326) AS geom
       FROM ${EMPLOYEE_GRID_CELL_TABLE} egc
       WHERE egc.branch_id = $1
-        AND COALESCE(egc.level_km, 1) = 1
+        AND COALESCE(egc.level_km, 1) = $2::integer
     `,
-    [branchId]
+    [branchId, assignmentLevelKm]
   );
 
   await client.query(
@@ -5504,6 +7254,18 @@ const materializeClockwiseContiguousAllocation = async (
     );
   }
 };
+
+/**
+ * POST /api/v1/batch/territory-allocate
+ * Run residence-seeded or bucket-aware territory allocation.
+ */
+router.post(
+  '/territory-allocate',
+  asyncHandler(async (req, res) => {
+    const payload = await transaction(async (client) => handleTerritoryAllocate(req, client));
+    res.json(payload);
+  })
+);
 
 /**
  * Shared handler for employee territory allocation.
@@ -6174,6 +7936,9 @@ const reassignEmployeeTerritoriesHandler = asyncHandler(async (req, res) => {
     const requestedLevelMeters = Number.isFinite(Number(requestedLevelMetersRaw))
       ? Math.round(Number(requestedLevelMetersRaw))
       : null;
+    const requestedLevelKm = requestedLevelMeters === null
+      ? null
+      : resolveEmployeeGridLevelKm(requestedLevelMeters, requestedLevelMeters);
 
     // --- ORIGINAL BACKUP ---
     // const reassignmentPayload = await transaction(async (client) => {
@@ -6199,7 +7964,7 @@ const reassignEmployeeTerritoriesHandler = asyncHandler(async (req, res) => {
             FROM requested_ids
             JOIN ${EMPLOYEE_GRID_CELL_TABLE} egc
               ON egc.branch_id = $1
-             AND COALESCE(egc.level_km, 1) = 1
+             AND ($6::integer IS NULL OR COALESCE(egc.level_km, 1) = $6::integer)
              AND (
                egc.id::text = requested_ids.requested_id
                OR egc.pocket_id::text = requested_ids.requested_id
@@ -6234,7 +7999,7 @@ const reassignEmployeeTerritoriesHandler = asyncHandler(async (req, res) => {
               updated_at = CURRENT_TIMESTAMP
             FROM resolved_codes
             WHERE egc.branch_id = $1
-              AND COALESCE(egc.level_km, 1) = 1
+              AND ($6::integer IS NULL OR COALESCE(egc.level_km, 1) = $6::integer)
               AND egc.pocket_id::text = resolved_codes.grid_code
             RETURNING egc.id::text AS grid_cell_id
           )
@@ -6243,7 +8008,14 @@ const reassignEmployeeTerritoriesHandler = asyncHandler(async (req, res) => {
             (SELECT COUNT(*)::int FROM upsert_employee_territories) AS updated_pocket_count,
             (SELECT COUNT(*)::int FROM update_legacy_grid_cells) AS updated_legacy_grid_rows
         `,
-        [branchId, Number(targetBranchEmployeeId), gridCellIds, targetEmployeeCode, requestedLevelMeters]
+        [
+          branchId,
+          Number(targetBranchEmployeeId),
+          gridCellIds,
+          targetEmployeeCode,
+          requestedLevelMeters,
+          requestedLevelKm
+        ]
       );
 
       const resolvedPocketCount = Number(reassignmentResult.rows[0]?.resolved_pocket_count || 0);
@@ -6261,11 +8033,12 @@ const reassignEmployeeTerritoriesHandler = asyncHandler(async (req, res) => {
       const levelResolutionResult = await client.query(
         `
           SELECT
-            COALESCE(MAX(level_m), $2::integer)::int AS level_m
+            COALESCE(MAX(level_m), COALESCE($3::integer, $2::integer))::int AS level_m
           FROM ${BRANCH_TERRITORY_TABLE}
           WHERE branch_id = $1
+            AND ($3::integer IS NULL OR level_m = $3::integer)
         `,
-        [branchId, DEFAULT_PERSISTENT_TERRITORY_LEVEL_METERS]
+        [branchId, DEFAULT_PERSISTENT_TERRITORY_LEVEL_METERS, requestedLevelMeters]
       );
       const assignmentLevelMeters = Number(
         levelResolutionResult.rows[0]?.level_m || DEFAULT_PERSISTENT_TERRITORY_LEVEL_METERS
@@ -6352,6 +8125,257 @@ router.post(
 );
 
 /**
+ * GET /api/v1/batch/territories/display
+ * Read canonical, persisted branch coverage datasets for display-toggle territory views.
+ */
+router.get(
+  '/territories/display',
+  asyncHandler(async (req, res) => {
+    const mode = parseTerritoryVisualizationMode(req.query.mode);
+    if (!mode) {
+      throw new AppError(
+        'Invalid mode. Use existing_customers, nearest_pockets, or customer_availability.',
+        400,
+        'INVALID_TERRITORY_MODE'
+      );
+    }
+
+    const customerView = parseCustomerVisualizationView(req.query.customerView);
+    if (!customerView) {
+      throw new AppError(
+        'Invalid customerView. Use selected_pockets or original_customers.',
+        400,
+        'INVALID_CUSTOMER_VIEW'
+      );
+    }
+
+    const coverageStyle = parseTerritoryCoverageStyle(req.query.coverageStyle);
+    if (!coverageStyle) {
+      throw new AppError(
+        'Invalid coverageStyle. Use overlap or exclusive.',
+        400,
+        'INVALID_COVERAGE_STYLE'
+      );
+    }
+
+    const requestedBranchIds = parseBranchIds(req.query.branchIds);
+    if (requestedBranchIds.length === 0) {
+      throw new AppError(
+        'Branch selection is required for selected-branch visualization mode.',
+        400,
+        'NO_BRANCH_SELECTION'
+      );
+    }
+    if (requestedBranchIds.length > MAX_VISUALIZATION_BRANCHES) {
+      throw new AppError(
+        `A maximum of ${MAX_VISUALIZATION_BRANCHES} branches can be selected.`,
+        400,
+        'MAX_BRANCH_SELECTION_EXCEEDED'
+      );
+    }
+
+    try {
+      const payload = await resolvePersistedBranchCoveragePayload({
+        mode,
+        customerView,
+        coverageStyle,
+        requestedBranchIds
+      });
+      res.json(payload);
+    } catch (error) {
+      if (error && (error.code === '42P01' || error.code === '42703')) {
+        throw new AppError(
+          'Persistent branch coverage tables are not initialized. Run migrations before using display-toggle territory views.',
+          503,
+          'BRANCH_COVERAGE_DATASETS_NOT_INITIALIZED'
+        );
+      }
+      throw error;
+    }
+  })
+);
+
+/**
+ * POST /api/v1/batch/territories/display/refresh
+ * Refresh canonical, persisted branch coverage datasets used by display-toggle territory views.
+ */
+router.post(
+  '/territories/display/refresh',
+  asyncHandler(async (req, res) => {
+    const requestedBranchIds = parseBranchIds(
+      req.body?.branchIds
+      ?? req.query?.branchIds
+    );
+    const requestedBasisTypes = parseBranchCoverageBasisTypes(
+      req.body?.basisTypes
+      ?? req.query?.basisTypes
+    );
+
+    try {
+      selectedOnlyAllocationCache.clear();
+      const payload = await persistBranchCoverageDatasets({
+        branchIds: requestedBranchIds.length > 0 ? requestedBranchIds : null,
+        basisTypes: requestedBasisTypes.length > 0 ? requestedBasisTypes : null
+      });
+      res.json(payload);
+    } catch (error) {
+      if (error && (error.code === '42P01' || error.code === '42703')) {
+        throw new AppError(
+          'Persistent branch coverage tables are not initialized. Run migrations before refreshing display-toggle territory views.',
+          503,
+          'BRANCH_COVERAGE_DATASETS_NOT_INITIALIZED'
+        );
+      }
+      throw error;
+    }
+  })
+);
+
+/**
+ * POST /api/v1/batch/territories/allocate
+ * Allocate exclusive 5km branch coverage boxes for Closest Branch in full-network or selected-only scope.
+ */
+router.post(
+  '/territories/allocate',
+  asyncHandler(async (req, res) => {
+    const allocationScope = parseTerritoryAllocationScope(req.body?.mode ?? req.query?.mode);
+    if (!allocationScope) {
+      throw new AppError(
+        'Invalid mode. Use full_network or selected_only.',
+        400,
+        'INVALID_ALLOCATION_SCOPE'
+      );
+    }
+
+    const requestedBranchIds = parseBranchIds(
+      req.body?.selected_branch_ids
+      ?? req.body?.selectedBranchIds
+      ?? req.query?.selected_branch_ids
+      ?? req.query?.selectedBranchIds
+    );
+    if (requestedBranchIds.length === 0) {
+      return res.json({
+        mode: allocationScope,
+        feature_collection: cloneEmptyFeatureCollection(),
+        branches: cloneEmptyFeatureCollection(),
+        customer_views: {
+          selected_pockets: cloneEmptyFeatureCollection(),
+          original_customers: cloneEmptyFeatureCollection()
+        },
+        stats: {
+          total_boxes: 0,
+          boxes_per_branch: {},
+          boxes_with_customers: 0,
+          boxes_fallback_proximity: 0,
+          compute_time_ms: 0
+        },
+        warnings: ['No branches selected.']
+      });
+    }
+    if (requestedBranchIds.length > MAX_VISUALIZATION_BRANCHES) {
+      throw new AppError(
+        `A maximum of ${MAX_VISUALIZATION_BRANCHES} branches can be selected.`,
+        400,
+        'MAX_BRANCH_SELECTION_EXCEEDED'
+      );
+    }
+
+    const customerView = parseCustomerVisualizationView(req.body?.customer_view ?? req.body?.customerView);
+    if (!customerView) {
+      throw new AppError(
+        'Invalid customerView. Use selected_pockets or original_customers.',
+        400,
+        'INVALID_CUSTOMER_VIEW'
+      );
+    }
+
+    const requestedGridSizeKm = Number(req.body?.grid_size_km ?? req.body?.gridSizeKm);
+    const gridSizeKm = Number.isFinite(requestedGridSizeKm) && requestedGridSizeKm > 0
+      ? requestedGridSizeKm
+      : DEFAULT_GRID_SIZE_KM;
+    const mergeAdjacent = parseBooleanFlag(
+      req.body?.merge_adjacent ?? req.body?.mergeAdjacent,
+      true
+    );
+    const requestedJobId = typeof req.body?.job_id === 'string' && req.body.job_id.trim()
+      ? req.body.job_id.trim()
+      : (typeof req.body?.jobId === 'string' && req.body.jobId.trim()
+        ? req.body.jobId.trim()
+        : null);
+
+    if (allocationScope === TERRITORY_ALLOCATION_SCOPE.FULL_NETWORK) {
+      const payload = await resolvePersistedBranchCoveragePayload({
+        mode: TERRITORY_VISUALIZATION_MODE.NEAREST_POCKETS,
+        customerView,
+        coverageStyle: TERRITORY_COVERAGE_STYLE.OVERLAP,
+        requestedBranchIds
+      });
+
+      return res.json({
+        mode: allocationScope,
+        feature_collection: payload.territories,
+        branches: payload.branches,
+        customer_views: payload.customerViews,
+        stats: payload.stats || {
+          total_boxes: Number(payload.summary?.pockets || 0),
+          boxes_per_branch: Object.fromEntries(
+            (payload.availableBranches || []).map((branch) => [branch.id, Number(branch.customerCount || 0)])
+          ),
+          boxes_with_customers: Number(payload.summary?.selectedPocketCustomersVisible || 0),
+          boxes_fallback_proximity: 0,
+          compute_time_ms: 0
+        },
+        warnings: payload.warnings || [],
+        payload: {
+          ...payload,
+          allocationMode: allocationScope
+        }
+      });
+    }
+
+    const cacheKey = JSON.stringify({
+      allocationScope,
+      requestedBranchIds: [...requestedBranchIds].sort(),
+      customerView,
+      gridSizeKm,
+      mergeAdjacent,
+      requestedJobId: requestedJobId || null
+    });
+    const cachedEntry = selectedOnlyAllocationCache.get(cacheKey);
+    if (
+      cachedEntry
+      && (Date.now() - cachedEntry.createdAt) < SELECTED_ONLY_ALLOCATION_CACHE_TTL_MS
+    ) {
+      return res.json(cachedEntry.payload);
+    }
+
+    const payload = await buildClosestBranchGridCoverageData({
+      requestedBranchIds,
+      requestedJobId,
+      customerView,
+      allocationScope,
+      gridSizeKm,
+      mergeAdjacent
+    });
+    const responsePayload = {
+      mode: allocationScope,
+      feature_collection: payload.territories,
+      branches: payload.branches,
+      customer_views: payload.customerViews,
+      stats: payload.stats,
+      warnings: payload.warnings || [],
+      payload
+    };
+    selectedOnlyAllocationCache.set(cacheKey, {
+      createdAt: Date.now(),
+      payload: responsePayload
+    });
+
+    res.json(responsePayload);
+  })
+);
+
+/**
  * GET /api/v1/batch/territories/visualization
  * Build clipped Voronoi territories for dashboard visualization.
  */
@@ -6373,6 +8397,15 @@ router.get(
         'Invalid customerView. Use selected_pockets or original_customers.',
         400,
         'INVALID_CUSTOMER_VIEW'
+      );
+    }
+
+    const coverageStyle = parseTerritoryCoverageStyle(req.query.coverageStyle);
+    if (!coverageStyle) {
+      throw new AppError(
+        'Invalid coverageStyle. Use overlap or exclusive.',
+        400,
+        'INVALID_COVERAGE_STYLE'
       );
     }
 
@@ -6687,17 +8720,6 @@ router.get(
       );
     }
 
-    const missingDataBranchIds = requestedBranchIds.filter(
-      (branchId) => !customerCountByBranchId.has(branchId)
-    );
-    if (missingDataBranchIds.length > 0) {
-      throw new AppError(
-        `Selected branch(es) have no data for ${getTerritoryModeLabel(mode)}: ${missingDataBranchIds.join(', ')}`,
-        400,
-        'BRANCHES_WITHOUT_DATA'
-      );
-    }
-
     const selectedBranchIds = requestedBranchIds.slice(0, MAX_VISUALIZATION_BRANCHES);
     const selectedBranches = selectedBranchIds
       .map((branchId) => branchById.get(branchId))
@@ -6779,7 +8801,8 @@ router.get(
     const territoryRows = await buildVoronoiTerritoriesForSelectedBranches(
       selectedBranches,
       indiaStateBoundsGeoJson,
-      coverageByBranch
+      coverageByBranch,
+      { coverageStyle }
     );
     const territories = buildTerritoryFeatureCollection(territoryRows, customerCountByBranchId);
     const branches = {
@@ -6805,10 +8828,21 @@ router.get(
       type: 'FeatureCollection',
       features: activeCustomerFeatures
     };
+    const customerViews = {
+      selected_pockets: {
+        type: 'FeatureCollection',
+        features: filteredCustomerFeatures
+      },
+      original_customers: {
+        type: 'FeatureCollection',
+        features: originalCustomerFeatures
+      }
+    };
     res.json({
       jobId: effectiveJobId,
       mode,
       modeLabel: getTerritoryModeLabel(mode),
+      coverageStyle,
       customerView,
       maxSelectableBranches: MAX_VISUALIZATION_BRANCHES,
       selectedBranchIds,
@@ -6831,7 +8865,8 @@ router.get(
       territories,
       branches,
       points,
-      customers
+      customers,
+      customerViews
     });
   })
 );
@@ -7735,6 +9770,8 @@ router.get(
       );
     }
 
+    const levelKm = resolveEmployeeGridLevelKm(levelMeters, levelMeters);
+
     const result = await query(
       `
         SELECT 
@@ -7747,6 +9784,7 @@ router.get(
         LEFT JOIN employee_grid_cells egc 
           ON gc.code = egc.pocket_id 
           AND egc.branch_id = $6::varchar
+          AND COALESCE(egc.level_km, 1) = $9::integer
         LEFT JOIN branch_employees be 
           ON egc.assigned_employee_id = be.employee_id 
           AND be.branch_id = $6::varchar
@@ -7756,7 +9794,7 @@ router.get(
         LIMIT $7::int
         OFFSET $8::int
       `,
-      [minLon, minLat, maxLon, maxLat, levelMeters, branchId, limit + 1, offset]
+      [minLon, minLat, maxLon, maxLat, levelMeters, branchId, limit + 1, offset, levelKm]
     );
 
     const hasMore = result.rows.length > limit;
@@ -7792,6 +9830,7 @@ router.get(
 module.exports = router;
 module.exports.allocationInternals = Object.freeze({
   acquireBranchTerritoryLock,
+  buildCustomerPocketMappingRecord,
   ensureTier2MasterTilesAroundBranches,
   ensureBranchCatchmentCoverage,
   clearBranchPersistentTerritoryState,

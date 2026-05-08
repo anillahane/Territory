@@ -65,7 +65,8 @@ describe('GET /api/v1/customer-mappings', () => {
 
     expect(mappingService.getMappings).toHaveBeenCalledWith(
       { jobId: null, customerId: '', pocketId: null },
-      { page: 1, pageSize: 100 }
+      { page: 1, pageSize: 100 },
+      { includeStats: true, includeBranchImpact: true }
     );
   });
 
@@ -81,7 +82,8 @@ describe('GET /api/v1/customer-mappings', () => {
 
     expect(mappingService.getMappings).toHaveBeenCalledWith(
       { jobId: '42', customerId: '', pocketId: null },
-      { page: 1, pageSize: 100 }
+      { page: 1, pageSize: 100 },
+      { includeStats: true, includeBranchImpact: true }
     );
   });
 
@@ -97,7 +99,8 @@ describe('GET /api/v1/customer-mappings', () => {
 
     expect(mappingService.getMappings).toHaveBeenCalledWith(
       { jobId: null, customerId: 'CUST123', pocketId: null },
-      { page: 1, pageSize: 100 }
+      { page: 1, pageSize: 100 },
+      { includeStats: true, includeBranchImpact: true }
     );
   });
 
@@ -113,7 +116,8 @@ describe('GET /api/v1/customer-mappings', () => {
 
     expect(mappingService.getMappings).toHaveBeenCalledWith(
       { jobId: null, customerId: '', pocketId: '999' },
-      { page: 1, pageSize: 100 }
+      { page: 1, pageSize: 100 },
+      { includeStats: true, includeBranchImpact: true }
     );
   });
 
@@ -129,7 +133,8 @@ describe('GET /api/v1/customer-mappings', () => {
 
     expect(mappingService.getMappings).toHaveBeenCalledWith(
       { jobId: '10', customerId: 'ABC', pocketId: '500' },
-      { page: 1, pageSize: 100 }
+      { page: 1, pageSize: 100 },
+      { includeStats: true, includeBranchImpact: true }
     );
   });
 
@@ -145,7 +150,8 @@ describe('GET /api/v1/customer-mappings', () => {
 
     expect(mappingService.getMappings).toHaveBeenCalledWith(
       { jobId: null, customerId: '', pocketId: null },
-      { page: 3, pageSize: 50 }
+      { page: 3, pageSize: 50 },
+      { includeStats: true, includeBranchImpact: true }
     );
   });
 
@@ -161,7 +167,8 @@ describe('GET /api/v1/customer-mappings', () => {
 
     expect(mappingService.getMappings).toHaveBeenCalledWith(
       { jobId: null, customerId: '', pocketId: null },
-      { page: 1, pageSize: 100 }
+      { page: 1, pageSize: 100 },
+      { includeStats: true, includeBranchImpact: true }
     );
   });
 
@@ -177,7 +184,25 @@ describe('GET /api/v1/customer-mappings', () => {
 
     expect(mappingService.getMappings).toHaveBeenCalledWith(
       { jobId: null, customerId: '', pocketId: null },
-      { page: 1, pageSize: 100 }
+      { page: 1, pageSize: 100 },
+      { includeStats: true, includeBranchImpact: true }
+    );
+  });
+
+  test('should allow callers to disable expensive stats payloads', async () => {
+    mappingService.getMappings.mockResolvedValue({
+      data: [],
+      pagination: { page: 1, pageSize: 100, totalRecords: 0, totalPages: 0 },
+    });
+
+    await request(app)
+      .get('/api/v1/customer-mappings?includeStats=false&includeBranchImpact=false')
+      .expect(200);
+
+    expect(mappingService.getMappings).toHaveBeenCalledWith(
+      { jobId: null, customerId: '', pocketId: null },
+      { page: 1, pageSize: 100 },
+      { includeStats: false, includeBranchImpact: false }
     );
   });
 

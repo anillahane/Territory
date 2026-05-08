@@ -75,6 +75,8 @@ export interface FetchMappingsParams {
   jobId?: string;
   customerId?: string;
   pocketId?: string;
+  includeStats?: boolean;
+  includeBranchImpact?: boolean;
 }
 
 export interface MappingsApiResponse {

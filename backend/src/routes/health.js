@@ -1,5 +1,5 @@
 const express = require('express');
-const { pool } = require('../config/database');
+const { pool, getPoolHealth } = require('../config/database');
 const logger = require('../config/logger');
 
 const router = express.Router();
@@ -17,6 +17,17 @@ router.get('/', async (req, res) => {
   };
 
   try {
+    const poolHealth = getPoolHealth();
+    if (!poolHealth.healthy) {
+      health.status = 'error';
+      health.database = {
+        status: 'unhealthy',
+        error: poolHealth.error
+      };
+      res.status(503).json(health);
+      return;
+    }
+
     // Check database connection
     const dbResult = await pool.query('SELECT NOW()');
     health.database = {

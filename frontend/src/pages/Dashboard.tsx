@@ -4,6 +4,7 @@ import {
   Box,
   Button,
   Checkbox,
+  Chip,
   CircularProgress,
   Divider,
   Drawer,
@@ -23,18 +24,18 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  TextField,
   Typography
 } from '@mui/material';
-import MenuIcon from '@mui/icons-material/Menu';
 import CloseIcon from '@mui/icons-material/Close';
 import {
   Map,
   NavigationControl,
+  Popup,
   ScaleControl,
   setWorkerUrl,
   type MapMouseEvent
 } from 'maplibre-gl';
+import turfArea from '@turf/area';
 import booleanIntersects from '@turf/boolean-intersects';
 import { polygon as turfPolygon } from '@turf/helpers';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -144,6 +145,7 @@ const TERRITORY_POINTS_SOURCE_ID = 'territory-points';
 const TERRITORY_POINTS_LAYER_ID = 'territory-points-layer';
 const TERRITORY_CUSTOMERS_SOURCE_ID = 'territory-customers';
 const TERRITORY_CUSTOMERS_LAYER_ID = 'territory-customers-layer';
+const TERRITORY_CUSTOMERS_IMPORTED_LAYER_ID = 'territory-customers-imported-layer';
 const TERRITORY_SELECTED_BRANCHES_SOURCE_ID = 'territory-selected-branches';
 const TERRITORY_SELECTED_BRANCHES_LAYER_ID = 'territory-selected-branches-layer';
 const GRID1_SOURCE_ID = 'grid1-assigned-pockets';
@@ -172,16 +174,30 @@ const DEFAULT_EMPLOYEE_COLOR_PALETTE = [
   '#0D9488'
 ];
 const DEFAULT_ASSIGNMENT_TOLERANCE = 0.10;
-const DEFAULT_EMPLOYEE_MAX_CAPACITY = 120;
-const MAX_TERRITORY_BRANCHES = 1;
-const TERRITORY_MODE_OPTIONS = [
-  { value: 'existing_customers', label: 'Existing Customer Mapped' },
-  { value: 'nearest_pockets', label: 'Branches -> Nearest Pockets' },
-  { value: 'customer_availability', label: 'Branches -> Customer Availability' }
+const MAX_TERRITORY_BRANCHES = 5;
+const TERRITORY_BRANCH_COLOR_PALETTE = [
+  '#EF4444',
+  '#3B82F6',
+  '#10B981',
+  '#F59E0B',
+  '#8B5CF6',
+  '#EC4899',
+  '#14B8A6',
+  '#F97316'
 ] as const;
-const TERRITORY_CUSTOMER_VIEW_OPTIONS = [
-  { value: 'selected_pockets', label: 'Customers From Selected Pockets' },
-  { value: 'original_customers', label: 'Original Customers' }
+const TERRITORY_MODE_OPTIONS = [
+  { value: 'existing_customers', label: 'Current Ownership' },
+  { value: 'nearest_pockets', label: 'Closest Branch' },
+  { value: 'customer_availability', label: 'Strongest Presence' }
+] as const;
+const TERRITORY_CUSTOMER_DOT_OPTIONS = [
+  { value: 'hidden', label: 'Hide' },
+  { value: 'original_customers', label: 'Original Customers' },
+  { value: 'selected_pockets', label: 'Territory Customers' }
+] as const;
+const CLOSEST_BRANCH_SCOPE_OPTIONS = [
+  { value: 'full_network', label: 'Full Network' },
+  { value: 'selected_only', label: 'Selected Branches Only' }
 ] as const;
 const ALLOCATION_LEVEL_OPTIONS = [
   { value: 5000, label: '5 km' },
@@ -189,12 +205,47 @@ const ALLOCATION_LEVEL_OPTIONS = [
 ] as const;
 
 type TerritoryMode = typeof TERRITORY_MODE_OPTIONS[number]['value'];
-type TerritoryCustomerView = typeof TERRITORY_CUSTOMER_VIEW_OPTIONS[number]['value'];
+type TerritoryCustomerView = 'selected_pockets' | 'original_customers';
+type TerritoryCustomerDotsMode = typeof TERRITORY_CUSTOMER_DOT_OPTIONS[number]['value'];
+type ClosestBranchScope = typeof CLOSEST_BRANCH_SCOPE_OPTIONS[number]['value'];
+type BranchCoverageBasisType =
+  | 'current_ownership'
+  | 'closest_branch'
+  | 'strongest_presence'
+  | 'mutually_exclusive';
 
 type TerritoryBranchOption = {
   id: string;
   city: string;
   customerCount: number;
+};
+
+type TerritoryFeatureProperties = GeoJSON.GeoJsonProperties & {
+  id?: string;
+  branchId?: string;
+  city?: string;
+  customerCount?: number;
+  branchColor?: string;
+  branchName?: string;
+  areaSqKm?: number;
+  nativeCustomerCount?: number;
+  catchmentCustomerCount?: number;
+  totalCustomerCount?: number;
+  farthestCustomerDistanceKm?: number;
+  existingBranchId?: string | null;
+  nearestBranchId?: string | null;
+  coverageStatus?: string | null;
+  coverageBasisType?: string | null;
+  sourceJobId?: string | null;
+  computedAt?: string | null;
+  isSelectedBranch?: boolean;
+};
+
+type BranchCoverageMetrics = {
+  nativeCustomerCount: number;
+  catchmentCustomerCount: number;
+  totalCustomerCount: number;
+  farthestCustomerDistanceKm: number;
 };
 
 type TerritorySummary = {
@@ -208,10 +259,19 @@ type TerritorySummary = {
   sourceType: string;
 };
 
+type TerritoryAllocationStats = {
+  total_boxes?: number;
+  boxes_per_branch?: Record<string, number>;
+  boxes_with_customers?: number;
+  boxes_fallback_proximity?: number;
+  compute_time_ms?: number;
+};
+
 type TerritoryVisualizationResponse = {
   mode: TerritoryMode;
   modeLabel: string;
   customerView?: TerritoryCustomerView;
+  allocationMode?: ClosestBranchScope;
   selectedBranchIds: string[];
   maxSelectableBranches: number;
   availableBranches: TerritoryBranchOption[];
@@ -220,6 +280,18 @@ type TerritoryVisualizationResponse = {
   branches: GeoJSON.FeatureCollection<GeoJSON.Point>;
   points: GeoJSON.FeatureCollection<GeoJSON.Point>;
   customers: GeoJSON.FeatureCollection<GeoJSON.Point>;
+  customerViews?: {
+    selected_pockets: GeoJSON.FeatureCollection<GeoJSON.Point>;
+    original_customers: GeoJSON.FeatureCollection<GeoJSON.Point>;
+  };
+  stats?: TerritoryAllocationStats | null;
+  warnings?: string[];
+};
+
+const TERRITORY_MODE_TO_COVERAGE_BASIS: Record<TerritoryMode, BranchCoverageBasisType> = {
+  existing_customers: 'current_ownership',
+  nearest_pockets: 'closest_branch',
+  customer_availability: 'strongest_presence'
 };
 
 type EmployeeTerritoryAssignmentResponse = {
@@ -243,7 +315,335 @@ type EmployeeTerritoryAssignmentResponse = {
   pockets: GeoJSON.FeatureCollection<GeoJSON.Polygon | GeoJSON.MultiPolygon>;
 };
 
+const buildTerritoryBranchName = (branchId: string, city?: string | null) => {
+  const trimmedBranchId = String(branchId || '').trim();
+  const trimmedCity = String(city || '').trim();
+  if (!trimmedBranchId) {
+    return trimmedCity;
+  }
+  return trimmedCity ? `${trimmedBranchId} - ${trimmedCity}` : trimmedBranchId;
+};
+
+const getTerritoryFeatureBranchId = (properties?: GeoJSON.GeoJsonProperties | null) =>
+  String(
+    properties?.id
+    ?? properties?.branch_id
+    ?? properties?.branchId
+    ?? properties?.existingBranchId
+    ?? properties?.nearestBranchId
+    ?? ''
+  ).trim();
+
+const buildTerritoryBranchColorMap = (branchIds: string[]) => {
+  const uniqueBranchIds = Array.from(
+    new Set(
+      branchIds
+        .map((branchId) => String(branchId || '').trim())
+        .filter((branchId) => branchId.length > 0)
+    )
+  );
+
+  return new globalThis.Map<string, string>(
+    uniqueBranchIds.map((branchId, index) => [
+      branchId,
+      TERRITORY_BRANCH_COLOR_PALETTE[index % TERRITORY_BRANCH_COLOR_PALETTE.length]
+    ])
+  );
+};
+
+const getTerritoryBranchColor = (
+  branchColorById: globalThis.Map<string, string>,
+  branchId: string
+) => branchColorById.get(String(branchId || '').trim()) || TERRITORY_BRANCH_COLOR_PALETTE[0];
+
+const coerceFiniteNumber = (value: unknown, fallback = 0) => {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : fallback;
+};
+
+const computeTerritoryAreaSqKm = (
+  feature: GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>
+) => {
+  try {
+    return Number((turfArea(feature) / 1_000_000).toFixed(2));
+  } catch {
+    return 0;
+  }
+};
+
+const escapeTooltipHtml = (value: unknown) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const buildTerritoryTooltipHtml = (properties?: TerritoryFeatureProperties | null) => {
+  const branchId = getTerritoryFeatureBranchId(properties);
+  const branchName = String(
+    properties?.branchName
+    || buildTerritoryBranchName(branchId, String(properties?.city || ''))
+  ).trim();
+  const nativeCustomerCount = Math.max(coerceFiniteNumber(properties?.nativeCustomerCount, 0), 0);
+  const catchmentCustomerCount = Math.max(coerceFiniteNumber(properties?.catchmentCustomerCount, 0), 0);
+  const totalCustomerCount = Math.max(
+    coerceFiniteNumber(
+      properties?.totalCustomerCount,
+      properties?.customerCount
+    ),
+    0
+  );
+  const areaSqKm = Math.max(coerceFiniteNumber(properties?.areaSqKm, 0), 0);
+  const farthestCustomerDistanceKm = Math.max(
+    coerceFiniteNumber(properties?.farthestCustomerDistanceKm, 0),
+    0
+  );
+
+  return `
+    <div style="min-width: 200px; padding: 12px 14px; border-radius: 12px; background: #172033; color: #E2E8F0; font-family: inherit; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.35);">
+      <div style="font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #93C5FD; margin-bottom: 6px;">
+        Branch Coverage
+      </div>
+      <div style="font-size: 14px; font-weight: 700; color: #F8FAFC; margin-bottom: 8px;">
+        ${escapeTooltipHtml(branchName || branchId || 'Unknown Branch')}
+      </div>
+      <div style="display: flex; justify-content: space-between; gap: 12px; font-size: 12px; margin-bottom: 4px;">
+        <span style="color: #94A3B8;">Native Customers</span>
+        <span style="color: #F8FAFC; font-weight: 600;">${nativeCustomerCount.toLocaleString()}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between; gap: 12px; font-size: 12px; margin-bottom: 4px;">
+        <span style="color: #94A3B8;">Catchment Customers</span>
+        <span style="color: #F8FAFC; font-weight: 600;">${catchmentCustomerCount.toLocaleString()}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between; gap: 12px; font-size: 12px; margin-bottom: 4px;">
+        <span style="color: #94A3B8;">Total Customers</span>
+        <span style="color: #F8FAFC; font-weight: 600;">${totalCustomerCount.toLocaleString()}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between; gap: 12px; font-size: 12px; margin-bottom: 4px;">
+        <span style="color: #94A3B8;">Area</span>
+        <span style="color: #F8FAFC; font-weight: 600;">${areaSqKm.toLocaleString(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        })} sq km</span>
+      </div>
+      <div style="display: flex; justify-content: space-between; gap: 12px; font-size: 12px;">
+        <span style="color: #94A3B8;">Farthest Customer Distance</span>
+        <span style="color: #F8FAFC; font-weight: 600;">${totalCustomerCount > 0
+          ? `${farthestCustomerDistanceKm.toLocaleString(undefined, {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+          })} km`
+          : '-'}</span>
+      </div>
+    </div>
+  `;
+};
+
+const formatCoverageBasisLabel = (basisType?: string | null) => {
+  switch (String(basisType || '').trim()) {
+    case 'current_ownership':
+      return 'Current Ownership';
+    case 'closest_branch':
+      return 'Closest Branch';
+    case 'strongest_presence':
+      return 'Strongest Presence';
+    case 'mutually_exclusive':
+      return 'Mutually Exclusive Coverage';
+    default:
+      return '';
+  }
+};
+
+const formatCoverageStatusLabel = (status?: string | null) => {
+  switch (String(status || '').trim()) {
+    case 'ready':
+      return 'Ready';
+    case 'stale':
+      return 'Stale';
+    case 'failed':
+      return 'Failed';
+    case 'missing':
+      return 'Missing';
+    default:
+      return '';
+  }
+};
+
+const buildBranchTooltipHtml = (properties?: TerritoryFeatureProperties | null) => {
+  const branchId = getTerritoryFeatureBranchId(properties);
+  const branchName = String(
+    properties?.branchName
+    || buildTerritoryBranchName(branchId, String(properties?.city || ''))
+  ).trim();
+  const nativeCustomerCount = Math.max(coerceFiniteNumber(properties?.nativeCustomerCount, 0), 0);
+  const catchmentCustomerCount = Math.max(coerceFiniteNumber(properties?.catchmentCustomerCount, 0), 0);
+  const totalCustomerCount = Math.max(
+    coerceFiniteNumber(
+      properties?.totalCustomerCount,
+      properties?.customerCount
+    ),
+    0
+  );
+  const farthestCustomerDistanceKm = Math.max(
+    coerceFiniteNumber(properties?.farthestCustomerDistanceKm, 0),
+    0
+  );
+  const areaSqKm = Math.max(coerceFiniteNumber(properties?.areaSqKm, 0), 0);
+  const basisLabel = formatCoverageBasisLabel(properties?.coverageBasisType);
+  const statusLabel = formatCoverageStatusLabel(properties?.coverageStatus);
+  const hasCoverageMetrics = totalCustomerCount > 0 || String(properties?.coverageStatus || '').trim() === 'ready';
+
+  return `
+    <div style="min-width: 200px; padding: 12px 14px; border-radius: 12px; background: #172033; color: #E2E8F0; font-family: inherit; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.35);">
+      <div style="font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #93C5FD; margin-bottom: 6px;">
+        Branch Coverage
+      </div>
+      <div style="font-size: 14px; font-weight: 700; color: #F8FAFC; margin-bottom: 6px;">
+        ${escapeTooltipHtml(branchName || branchId || 'Unknown Branch')}
+      </div>
+      ${basisLabel ? `
+      <div style="display: flex; justify-content: space-between; gap: 12px; font-size: 12px; margin-bottom: 4px;">
+        <span style="color: #94A3B8;">Basis</span>
+        <span style="color: #F8FAFC; font-weight: 600;">${escapeTooltipHtml(basisLabel)}</span>
+      </div>` : ''}
+      ${statusLabel ? `
+      <div style="display: flex; justify-content: space-between; gap: 12px; font-size: 12px; margin-bottom: 4px;">
+        <span style="color: #94A3B8;">Dataset Status</span>
+        <span style="color: #F8FAFC; font-weight: 600;">${escapeTooltipHtml(statusLabel)}</span>
+      </div>` : ''}
+      <div style="display: flex; justify-content: space-between; gap: 12px; font-size: 12px; margin-bottom: 4px;">
+        <span style="color: #94A3B8;">Native Customers</span>
+        <span style="color: #F8FAFC; font-weight: 600;">${nativeCustomerCount.toLocaleString()}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between; gap: 12px; font-size: 12px; margin-bottom: 4px;">
+        <span style="color: #94A3B8;">Catchment Customers</span>
+        <span style="color: #F8FAFC; font-weight: 600;">${catchmentCustomerCount.toLocaleString()}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between; gap: 12px; font-size: 12px; margin-bottom: 4px;">
+        <span style="color: #94A3B8;">Total Customers</span>
+        <span style="color: #F8FAFC; font-weight: 600;">${totalCustomerCount.toLocaleString()}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between; gap: 12px; font-size: 12px; margin-bottom: 4px;">
+        <span style="color: #94A3B8;">Farthest Customer Distance</span>
+        <span style="color: #F8FAFC; font-weight: 600;">${hasCoverageMetrics
+          ? `${farthestCustomerDistanceKm.toLocaleString(undefined, {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+          })} km`
+          : '-'}</span>
+      </div>
+      ${areaSqKm > 0 ? `
+      <div style="display: flex; justify-content: space-between; gap: 12px; font-size: 12px; margin-bottom: 4px;">
+        <span style="color: #94A3B8;">Area</span>
+        <span style="color: #F8FAFC; font-weight: 600;">${areaSqKm.toLocaleString(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        })} sq km</span>
+      </div>` : ''}
+      ${!hasCoverageMetrics && statusLabel ? `
+      <div style="font-size: 11px; color: #94A3B8; margin-top: 4px;">
+        Coverage metrics are not ready for this branch in the selected basis.
+      </div>` : ''}
+    </div>
+  `;
+};
+
+const haversineDistanceKm = (
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+) => {
+  if (
+    !Number.isFinite(lat1)
+    || !Number.isFinite(lon1)
+    || !Number.isFinite(lat2)
+    || !Number.isFinite(lon2)
+  ) {
+    return 0;
+  }
+
+  const toRadians = (degrees: number) => degrees * (Math.PI / 180);
+  const earthRadiusKm = 6371;
+  const deltaLat = toRadians(lat2 - lat1);
+  const deltaLon = toRadians(lon2 - lon1);
+  const a = (
+    Math.sin(deltaLat / 2) ** 2
+    + Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(deltaLon / 2) ** 2
+  );
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return earthRadiusKm * c;
+};
+
+const buildBranchCoverageMetrics = (
+  customers: GeoJSON.FeatureCollection<GeoJSON.Point>,
+  branchCoordinatesById: globalThis.Map<string, { lat: number; lon: number }>
+) => {
+  const metricsByBranchId = new globalThis.Map<string, BranchCoverageMetrics>();
+
+  (customers.features || []).forEach((feature) => {
+    const properties = (feature.properties || {}) as TerritoryFeatureProperties;
+    const branchId = getTerritoryFeatureBranchId(properties);
+    if (!branchId) {
+      return;
+    }
+
+    const currentMetrics = metricsByBranchId.get(branchId) || {
+      nativeCustomerCount: 0,
+      catchmentCustomerCount: 0,
+      totalCustomerCount: 0,
+      farthestCustomerDistanceKm: 0
+    };
+
+    const existingBranchId = String(properties.existingBranchId || '').trim();
+    if (!existingBranchId || existingBranchId === branchId) {
+      currentMetrics.nativeCustomerCount += 1;
+    } else {
+      currentMetrics.catchmentCustomerCount += 1;
+    }
+    currentMetrics.totalCustomerCount += 1;
+
+    const coordinates = feature.geometry?.coordinates || [];
+    const customerLon = Number(coordinates[0]);
+    const customerLat = Number(coordinates[1]);
+    const branchCoordinates = branchCoordinatesById.get(branchId);
+    if (branchCoordinates) {
+      currentMetrics.farthestCustomerDistanceKm = Math.max(
+        currentMetrics.farthestCustomerDistanceKm,
+        haversineDistanceKm(
+          branchCoordinates.lat,
+          branchCoordinates.lon,
+          customerLat,
+          customerLon
+        )
+      );
+    }
+
+    metricsByBranchId.set(branchId, currentMetrics);
+  });
+
+  return metricsByBranchId;
+};
+
+const resolveTerritoryCustomerView = (
+  dotsMode: TerritoryCustomerDotsMode
+): TerritoryCustomerView => (
+  dotsMode === 'hidden'
+    ? 'selected_pockets'
+    : dotsMode
+);
+
+const buildTerritoryVisualizationCacheKey = (
+  mode: TerritoryMode,
+  branchIds: string[],
+  closestBranchScope: ClosestBranchScope = 'full_network'
+) => `${mode}|${closestBranchScope}|${branchIds.map((branchId) => String(branchId || '').trim()).join(',')}`;
+
 type SelectionMode = 'box' | 'lasso';
+
+type DashboardProps = {
+  territoryUiVariant?: 'dashboard' | 'voronoi';
+};
 
 type GridPocketProperties = {
   branch_id?: string;
@@ -283,15 +683,6 @@ type BranchEmployee = {
   isActive: boolean;
   allocatedPocketsCount: number;
   allocatedCustomerCount: number;
-};
-
-type BranchEmployeeFormState = {
-  id: string;
-  employeeCode: string;
-  name: string;
-  colorCode: string;
-  maxCapacity: string;
-  isActive: boolean;
 };
 
 type PocketAllocationRow = {
@@ -529,15 +920,6 @@ const normalizeHexColor = (value: string | null | undefined, fallback = GRID1_FA
   }
   return normalized.toUpperCase();
 };
-
-const createEmptyBranchEmployeeFormState = (): BranchEmployeeFormState => ({
-  id: '',
-  employeeCode: '',
-  name: '',
-  colorCode: DEFAULT_EMPLOYEE_COLOR_PALETTE[0],
-  maxCapacity: String(DEFAULT_EMPLOYEE_MAX_CAPACITY),
-  isActive: true
-});
 
 const normalizeBranchEmployeeRecord = (employee: Record<string, unknown>): BranchEmployee => ({
   id: String(employee.id || '').trim(),
@@ -790,8 +1172,9 @@ const buildRectangleSelectionCoordinates = (
   [start[0], start[1]]
 ];
 
-export default function Dashboard() {
+export default function Dashboard({ territoryUiVariant = 'dashboard' }: DashboardProps) {
   const navigate = useNavigate();
+  const isVoronoiView = territoryUiVariant === 'voronoi';
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const map = useRef<Map | null>(null);
   const updateGridOverlayRef = useRef<() => void>(() => undefined);
@@ -809,7 +1192,8 @@ export default function Dashboard() {
     buildGridOverlayLabel(selectedGridLevels, DEFAULT_ZOOM)
   );
   const [territoryMode, setTerritoryMode] = useState<TerritoryMode>('existing_customers');
-  const [territoryCustomerView, setTerritoryCustomerView] = useState<TerritoryCustomerView>('selected_pockets');
+  const [closestBranchScope, setClosestBranchScope] = useState<ClosestBranchScope>('full_network');
+  const [territoryCustomerDotsMode, setTerritoryCustomerDotsMode] = useState<TerritoryCustomerDotsMode>('original_customers');
   const [territoryBranchOptions, setTerritoryBranchOptions] = useState<TerritoryBranchOption[]>([]);
   const [selectedTerritoryBranchIds, setSelectedTerritoryBranchIds] = useState<string[]>([]);
   const [dashboardGridLevelColors, setDashboardGridLevelColors] = useState<Record<DashboardGridLevelId, string>>(
@@ -827,9 +1211,8 @@ export default function Dashboard() {
   const [territoryLoading, setTerritoryLoading] = useState(false);
   const [branchOptionsLoading, setBranchOptionsLoading] = useState(false);
   const [territoryError, setTerritoryError] = useState<string | null>(null);
-  const [showTerritoryCustomers, setShowTerritoryCustomers] = useState(true);
   const [showOtherBranches, setShowOtherBranches] = useState(false);
-  const [showPocketLayout, setShowPocketLayout] = useState(true);
+  const showPocketLayout = true;
   const [managerOverrideEnabled, setManagerOverrideEnabled] = useState(false);
   const [selectionMode, setSelectionMode] = useState<SelectionMode>('box');
   const [selectedPocketIds, setSelectedPocketIds] = useState<string[]>([]);
@@ -846,18 +1229,9 @@ export default function Dashboard() {
   } | null>(null);
   const [allocationFallbackApplied, setAllocationFallbackApplied] = useState(false);
   const [allocationFallbackReason, setAllocationFallbackReason] = useState<string | null>(null);
-  const [allocationRepairLoading, setAllocationRepairLoading] = useState(false);
   const [employeeColors, setEmployeeColors] = useState<Record<string, string>>({});
   const [branchEmployees, setBranchEmployees] = useState<BranchEmployee[]>([]);
-  const [branchTeamEmployees, setBranchTeamEmployees] = useState<BranchEmployee[]>([]);
   const [branchEmployeesLoading, setBranchEmployeesLoading] = useState(false);
-  const [manageTeamExpanded, setManageTeamExpanded] = useState(false);
-  const [employeeFormState, setEmployeeFormState] = useState<BranchEmployeeFormState>(
-    createEmptyBranchEmployeeFormState()
-  );
-  const [employeeFormSaving, setEmployeeFormSaving] = useState(false);
-  const [employeeRowActionId, setEmployeeRowActionId] = useState('');
-  const [employeeFormError, setEmployeeFormError] = useState<string | null>(null);
   const [employeeMetrics, setEmployeeMetrics] = useState<EmployeeMetric[]>([]);
   const [selectedPocket, setSelectedPocket] = useState<any | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
@@ -881,6 +1255,26 @@ export default function Dashboard() {
   const activeAllocationLevelMetersRef = useRef(activeAllocationLevelMeters);
   const showPocketLayoutRef = useRef(showPocketLayout);
   const authoritativePocketCountRef = useRef(assignedGridPockets.features.length);
+  const territoryTooltipRef = useRef<Popup | null>(null);
+  const territoryCustomerDotsModeRef = useRef<TerritoryCustomerDotsMode>(territoryCustomerDotsMode);
+  const territoryCustomerCollectionsRef = useRef<{
+    selected_pockets: GeoJSON.FeatureCollection<GeoJSON.Point>;
+    original_customers: GeoJSON.FeatureCollection<GeoJSON.Point>;
+  }>({
+    selected_pockets: EMPTY_TERRITORY_POINT_FEATURE_COLLECTION,
+    original_customers: EMPTY_TERRITORY_POINT_FEATURE_COLLECTION
+  });
+  const territoryVisualizationCacheRef = useRef(
+    new globalThis.Map<string, TerritoryVisualizationResponse>()
+  );
+  const territoryVisualizationInFlightRef = useRef(
+    new globalThis.Map<string, Promise<TerritoryVisualizationResponse>>()
+  );
+  const territoryCustomerView = resolveTerritoryCustomerView(territoryCustomerDotsMode);
+  const showTerritoryCustomers = territoryCustomerDotsMode !== 'hidden';
+  const territoryCustomerDotOptions = territoryMode === 'existing_customers'
+    ? TERRITORY_CUSTOMER_DOT_OPTIONS.filter((option) => option.value !== 'selected_pockets')
+    : TERRITORY_CUSTOMER_DOT_OPTIONS;
 
   const applyConfiguredGridLayerColors = useCallback(
     (colors: Record<DashboardGridLevelId, string>) => {
@@ -1005,6 +1399,7 @@ export default function Dashboard() {
     }
 
     try {
+      const coverageBasisType = TERRITORY_MODE_TO_COVERAGE_BASIS[territoryMode];
       const bounds = mapInstance.getBounds();
       const bbox = [
         bounds.getWest().toFixed(6),
@@ -1019,7 +1414,8 @@ export default function Dashboard() {
       const response = await api.getBranches({
         limit: 1000,
         offset: 0,
-        bbox
+        bbox,
+        basisType: coverageBasisType
       });
       const rawCandidate = response?.branches ?? response?.data ?? response;
       const rawBranches = Array.isArray(rawCandidate)
@@ -1032,6 +1428,32 @@ export default function Dashboard() {
       rawBranches.forEach((branch: Record<string, unknown>) => {
         const lat = Number(branch.lat);
         const lon = Number(branch.lon);
+        const branchId = String(branch.id ?? '').trim();
+        const city = String(branch.city ?? '').trim();
+        const rawCoverageMetrics = (
+          branch.coverageMetrics
+          || branch.coverage_metrics
+          || {}
+        ) as Record<string, unknown>;
+        const nativeCustomerCount = Math.max(
+          coerceFiniteNumber(rawCoverageMetrics.nativeCustomerCount ?? rawCoverageMetrics.native_customer_count, 0),
+          0
+        );
+        const catchmentCustomerCount = Math.max(
+          coerceFiniteNumber(rawCoverageMetrics.catchmentCustomerCount ?? rawCoverageMetrics.catchment_customer_count, 0),
+          0
+        );
+        const totalCustomerCount = Math.max(
+          coerceFiniteNumber(rawCoverageMetrics.totalCustomerCount ?? rawCoverageMetrics.total_customer_count, 0),
+          0
+        );
+        const farthestCustomerDistanceKm = Math.max(
+          coerceFiniteNumber(
+            rawCoverageMetrics.farthestCustomerDistanceKm ?? rawCoverageMetrics.farthest_customer_distance_km,
+            0
+          ),
+          0
+        );
 
         if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
           return;
@@ -1040,8 +1462,20 @@ export default function Dashboard() {
         features.push({
           type: 'Feature',
           properties: {
-            id: String(branch.id ?? ''),
-            city: String(branch.city ?? '')
+            id: branchId,
+            branchId,
+            city,
+            branchName: buildTerritoryBranchName(branchId, city),
+            customerCount: totalCustomerCount,
+            nativeCustomerCount,
+            catchmentCustomerCount,
+            totalCustomerCount,
+            farthestCustomerDistanceKm,
+            coverageBasisType,
+            coverageStatus: String(rawCoverageMetrics.status || '').trim() || 'missing',
+            sourceJobId: String(rawCoverageMetrics.sourceJobId ?? rawCoverageMetrics.source_job_id ?? '').trim() || null,
+            computedAt: String(rawCoverageMetrics.computedAt ?? rawCoverageMetrics.computed_at ?? '').trim() || null,
+            isSelectedBranch: false
           },
           geometry: {
             type: 'Point',
@@ -1069,7 +1503,7 @@ export default function Dashboard() {
     } catch (error) {
       console.error('Failed to load branch markers:', error);
     }
-  }, [showOtherBranches]);
+  }, [showOtherBranches, territoryMode]);
 
   const setGeoJsonSourceData = (
     mapInstance: Map,
@@ -1090,6 +1524,34 @@ export default function Dashboard() {
     source?.setData(data);
   };
 
+  const applyTerritoryCustomerDotsMode = (dotsMode: TerritoryCustomerDotsMode) => {
+    if (!map.current || !map.current.isStyleLoaded()) {
+      return;
+    }
+
+    const mapInstance = map.current;
+    const nextCustomerView = resolveTerritoryCustomerView(dotsMode);
+    const nextData = territoryCustomerCollectionsRef.current[nextCustomerView]
+      || EMPTY_TERRITORY_POINT_FEATURE_COLLECTION;
+
+    setGeoJsonSourceData(mapInstance, TERRITORY_CUSTOMERS_SOURCE_ID, nextData);
+
+    if (mapInstance.getLayer(TERRITORY_CUSTOMERS_LAYER_ID)) {
+      mapInstance.setLayoutProperty(
+        TERRITORY_CUSTOMERS_LAYER_ID,
+        'visibility',
+        dotsMode === 'hidden' ? 'none' : 'visible'
+      );
+    }
+    if (mapInstance.getLayer(TERRITORY_CUSTOMERS_IMPORTED_LAYER_ID)) {
+      mapInstance.setLayoutProperty(
+        TERRITORY_CUSTOMERS_IMPORTED_LAYER_ID,
+        'visibility',
+        dotsMode === 'hidden' ? 'none' : 'visible'
+      );
+    }
+  };
+
   const enforceTerritoryLayerStackOrder = (mapInstance: Map) => {
     const orderedLayers = [
       TERRITORY_FILL_LAYER_ID,
@@ -1102,6 +1564,7 @@ export default function Dashboard() {
       GRID1_SELECTED_FILL_LAYER_ID,
       GRID1_SELECTED_LINE_LAYER_ID,
       TERRITORY_CUSTOMERS_LAYER_ID,
+      TERRITORY_CUSTOMERS_IMPORTED_LAYER_ID,
       TERRITORY_SELECTED_BRANCHES_LAYER_ID,
       BRANCH_MARKERS_LAYER_ID
     ];
@@ -1112,6 +1575,13 @@ export default function Dashboard() {
       }
     });
   };
+
+  const clearTerritoryTooltip = useCallback(() => {
+    if (territoryTooltipRef.current) {
+      territoryTooltipRef.current.remove();
+      territoryTooltipRef.current = null;
+    }
+  }, []);
 
   const applyPocketLayoutVisibility = (mapInstance: Map, visible: boolean) => {
     const visibility = visible ? 'visible' : 'none';
@@ -1239,9 +1709,6 @@ export default function Dashboard() {
     const normalizedBranchId = String(branchId || '').trim();
     if (!normalizedBranchId) {
       setBranchEmployees([]);
-      setBranchTeamEmployees([]);
-      setEmployeeFormState(createEmptyBranchEmployeeFormState());
-      setEmployeeFormError(null);
       return;
     }
 
@@ -1256,13 +1723,10 @@ export default function Dashboard() {
       const normalizedEmployees: BranchEmployee[] = employees
         .map((employee) => normalizeBranchEmployeeRecord(employee))
         .filter((employee: BranchEmployee) => employee.id.length > 0);
-      setBranchTeamEmployees(normalizedEmployees);
       setBranchEmployees(normalizedEmployees.filter((employee) => employee.isActive));
-      setEmployeeFormError(null);
     } catch (error) {
       console.error('Failed to load branch employees:', error);
       setBranchEmployees([]);
-      setBranchTeamEmployees([]);
     } finally {
       setBranchEmployeesLoading(false);
     }
@@ -1366,22 +1830,6 @@ export default function Dashboard() {
         : 'Failed to persist pocket reassignment.';
       setTerritoryError(message);
     }
-  };
-
-  const finishLassoSelection = (appendToSelection = false) => {
-    if (lassoDraftCoordinates.length < 3) {
-      setTerritoryError('Lasso requires at least 3 points.');
-      return;
-    }
-
-    const closedCoordinates: [number, number][] = [
-      ...lassoDraftCoordinates,
-      lassoDraftCoordinates[0]
-    ];
-    selectPocketsWithinPolygon(closedCoordinates, appendToSelection);
-    setLassoDraftCoordinates([]);
-    setLassoCursorCoordinate(null);
-    resetSelectionPreview();
   };
 
   const ensureTerritoryLayers = (mapInstance: Map) => {
@@ -1617,8 +2065,8 @@ export default function Dashboard() {
           type: 'fill',
           source: TERRITORY_SOURCE_ID,
           paint: {
-            'fill-color': '#10B981',
-            'fill-opacity': 0.2
+            'fill-color': ['coalesce', ['get', 'branchColor'], '#10B981'],
+            'fill-opacity': 0.22
           }
         },
         STATE_BORDERS_LAYER_ID
@@ -1632,8 +2080,8 @@ export default function Dashboard() {
           type: 'line',
           source: TERRITORY_SOURCE_ID,
           paint: {
-            'line-color': '#34D399',
-            'line-width': 2,
+            'line-color': ['coalesce', ['get', 'branchColor'], '#34D399'],
+            'line-width': 2.4,
             'line-opacity': 0.9
           }
         },
@@ -1667,15 +2115,9 @@ export default function Dashboard() {
         layout: {
           visibility: showTerritoryCustomers ? 'visible' : 'none'
         },
+        filter: ['==', ['coalesce', ['get', 'existingBranchId'], ['get', 'branchId']], ['get', 'branchId']],
         paint: {
-          // --- ORIGINAL BACKUP ---
-          // 'circle-color': '#FB923C',
-          'circle-color': [
-            'case',
-            ['==', ['coalesce', ['get', 'isSelectedBranchCustomer'], 0], 1],
-            '#22C55E',
-            '#EF4444'
-          ],
+          'circle-color': ['coalesce', ['get', 'branchColor'], '#EF4444'],
           'circle-opacity': 0.95,
           'circle-radius': [
             'interpolate',
@@ -1693,6 +2135,35 @@ export default function Dashboard() {
       });
     }
 
+    if (!mapInstance.getLayer(TERRITORY_CUSTOMERS_IMPORTED_LAYER_ID)) {
+      mapInstance.addLayer({
+        id: TERRITORY_CUSTOMERS_IMPORTED_LAYER_ID,
+        type: 'symbol',
+        source: TERRITORY_CUSTOMERS_SOURCE_ID,
+        layout: {
+          visibility: showTerritoryCustomers ? 'visible' : 'none',
+          'text-field': '▲',
+          'text-size': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            4, 8,
+            8, 10,
+            12, 13
+          ],
+          'text-allow-overlap': true,
+          'text-ignore-placement': true
+        },
+        filter: ['!=', ['coalesce', ['get', 'existingBranchId'], ['get', 'branchId']], ['get', 'branchId']],
+        paint: {
+          'text-color': ['coalesce', ['get', 'branchColor'], '#EF4444'],
+          'text-opacity': 0.96,
+          'text-halo-color': '#FFFFFF',
+          'text-halo-width': 1.1
+        }
+      });
+    }
+
     if (!mapInstance.getSource(TERRITORY_SELECTED_BRANCHES_SOURCE_ID)) {
       mapInstance.addSource(TERRITORY_SELECTED_BRANCHES_SOURCE_ID, {
         type: 'geojson',
@@ -1706,7 +2177,7 @@ export default function Dashboard() {
         type: 'circle',
         source: TERRITORY_SELECTED_BRANCHES_SOURCE_ID,
         paint: {
-          'circle-color': '#DC2626',
+          'circle-color': ['coalesce', ['get', 'branchColor'], '#DC2626'],
           'circle-opacity': 1,
           'circle-radius': [
             'interpolate',
@@ -1726,7 +2197,13 @@ export default function Dashboard() {
   const clearTerritoryVisualization = () => {
     if (!map.current || !map.current.isStyleLoaded()) return;
     const mapInstance = map.current;
+    clearTerritoryTooltip();
+    setTerritorySummary(null);
     employeeTerritoryRequestCounterRef.current += 1;
+    territoryCustomerCollectionsRef.current = {
+      selected_pockets: EMPTY_TERRITORY_POINT_FEATURE_COLLECTION,
+      original_customers: EMPTY_TERRITORY_POINT_FEATURE_COLLECTION
+    };
     setGeoJsonSourceData(mapInstance, TERRITORY_SOURCE_ID, EMPTY_TERRITORY_FEATURE_COLLECTION);
     setGeoJsonSourceData(mapInstance, GRID1_SOURCE_ID, EMPTY_TERRITORY_FEATURE_COLLECTION);
     setGeoJsonSourceData(mapInstance, GRID1_SELECTED_SOURCE_ID, EMPTY_GRID_POCKET_FEATURE_COLLECTION);
@@ -1747,7 +2224,6 @@ export default function Dashboard() {
     setEmployeeTerritoryEmptyState(null);
     setAllocationFallbackApplied(false);
     setAllocationFallbackReason(null);
-    setAllocationRepairLoading(false);
     setEmployeeColors({});
     setEmployeeMetrics([]);
     setSelectedPocket(null);
@@ -1793,7 +2269,6 @@ export default function Dashboard() {
       setAssignmentTolerance(DEFAULT_ASSIGNMENT_TOLERANCE);
       setAllocationFallbackApplied(false);
       setAllocationFallbackReason(null);
-      setAllocationRepairLoading(false);
       clearManagerSelection();
       return;
     }
@@ -1893,7 +2368,6 @@ export default function Dashboard() {
       setActiveAllocationLevelMeters(assignmentLevelMeters);
       setAllocationFallbackApplied(fallbackApplied);
       setAllocationFallbackReason(fallbackReason);
-      setAllocationRepairLoading(false);
       if (pockets.features.length === 0) {
         setEmployeeTerritoryEmptyState({
           branchId: trimmedBranchId,
@@ -1991,7 +2465,6 @@ export default function Dashboard() {
       setAssignedGridPockets(EMPTY_GRID_POCKET_FEATURE_COLLECTION);
       setEmployeeColors({});
       setBranchEmployees([]);
-      setBranchTeamEmployees([]);
       setEmployeeMetrics([]);
       setSelectedPocket(null);
       setDrawerEmployeeId('');
@@ -2001,10 +2474,7 @@ export default function Dashboard() {
       setEmployeeTerritoryEmptyState(null);
       setAllocationFallbackApplied(false);
       setAllocationFallbackReason(null);
-      setAllocationRepairLoading(false);
       setAssignmentTolerance(DEFAULT_ASSIGNMENT_TOLERANCE);
-      setEmployeeFormState(createEmptyBranchEmployeeFormState());
-      setEmployeeFormError(null);
       clearManagerSelection();
       setTerritoryError(message);
     } finally {
@@ -2018,6 +2488,7 @@ export default function Dashboard() {
     mode: TerritoryMode,
     branchIds: string[],
     customerView: TerritoryCustomerView,
+    requestedClosestBranchScope: ClosestBranchScope = closestBranchScope,
     options?: {
       showLoader?: boolean;
     }
@@ -2029,7 +2500,9 @@ export default function Dashboard() {
       return;
     }
 
-    const showLoader = options?.showLoader !== false;
+    const cacheKey = buildTerritoryVisualizationCacheKey(mode, branchIds, requestedClosestBranchScope);
+    const cachedPayload = territoryVisualizationCacheRef.current.get(cacheKey) || null;
+    const showLoader = options?.showLoader !== false && !cachedPayload;
     const requestId = territoryRequestCounterRef.current + 1;
     territoryRequestCounterRef.current = requestId;
 
@@ -2039,51 +2512,241 @@ export default function Dashboard() {
     setTerritoryError(null);
 
     try {
-      const payload = await api.getTerritoryVisualization({
-        mode,
-        branchIds: branchIds.length > 0 ? branchIds : undefined,
-        customerView
-      }) as TerritoryVisualizationResponse;
+      let payload = cachedPayload;
+      if (!payload) {
+        let inFlightRequest = territoryVisualizationInFlightRef.current.get(cacheKey);
+        if (!inFlightRequest) {
+          inFlightRequest = (
+            mode === 'nearest_pockets' && requestedClosestBranchScope === 'selected_only'
+              ? api.allocateTerritoryCoverage({
+                mode: 'selected_only',
+                selectedBranchIds: branchIds,
+                customerView,
+                gridSizeKm: 5,
+                mergeAdjacent: true
+              }).then((response) => response.payload as TerritoryVisualizationResponse)
+              : api.getTerritoryVisualization({
+                mode,
+                branchIds: branchIds.length > 0 ? branchIds : undefined,
+                customerView
+              }) as Promise<TerritoryVisualizationResponse>
+          ).then((response) => {
+            territoryVisualizationCacheRef.current.set(cacheKey, response);
+            return response;
+          }).finally(() => {
+            territoryVisualizationInFlightRef.current.delete(cacheKey);
+          });
+          territoryVisualizationInFlightRef.current.set(cacheKey, inFlightRequest);
+        }
+        payload = await inFlightRequest;
+      }
 
       if (!map.current || territoryRequestCounterRef.current !== requestId) return;
 
       const mapInstance = map.current;
       const selectedIds = (payload.selectedBranchIds || []).map((id) => String(id));
       const selectedBranchIdSet = new Set(selectedIds);
-      const selectedDashboardBranchId = String(selectedIds[0] || branchIds[0] || '').trim();
-      const filteredCustomers: GeoJSON.FeatureCollection<GeoJSON.Point> = {
+      const colorSeedBranchIds = Array.from(new Set([
+        ...selectedIds,
+        ...branchIds.map((branchId) => String(branchId || '').trim()),
+        ...(payload.branches?.features || []).map((feature) =>
+          getTerritoryFeatureBranchId(feature.properties as TerritoryFeatureProperties)
+        ),
+        ...(payload.territories?.features || []).map((feature) =>
+          getTerritoryFeatureBranchId(feature.properties as TerritoryFeatureProperties)
+        )
+      ].filter((branchId) => branchId.length > 0)));
+      const territoryBranchColorById = buildTerritoryBranchColorMap(colorSeedBranchIds);
+      const branchMetadataById = new globalThis.Map<string, {
+        city: string;
+        branchName: string;
+        branchColor: string;
+        customerCount: number;
+      }>();
+
+      (payload.availableBranches || []).forEach((branch) => {
+        const branchId = String(branch.id || '').trim();
+        if (!branchId) {
+          return;
+        }
+
+        const city = String(branch.city || '').trim();
+        branchMetadataById.set(branchId, {
+          city,
+          branchName: buildTerritoryBranchName(branchId, city),
+          branchColor: getTerritoryBranchColor(territoryBranchColorById, branchId),
+          customerCount: Math.max(coerceFiniteNumber(branch.customerCount, 0), 0)
+        });
+      });
+
+      (payload.branches?.features || []).forEach((feature) => {
+        const properties = (feature.properties || {}) as TerritoryFeatureProperties;
+        const branchId = getTerritoryFeatureBranchId(properties);
+        if (!branchId) {
+          return;
+        }
+
+        const existingMetadata = branchMetadataById.get(branchId);
+        const city = String(properties.city || existingMetadata?.city || '').trim();
+        const customerCount = Math.max(
+          coerceFiniteNumber(properties.customerCount, existingMetadata?.customerCount ?? 0),
+          0
+        );
+
+        branchMetadataById.set(branchId, {
+          city,
+          branchName: buildTerritoryBranchName(branchId, city),
+          branchColor: getTerritoryBranchColor(territoryBranchColorById, branchId),
+          customerCount
+        });
+      });
+
+      const decorateCustomerCollection = (
+        sourceCollection?: GeoJSON.FeatureCollection<GeoJSON.Point>
+      ): GeoJSON.FeatureCollection<GeoJSON.Point> => ({
         type: 'FeatureCollection',
-        features: (payload.customers?.features || [])
-          .filter((feature) =>
-            selectedBranchIdSet.has(String(feature.properties?.branchId ?? ''))
-          )
+        features: (sourceCollection?.features || [])
+          .filter((feature) => selectedBranchIdSet.has(
+            getTerritoryFeatureBranchId(feature.properties as TerritoryFeatureProperties)
+          ))
           .map((feature) => {
-            const properties = feature.properties || {};
-            const existingBranchId = String(
-              properties.existingBranchId
-              ?? properties.branchId
-              ?? ''
-            ).trim();
-            const isSelectedBranchCustomer = (
-              selectedDashboardBranchId
-              && existingBranchId === selectedDashboardBranchId
-            ) ? 1 : 0;
+            const properties = (feature.properties || {}) as TerritoryFeatureProperties;
+            const branchId = getTerritoryFeatureBranchId(properties);
+            const metadata = branchMetadataById.get(branchId);
+            const existingBranchId = String(properties.existingBranchId || '').trim();
+            const nearestBranchId = String(properties.nearestBranchId || '').trim();
 
             return {
               ...feature,
               properties: {
                 ...properties,
-                existingBranchId,
-                isSelectedBranchCustomer
+                branchId,
+                branchName: metadata?.branchName || buildTerritoryBranchName(branchId, metadata?.city),
+                branchColor: getTerritoryBranchColor(territoryBranchColorById, branchId),
+                existingBranchId: existingBranchId || null,
+                nearestBranchId: nearestBranchId || null
               }
             };
           })
+      });
+      const payloadCustomerViews = payload.customerViews || {
+        selected_pockets: payload.customerView === 'selected_pockets'
+          ? payload.customers
+          : EMPTY_TERRITORY_POINT_FEATURE_COLLECTION,
+        original_customers: payload.customerView === 'original_customers'
+          ? payload.customers
+          : EMPTY_TERRITORY_POINT_FEATURE_COLLECTION
+      };
+      territoryCustomerCollectionsRef.current = {
+        selected_pockets: decorateCustomerCollection(payloadCustomerViews.selected_pockets),
+        original_customers: decorateCustomerCollection(payloadCustomerViews.original_customers)
+      };
+      const branchCoordinatesById = new globalThis.Map<string, { lat: number; lon: number }>();
+      (payload.branches?.features || []).forEach((feature) => {
+        const branchId = getTerritoryFeatureBranchId(feature.properties as TerritoryFeatureProperties);
+        const coordinates = feature.geometry?.coordinates || [];
+        const lon = Number(coordinates[0]);
+        const lat = Number(coordinates[1]);
+
+        if (!branchId || !Number.isFinite(lat) || !Number.isFinite(lon)) {
+          return;
+        }
+
+        branchCoordinatesById.set(branchId, { lat, lon });
+      });
+      const branchCoverageMetricsById = buildBranchCoverageMetrics(
+        territoryCustomerCollectionsRef.current.selected_pockets,
+        branchCoordinatesById
+      );
+      const decoratedTerritories: GeoJSON.FeatureCollection<GeoJSON.Polygon | GeoJSON.MultiPolygon> = {
+        type: 'FeatureCollection',
+        features: (payload.territories?.features || []).map((feature) => {
+          const properties = (feature.properties || {}) as TerritoryFeatureProperties;
+          const branchId = getTerritoryFeatureBranchId(properties);
+          const metadata = branchMetadataById.get(branchId);
+          const city = String(properties.city || metadata?.city || '').trim();
+          const customerCount = Math.max(
+            coerceFiniteNumber(properties.customerCount, metadata?.customerCount ?? 0),
+            0
+          );
+          const coverageMetrics = branchCoverageMetricsById.get(branchId) || {
+            nativeCustomerCount: customerCount,
+            catchmentCustomerCount: 0,
+            totalCustomerCount: customerCount,
+            farthestCustomerDistanceKm: 0
+          };
+
+          return {
+            ...feature,
+            properties: {
+              ...properties,
+              branchId,
+              city,
+              customerCount: coverageMetrics.totalCustomerCount,
+              nativeCustomerCount: coverageMetrics.nativeCustomerCount,
+              catchmentCustomerCount: coverageMetrics.catchmentCustomerCount,
+              totalCustomerCount: coverageMetrics.totalCustomerCount,
+              farthestCustomerDistanceKm: Number(coverageMetrics.farthestCustomerDistanceKm.toFixed(2)),
+              branchName: metadata?.branchName || buildTerritoryBranchName(branchId, city),
+              branchColor: getTerritoryBranchColor(territoryBranchColorById, branchId),
+              areaSqKm: computeTerritoryAreaSqKm(feature)
+            }
+          };
+        })
+      };
+      const territoryAreaByBranchId = decoratedTerritories.features.reduce((accumulator, feature) => {
+        const properties = (feature.properties || {}) as TerritoryFeatureProperties;
+        const branchId = getTerritoryFeatureBranchId(properties);
+        if (!branchId) {
+          return accumulator;
+        }
+
+        accumulator.set(branchId, Math.max(coerceFiniteNumber(properties.areaSqKm, 0), 0));
+        return accumulator;
+      }, new globalThis.Map<string, number>());
+      const decoratedBranches: GeoJSON.FeatureCollection<GeoJSON.Point> = {
+        type: 'FeatureCollection',
+        features: (payload.branches?.features || []).map((feature) => {
+          const properties = (feature.properties || {}) as TerritoryFeatureProperties;
+          const branchId = getTerritoryFeatureBranchId(properties);
+          const metadata = branchMetadataById.get(branchId);
+          const city = String(properties.city || metadata?.city || '').trim();
+          const coverageMetrics = branchCoverageMetricsById.get(branchId) || {
+            nativeCustomerCount: 0,
+            catchmentCustomerCount: 0,
+            totalCustomerCount: Math.max(
+              coerceFiniteNumber(properties.customerCount, metadata?.customerCount ?? 0),
+              0
+            ),
+            farthestCustomerDistanceKm: 0
+          };
+
+          return {
+            ...feature,
+            properties: {
+              ...properties,
+              branchId,
+              city,
+              customerCount: coverageMetrics.totalCustomerCount,
+              nativeCustomerCount: coverageMetrics.nativeCustomerCount,
+              catchmentCustomerCount: coverageMetrics.catchmentCustomerCount,
+              totalCustomerCount: coverageMetrics.totalCustomerCount,
+              farthestCustomerDistanceKm: Number(coverageMetrics.farthestCustomerDistanceKm.toFixed(2)),
+              areaSqKm: territoryAreaByBranchId.get(branchId) || 0,
+              branchName: metadata?.branchName || buildTerritoryBranchName(branchId, city),
+              branchColor: getTerritoryBranchColor(territoryBranchColorById, branchId),
+              coverageBasisType: TERRITORY_MODE_TO_COVERAGE_BASIS[mode],
+              coverageStatus: 'ready',
+              isSelectedBranch: true
+            }
+          };
+        })
       };
       ensureTerritoryLayers(mapInstance);
-      setGeoJsonSourceData(mapInstance, TERRITORY_SOURCE_ID, payload.territories);
+      setGeoJsonSourceData(mapInstance, TERRITORY_SOURCE_ID, decoratedTerritories);
       setGeoJsonSourceData(mapInstance, TERRITORY_POINTS_SOURCE_ID, EMPTY_TERRITORY_POINT_FEATURE_COLLECTION);
-      setGeoJsonSourceData(mapInstance, TERRITORY_CUSTOMERS_SOURCE_ID, filteredCustomers);
-      setGeoJsonSourceData(mapInstance, TERRITORY_SELECTED_BRANCHES_SOURCE_ID, payload.branches as GeoJSON.FeatureCollection<GeoJSON.Point>);
+      applyTerritoryCustomerDotsMode(territoryCustomerDotsModeRef.current);
+      setGeoJsonSourceData(mapInstance, TERRITORY_SELECTED_BRANCHES_SOURCE_ID, decoratedBranches);
 
       if (mapInstance.getLayer(TERRITORY_FILL_LAYER_ID)) {
         mapInstance.moveLayer(TERRITORY_FILL_LAYER_ID, STATE_BORDERS_LAYER_ID);
@@ -2093,11 +2756,9 @@ export default function Dashboard() {
       }
       if (mapInstance.getLayer(TERRITORY_CUSTOMERS_LAYER_ID)) {
         mapInstance.moveLayer(TERRITORY_CUSTOMERS_LAYER_ID);
-        mapInstance.setLayoutProperty(
-          TERRITORY_CUSTOMERS_LAYER_ID,
-          'visibility',
-          showTerritoryCustomers ? 'visible' : 'none'
-        );
+      }
+      if (mapInstance.getLayer(TERRITORY_CUSTOMERS_IMPORTED_LAYER_ID)) {
+        mapInstance.moveLayer(TERRITORY_CUSTOMERS_IMPORTED_LAYER_ID);
       }
       if (mapInstance.getLayer(TERRITORY_SELECTED_BRANCHES_LAYER_ID)) {
         mapInstance.moveLayer(TERRITORY_SELECTED_BRANCHES_LAYER_ID);
@@ -2147,6 +2808,45 @@ export default function Dashboard() {
           mapInstance.setFilter(GRID1_FILL_LAYER_ID, null);
         }
       }
+
+      TERRITORY_MODE_OPTIONS.forEach((option) => {
+        const prefetchBranchIds = selectedIds.length > 0 ? selectedIds : branchIds;
+        if (option.value === mode || prefetchBranchIds.length === 0) {
+          return;
+        }
+        const prefetchScope = option.value === 'nearest_pockets'
+          ? requestedClosestBranchScope
+          : 'full_network';
+        if (option.value === 'nearest_pockets' && requestedClosestBranchScope === 'selected_only') {
+          return;
+        }
+        const prefetchKey = buildTerritoryVisualizationCacheKey(
+          option.value,
+          prefetchBranchIds,
+          prefetchScope
+        );
+        if (
+          territoryVisualizationCacheRef.current.has(prefetchKey)
+          || territoryVisualizationInFlightRef.current.has(prefetchKey)
+        ) {
+          return;
+        }
+
+        const prefetchRequest = (
+          api.getTerritoryVisualization({
+            mode: option.value,
+            branchIds: prefetchBranchIds,
+            customerView: 'selected_pockets'
+          }) as Promise<TerritoryVisualizationResponse>
+        ).then((response) => {
+          territoryVisualizationCacheRef.current.set(prefetchKey, response);
+          return response;
+        }).finally(() => {
+          territoryVisualizationInFlightRef.current.delete(prefetchKey);
+        });
+
+        territoryVisualizationInFlightRef.current.set(prefetchKey, prefetchRequest);
+      });
     // --- ORIGINAL BACKUP ---
     // } catch (error) {
     //   if (territoryRequestCounterRef.current !== requestId) return;
@@ -2245,33 +2945,52 @@ export default function Dashboard() {
   ]);
 
   const handleTerritoryModeChange = (nextMode: TerritoryMode) => {
+    const nextCustomerDotsMode = (
+      nextMode === 'existing_customers' && territoryCustomerDotsMode === 'selected_pockets'
+        ? 'original_customers'
+        : territoryCustomerDotsMode
+    ) as TerritoryCustomerDotsMode;
+    const nextCustomerView = resolveTerritoryCustomerView(nextCustomerDotsMode);
+
     setTerritoryMode(nextMode);
-    const activeBranchId = String(
-      selectedTerritoryBranchIds[0] || territoryBranchOptions[0]?.id || ''
-    ).trim();
-    if (!activeBranchId) {
+    if (nextCustomerDotsMode !== territoryCustomerDotsMode) {
+      setTerritoryCustomerDotsMode(nextCustomerDotsMode);
+      territoryCustomerDotsModeRef.current = nextCustomerDotsMode;
+    }
+    const activeBranchIds = selectedTerritoryBranchIds.length > 0
+      ? selectedTerritoryBranchIds
+      : (territoryBranchOptions[0]?.id ? [territoryBranchOptions[0].id] : []);
+    if (activeBranchIds.length === 0) {
       setTerritoryError('Select a branch to load territory visualization.');
       return;
     }
-    if (!hasSameIds([activeBranchId], selectedTerritoryBranchIds)) {
-      setSelectedTerritoryBranchIds([activeBranchId]);
+    if (!hasSameIds(activeBranchIds, selectedTerritoryBranchIds)) {
+      setSelectedTerritoryBranchIds(activeBranchIds);
     }
-    void loadTerritoryVisualization(nextMode, [activeBranchId], territoryCustomerView);
+    void loadTerritoryVisualization(nextMode, activeBranchIds, nextCustomerView);
   };
 
-  const handleTerritoryCustomerViewChange = (nextCustomerView: TerritoryCustomerView) => {
-    setTerritoryCustomerView(nextCustomerView);
-    const activeBranchId = String(
-      selectedTerritoryBranchIds[0] || territoryBranchOptions[0]?.id || ''
-    ).trim();
-    if (!activeBranchId) {
+  const handleTerritoryCustomerDotsChange = (nextDotsMode: TerritoryCustomerDotsMode) => {
+    setTerritoryCustomerDotsMode(nextDotsMode);
+    territoryCustomerDotsModeRef.current = nextDotsMode;
+    applyTerritoryCustomerDotsMode(nextDotsMode);
+  };
+
+  const handleClosestBranchScopeChange = (nextScope: ClosestBranchScope) => {
+    setClosestBranchScope(nextScope);
+    if (territoryMode !== 'nearest_pockets') {
+      return;
+    }
+
+    const activeBranchIds = selectedTerritoryBranchIds.length > 0
+      ? selectedTerritoryBranchIds
+      : (territoryBranchOptions[0]?.id ? [territoryBranchOptions[0].id] : []);
+    if (activeBranchIds.length === 0) {
       setTerritoryError('Select a branch to load territory visualization.');
       return;
     }
-    if (!hasSameIds([activeBranchId], selectedTerritoryBranchIds)) {
-      setSelectedTerritoryBranchIds([activeBranchId]);
-    }
-    void loadTerritoryVisualization(territoryMode, [activeBranchId], nextCustomerView);
+
+    void loadTerritoryVisualization(territoryMode, activeBranchIds, territoryCustomerView, nextScope);
   };
 
   const handleTerritoryBranchChange = (nextBranchIds: string[]) => {
@@ -2286,141 +3005,9 @@ export default function Dashboard() {
       clearTerritoryVisualization();
       return;
     }
-    void loadTerritoryVisualization(territoryMode, nextBranchIds, territoryCustomerView, {
+    void loadTerritoryVisualization(territoryMode, nextBranchIds, territoryCustomerView, closestBranchScope, {
       showLoader: false
     });
-  };
-
-  const resetBranchEmployeeForm = () => {
-    setEmployeeFormState(createEmptyBranchEmployeeFormState());
-    setEmployeeFormError(null);
-  };
-
-  const handleEditBranchEmployee = (employee: BranchEmployee) => {
-    setEmployeeFormState({
-      id: employee.id,
-      employeeCode: employee.employeeCode,
-      name: employee.name,
-      colorCode: normalizeHexColor(employee.colorCode, DEFAULT_EMPLOYEE_COLOR_PALETTE[0]),
-      maxCapacity: employee.maxCapacity === null ? '' : String(employee.maxCapacity),
-      isActive: employee.isActive
-    });
-    setEmployeeFormError(null);
-    setManageTeamExpanded(true);
-  };
-
-  const handleSaveBranchEmployee = async () => {
-    const branchId = String(employeeContextBranchId || '').trim();
-    if (!branchId) {
-      setEmployeeFormError('Select a branch before managing employees.');
-      return;
-    }
-
-    const employeeCode = String(employeeFormState.employeeCode || '').trim();
-    const employeeName = String(employeeFormState.name || '').trim();
-    const colorCode = normalizeHexColor(
-      employeeFormState.colorCode,
-      DEFAULT_EMPLOYEE_COLOR_PALETTE[0]
-    );
-
-    if (!employeeCode) {
-      setEmployeeFormError('Employee ID is required.');
-      return;
-    }
-    if (!employeeName) {
-      setEmployeeFormError('Employee name is required.');
-      return;
-    }
-
-    const maxCapacityValue = String(employeeFormState.maxCapacity || '').trim();
-    const parsedMaxCapacity = maxCapacityValue === ''
-      ? null
-      : Number.parseInt(maxCapacityValue, 10);
-    if (
-      maxCapacityValue !== ''
-      && (!Number.isInteger(parsedMaxCapacity) || Number(parsedMaxCapacity) < 0)
-    ) {
-      setEmployeeFormError('Max Capacity must be a non-negative integer.');
-      return;
-    }
-
-    setEmployeeFormSaving(true);
-    setEmployeeFormError(null);
-    try {
-      if (employeeFormState.id) {
-        await api.updateEmployee(employeeFormState.id, {
-          employee_id: employeeCode,
-          name: employeeName,
-          color_code: colorCode,
-          max_capacity: parsedMaxCapacity,
-          is_active: employeeFormState.isActive
-        });
-      } else {
-        await api.createEmployee({
-          branch_id: branchId,
-          employee_id: employeeCode,
-          name: employeeName,
-          color_code: colorCode,
-          max_capacity: parsedMaxCapacity,
-          is_active: employeeFormState.isActive
-        });
-      }
-
-      await loadBranchEmployees(branchId);
-      resetBranchEmployeeForm();
-    } catch (error) {
-      setEmployeeFormError(
-        error instanceof Error ? error.message : 'Failed to save employee.'
-      );
-    } finally {
-      setEmployeeFormSaving(false);
-    }
-  };
-
-  const handleDeactivateBranchEmployee = async (employeeId: string) => {
-    const normalizedEmployeeId = String(employeeId || '').trim();
-    const branchId = String(employeeContextBranchId || '').trim();
-    if (!normalizedEmployeeId || !branchId || employeeRowActionId) {
-      return;
-    }
-
-    setEmployeeRowActionId(normalizedEmployeeId);
-    setEmployeeFormError(null);
-    try {
-      await api.deleteEmployee(normalizedEmployeeId);
-      await loadBranchEmployees(branchId);
-      if (employeeFormState.id === normalizedEmployeeId) {
-        resetBranchEmployeeForm();
-      }
-    } catch (error) {
-      setEmployeeFormError(
-        error instanceof Error ? error.message : 'Failed to deactivate employee.'
-      );
-    } finally {
-      setEmployeeRowActionId('');
-    }
-  };
-
-  const handleReactivateBranchEmployee = async (employee: BranchEmployee) => {
-    const branchId = String(employeeContextBranchId || '').trim();
-    if (!employee.id || !branchId || employeeRowActionId) {
-      return;
-    }
-
-    setEmployeeRowActionId(employee.id);
-    setEmployeeFormError(null);
-    try {
-      await api.updateEmployee(employee.id, {
-        is_active: true
-      });
-      await loadBranchEmployees(branchId);
-    } catch (error) {
-      setEmployeeFormError(
-        error instanceof Error ? error.message : 'Failed to activate employee.'
-      );
-    } finally {
-      setEmployeeRowActionId('');
-    }
   };
 
   // Placeholder for nearest branch lookup.
@@ -2733,7 +3320,9 @@ export default function Dashboard() {
 
         void addBranchMarkers();
         ensureTerritoryLayers(map.current);
-        void loadTerritoryBranchCatalog();
+        if (isVoronoiView) {
+          void loadTerritoryBranchCatalog();
+        }
 
         // Fit map to India bounds
         const bounds = [
@@ -3207,10 +3796,12 @@ export default function Dashboard() {
   }, [mapLoaded, loadSystemConfig]);
 
   useEffect(() => {
+    if (!isVoronoiView) return;
     if (!mapLoaded) return;
     if (territoryBranchOptions.length > 0 || branchOptionsLoading) return;
     void loadTerritoryBranchCatalog();
   }, [
+    isVoronoiView,
     mapLoaded,
     territoryBranchOptions.length,
     branchOptionsLoading,
@@ -3218,13 +3809,138 @@ export default function Dashboard() {
   ]);
 
   useEffect(() => {
-    if (!map.current || !map.current.getLayer(TERRITORY_CUSTOMERS_LAYER_ID)) return;
-    map.current.setLayoutProperty(
-      TERRITORY_CUSTOMERS_LAYER_ID,
-      'visibility',
-      showTerritoryCustomers ? 'visible' : 'none'
-    );
-  }, [showTerritoryCustomers, mapLoaded]);
+    if (!map.current || !mapLoaded) return;
+    applyTerritoryCustomerDotsMode(territoryCustomerDotsMode);
+  }, [territoryCustomerDotsMode, mapLoaded]);
+
+  useEffect(() => {
+    if (!map.current || !mapLoaded) {
+      return;
+    }
+
+    const mapInstance = map.current;
+    const canvas = mapInstance.getCanvas();
+    const restoreCursor = () => {
+      canvas.style.cursor = managerOverrideEnabledRef.current ? 'crosshair' : '';
+    };
+
+    const handleTerritoryHover = (event: MapMouseEvent) => {
+      if (managerOverrideEnabledRef.current) {
+        clearTerritoryTooltip();
+        restoreCursor();
+        return;
+      }
+
+      const selectedBranchLayerIds = [TERRITORY_SELECTED_BRANCHES_LAYER_ID]
+        .filter((layerId) => Boolean(mapInstance.getLayer(layerId)));
+      const hoveredSelectedBranchFeature = selectedBranchLayerIds.length > 0
+        ? mapInstance
+          .queryRenderedFeatures(event.point, { layers: selectedBranchLayerIds })
+          .find((feature) => getTerritoryFeatureBranchId(feature.properties as TerritoryFeatureProperties))
+        : null;
+
+      const otherBranchLayerIds = [BRANCH_MARKERS_LAYER_ID]
+        .filter((layerId) => Boolean(mapInstance.getLayer(layerId)));
+      const hoveredOtherBranchFeature = !hoveredSelectedBranchFeature && otherBranchLayerIds.length > 0
+        ? mapInstance
+          .queryRenderedFeatures(event.point, { layers: otherBranchLayerIds })
+          .find((feature) => getTerritoryFeatureBranchId(feature.properties as TerritoryFeatureProperties))
+        : null;
+
+      const hoveredBranchFeature = hoveredSelectedBranchFeature || hoveredOtherBranchFeature;
+      if (hoveredBranchFeature) {
+        const properties = (hoveredBranchFeature.properties || {}) as TerritoryFeatureProperties;
+        if (!territoryTooltipRef.current) {
+          territoryTooltipRef.current = new Popup({
+            closeButton: false,
+            closeOnClick: false,
+            maxWidth: '280px',
+            offset: 12
+          });
+        }
+
+        territoryTooltipRef.current
+          .setLngLat(event.lngLat)
+          .setHTML(buildBranchTooltipHtml(properties))
+          .addTo(mapInstance);
+
+        canvas.style.cursor = 'pointer';
+        return;
+      }
+
+      const hoverableLayerIds = [TERRITORY_FILL_LAYER_ID, TERRITORY_LINE_LAYER_ID]
+        .filter((layerId) => Boolean(mapInstance.getLayer(layerId)));
+
+      if (hoverableLayerIds.length === 0) {
+        clearTerritoryTooltip();
+        restoreCursor();
+        return;
+      }
+
+      const hoveredFeature = mapInstance
+        .queryRenderedFeatures(event.point, { layers: hoverableLayerIds })
+        .find((feature) => getTerritoryFeatureBranchId(feature.properties as TerritoryFeatureProperties));
+
+      if (!hoveredFeature) {
+        clearTerritoryTooltip();
+        restoreCursor();
+        return;
+      }
+
+      const properties = (hoveredFeature.properties || {}) as TerritoryFeatureProperties;
+      if (!territoryTooltipRef.current) {
+        territoryTooltipRef.current = new Popup({
+          closeButton: false,
+          closeOnClick: false,
+          maxWidth: '280px',
+          offset: 12
+        });
+      }
+
+      territoryTooltipRef.current
+        .setLngLat(event.lngLat)
+        .setHTML(buildTerritoryTooltipHtml(properties))
+        .addTo(mapInstance);
+
+      canvas.style.cursor = 'pointer';
+    };
+
+    const handleTerritoryLeave = () => {
+      clearTerritoryTooltip();
+      restoreCursor();
+    };
+
+    mapInstance.on('mousemove', handleTerritoryHover);
+    mapInstance.on('mouseleave', handleTerritoryLeave);
+
+    return () => {
+      mapInstance.off('mousemove', handleTerritoryHover);
+      mapInstance.off('mouseleave', handleTerritoryLeave);
+      clearTerritoryTooltip();
+      restoreCursor();
+    };
+  }, [mapLoaded, clearTerritoryTooltip]);
+
+  const selectedTerritoryBranchOptions = selectedTerritoryBranchIds
+    .map((branchId) => territoryBranchOptions.find((branch) => branch.id === branchId) || null)
+    .filter((branch): branch is TerritoryBranchOption => Boolean(branch));
+  const totalSelectedBasisCustomers = selectedTerritoryBranchOptions.reduce(
+    (sum, branch) => sum + Math.max(coerceFiniteNumber(branch.customerCount, 0), 0),
+    0
+  );
+  const showTerritoryZeroCoverageState = Boolean(
+    isVoronoiView
+    && selectedTerritoryBranchIds.length > 0
+    && !territoryLoading
+    && !territoryError
+    && territorySummary
+    && Math.max(coerceFiniteNumber(territorySummary.territories, 0), 0) === 0
+  );
+  const territoryZeroCoverageMessage = territoryMode === 'nearest_pockets'
+    ? (closestBranchScope === 'full_network'
+      ? 'Closest Branch uses the stored full-network coverage view. These selected branches currently win 0 canonical closest-pocket territories, so no polygons are displayed.'
+      : 'Selected Branches Only did not produce any coverage boxes for the current local scope. Adjust the branch selection or refresh the customer data.')
+    : 'No stored branch coverage polygons are available for the selected branches in this basis.';
 
   const employeeContextBranchId = String(
     selectedTerritoryBranchIds[0] || activeAssignmentBranchId || ''
@@ -3261,13 +3977,8 @@ export default function Dashboard() {
   useEffect(() => {
     if (!employeeContextBranchId) {
       setBranchEmployees([]);
-      setBranchTeamEmployees([]);
-      setEmployeeFormState(createEmptyBranchEmployeeFormState());
-      setEmployeeFormError(null);
       return;
     }
-    setEmployeeFormState(createEmptyBranchEmployeeFormState());
-    setEmployeeFormError(null);
     void loadBranchEmployees(employeeContextBranchId);
   }, [employeeContextBranchId, loadBranchEmployees]);
 
@@ -3430,6 +4141,10 @@ export default function Dashboard() {
   }, [selectionMode]);
 
   useEffect(() => {
+    territoryCustomerDotsModeRef.current = territoryCustomerDotsMode;
+  }, [territoryCustomerDotsMode]);
+
+  useEffect(() => {
     assignedGridPocketsRef.current = assignedGridPockets;
   }, [assignedGridPockets]);
 
@@ -3465,7 +4180,6 @@ export default function Dashboard() {
   }, [resetDashboardMapPanel]);
 
   const reassignableEmployeeIds = branchEmployees.map((employee) => employee.id);
-  const hasActiveBranchEmployees = branchEmployees.length > 0;
   const allocationFallbackLocked = allocationFallbackApplied;
 
   const pocketAllocationRows = useMemo<PocketAllocationRow[]>(() => {
@@ -3601,38 +4315,6 @@ export default function Dashboard() {
     }
   };
 
-  const handleRepairBranchTerritories = async () => {
-    const branchId = String(activeAssignmentBranchId || '').trim();
-    if (!branchId || allocationRepairLoading) {
-      return;
-    }
-
-    setAllocationRepairLoading(true);
-    setTerritoryError(null);
-    try {
-      // --- ORIGINAL BACKUP ---
-      // await api.runBranchTerritoryAllocation(branchId, {
-      //   useExistingTerritoriesOnly: true,
-      //   level_m: allocationLevel,
-      //   tolerance: assignmentTolerance
-      // });
-      await api.runBranchTerritoryAllocation(branchId, {
-        useExistingTerritoriesOnly: true,
-        forceRepair: true,
-        level_m: allocationLevel,
-        tolerance: assignmentTolerance
-      });
-      await loadEmployeeTerritoryAssignment(branchId, allocationLevel);
-    } catch (error) {
-      const message = error instanceof Error
-        ? error.message
-        : 'Failed to repair persisted branch territories.';
-      setTerritoryError(message);
-    } finally {
-      setAllocationRepairLoading(false);
-    }
-  };
-
   return (
     <Box sx={{ width: '100%', height: '100%', minHeight: 0, position: 'relative' }}>
       <Box
@@ -3685,7 +4367,7 @@ export default function Dashboard() {
           </Paper>
         </Box>
       )}
-      {showAssignmentEmptyState && (
+      {isVoronoiView && showAssignmentEmptyState && (
         <Paper
           elevation={8}
           sx={{
@@ -3724,6 +4406,7 @@ export default function Dashboard() {
           </Stack>
         </Paper>
       )}
+      {isVoronoiView && (
       <Paper
         elevation={6}
         sx={{
@@ -3743,28 +4426,14 @@ export default function Dashboard() {
         }}
       >
         <Stack spacing={1.25}>
-          <Stack direction="row" justifyContent="space-between" alignItems="center">
-            <Typography sx={{ fontSize: 13, fontWeight: 700 }}>
-              Voronoi Territory View
-            </Typography>
-            <IconButton
-              size="small"
-              onClick={() => setIsDrawerOpen(true)}
-              sx={{ color: '#E2E8F0', border: '1px solid rgba(148, 163, 184, 0.45)' }}
-              aria-label="Open Pocket Inspector"
-            >
-              <MenuIcon fontSize="small" />
-            </IconButton>
-          </Stack>
-
           <FormControl fullWidth size="small">
             <InputLabel id="territory-mode-label" sx={{ color: '#CBD5E1' }}>
-              Mode
+              Territory Basis
             </InputLabel>
             <Select
               labelId="territory-mode-label"
               value={territoryMode}
-              label="Mode"
+              label="Territory Basis"
               onChange={(event) => handleTerritoryModeChange(event.target.value as TerritoryMode)}
               disabled={territoryLoading || !mapLoaded}
               sx={{
@@ -3787,12 +4456,40 @@ export default function Dashboard() {
             </InputLabel>
             <Select
               labelId="territory-branch-label"
-              value={selectedTerritoryBranchIds[0] || ''}
+              multiple
+              value={selectedTerritoryBranchIds}
               onChange={(event) => {
-                const nextBranchId = String(event.target.value || '').trim();
-                handleTerritoryBranchChange(nextBranchId ? [nextBranchId] : []);
+                const nextBranchIds = (
+                  Array.isArray(event.target.value)
+                    ? event.target.value
+                    : String(event.target.value || '').split(',')
+                )
+                  .map((value) => String(value || '').trim())
+                  .filter(Boolean);
+                handleTerritoryBranchChange(nextBranchIds);
               }}
               input={<OutlinedInput label="Branch" />}
+              renderValue={(selected) => (
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                  {(selected as string[]).map((branchId) => {
+                    const branchOption = territoryBranchOptions.find((branch) => branch.id === branchId);
+                    return (
+                      <Chip
+                        key={branchId}
+                        label={branchOption
+                          ? `${branchOption.id} - ${branchOption.city} (${branchOption.customerCount})`
+                          : branchId}
+                        size="small"
+                        sx={{
+                          maxWidth: '100%',
+                          backgroundColor: 'rgba(56, 189, 248, 0.16)',
+                          color: '#E2E8F0'
+                        }}
+                      />
+                    );
+                  })}
+                </Box>
+              )}
               disabled={
                 territoryLoading
                 || branchOptionsLoading
@@ -3813,6 +4510,32 @@ export default function Dashboard() {
             </Select>
           </FormControl>
 
+          {territoryMode === 'nearest_pockets' && (
+            <FormControl fullWidth size="small">
+              <InputLabel id="closest-branch-scope-label" sx={{ color: '#CBD5E1' }}>
+                Closest Branch Scope
+              </InputLabel>
+              <Select
+                labelId="closest-branch-scope-label"
+                value={closestBranchScope}
+                label="Closest Branch Scope"
+                onChange={(event) => handleClosestBranchScopeChange(event.target.value as ClosestBranchScope)}
+                disabled={territoryLoading || !mapLoaded}
+                sx={{
+                  color: '#E2E8F0',
+                  '& .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(148, 163, 184, 0.5)' },
+                  '& .MuiSvgIcon-root': { color: '#CBD5E1' }
+                }}
+              >
+                {CLOSEST_BRANCH_SCOPE_OPTIONS.map((option) => (
+                  <MenuItem key={option.value} value={option.value}>
+                    {option.label}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
+
           {branchOptionsLoading && (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <CircularProgress size={14} sx={{ color: '#38BDF8' }} />
@@ -3820,15 +4543,25 @@ export default function Dashboard() {
             </Box>
           )}
 
+          <Typography sx={{ fontSize: 11, color: '#94A3B8' }}>
+            Select up to {MAX_TERRITORY_BRANCHES} branches.
+          </Typography>
+
+          {selectedTerritoryBranchIds.length > 0 && (
+            <Typography sx={{ fontSize: 11, color: '#94A3B8' }}>
+              Current basis customers across selected branches: {totalSelectedBasisCustomers.toLocaleString()}
+            </Typography>
+          )}
+
           <FormControl fullWidth size="small">
             <InputLabel id="territory-customer-view-label" sx={{ color: '#CBD5E1' }}>
-              Customer View
+              Customer Dots
             </InputLabel>
             <Select
               labelId="territory-customer-view-label"
-              value={territoryCustomerView}
-              label="Customer View"
-              onChange={(event) => handleTerritoryCustomerViewChange(event.target.value as TerritoryCustomerView)}
+              value={territoryCustomerDotsMode}
+              label="Customer Dots"
+              onChange={(event) => handleTerritoryCustomerDotsChange(event.target.value as TerritoryCustomerDotsMode)}
               disabled={territoryLoading || !mapLoaded}
               sx={{
                 color: '#E2E8F0',
@@ -3836,7 +4569,7 @@ export default function Dashboard() {
                 '& .MuiSvgIcon-root': { color: '#CBD5E1' }
               }}
             >
-              {TERRITORY_CUSTOMER_VIEW_OPTIONS.map((option) => (
+              {territoryCustomerDotOptions.map((option) => (
                 <MenuItem key={option.value} value={option.value}>
                   {option.label}
                 </MenuItem>
@@ -3910,281 +4643,6 @@ export default function Dashboard() {
 
           <Divider sx={{ borderColor: 'rgba(148, 163, 184, 0.35)' }} />
 
-          <Stack spacing={1}>
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography sx={{ fontSize: 12, fontWeight: 700, color: '#F8FAFC' }}>
-                Manage Branch Team
-              </Typography>
-              <Button
-                size="small"
-                variant="text"
-                onClick={() => setManageTeamExpanded((previous) => !previous)}
-                sx={{ textTransform: 'none', color: '#7DD3FC', minWidth: 0, p: 0.4 }}
-              >
-                {manageTeamExpanded ? 'Hide' : 'Open'}
-              </Button>
-            </Stack>
-
-            {!branchEmployeesLoading && !hasActiveBranchEmployees && employeeContextBranchId && (
-              <Alert severity="warning" sx={{ py: 0.2, '& .MuiAlert-message': { fontSize: 11 } }}>
-                Please add active employees to this branch to manage pocket assignments.
-              </Alert>
-            )}
-
-            {manageTeamExpanded && (
-              <>
-                {!employeeContextBranchId && (
-                  <Typography sx={{ fontSize: 11, color: '#94A3B8' }}>
-                    Select a branch to manage employees.
-                  </Typography>
-                )}
-
-                {employeeContextBranchId && (
-                  <>
-                    {employeeFormError && (
-                      <Alert severity="error" sx={{ py: 0.2, '& .MuiAlert-message': { fontSize: 11 } }}>
-                        {employeeFormError}
-                      </Alert>
-                    )}
-
-                    <Stack spacing={1}>
-                      <TextField
-                        fullWidth
-                        size="small"
-                        label="Employee ID"
-                        value={employeeFormState.employeeCode}
-                        onChange={(event) => setEmployeeFormState((previous) => ({
-                          ...previous,
-                          employeeCode: event.target.value
-                        }))}
-                        disabled={employeeFormSaving}
-                        sx={{
-                          '& .MuiInputBase-input': { color: '#E2E8F0', fontSize: 12 },
-                          '& .MuiInputLabel-root': { color: '#CBD5E1', fontSize: 12 },
-                          '& .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(148, 163, 184, 0.5)' }
-                        }}
-                      />
-
-                      <TextField
-                        fullWidth
-                        size="small"
-                        label="Name"
-                        value={employeeFormState.name}
-                        onChange={(event) => setEmployeeFormState((previous) => ({
-                          ...previous,
-                          name: event.target.value
-                        }))}
-                        disabled={employeeFormSaving}
-                        sx={{
-                          '& .MuiInputBase-input': { color: '#E2E8F0', fontSize: 12 },
-                          '& .MuiInputLabel-root': { color: '#CBD5E1', fontSize: 12 },
-                          '& .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(148, 163, 184, 0.5)' }
-                        }}
-                      />
-
-                      <Stack direction="row" spacing={1} alignItems="center">
-                        <Box
-                          component="label"
-                          sx={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 0.8,
-                            color: '#CBD5E1',
-                            fontSize: 11
-                          }}
-                        >
-                          Color
-                          <input
-                            type="color"
-                            value={normalizeHexColor(employeeFormState.colorCode, DEFAULT_EMPLOYEE_COLOR_PALETTE[0])}
-                            disabled={employeeFormSaving}
-                            onChange={(event) => setEmployeeFormState((previous) => ({
-                              ...previous,
-                              colorCode: normalizeHexColor(event.target.value, DEFAULT_EMPLOYEE_COLOR_PALETTE[0])
-                            }))}
-                            style={{
-                              width: 34,
-                              height: 28,
-                              padding: 0,
-                              border: '1px solid rgba(148, 163, 184, 0.55)',
-                              borderRadius: 6,
-                              background: 'transparent'
-                            }}
-                          />
-                        </Box>
-
-                        <TextField
-                          fullWidth
-                          size="small"
-                          type="number"
-                          label="Max Capacity"
-                          value={employeeFormState.maxCapacity}
-                          onChange={(event) => setEmployeeFormState((previous) => ({
-                            ...previous,
-                            maxCapacity: event.target.value
-                          }))}
-                          disabled={employeeFormSaving}
-                          inputProps={{ min: 0, step: 1 }}
-                          sx={{
-                            '& .MuiInputBase-input': { color: '#E2E8F0', fontSize: 12 },
-                            '& .MuiInputLabel-root': { color: '#CBD5E1', fontSize: 12 },
-                            '& .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(148, 163, 184, 0.5)' }
-                          }}
-                        />
-                      </Stack>
-
-                      <FormControlLabel
-                        control={(
-                          <Checkbox
-                            size="small"
-                            checked={employeeFormState.isActive}
-                            onChange={(event) => setEmployeeFormState((previous) => ({
-                              ...previous,
-                              isActive: event.target.checked
-                            }))}
-                            disabled={employeeFormSaving}
-                          />
-                        )}
-                        label="Active"
-                        sx={{ m: 0, '& .MuiFormControlLabel-label': { fontSize: 11, color: '#CBD5E1' } }}
-                      />
-
-                      <Stack direction="row" spacing={1}>
-                        <Button
-                          size="small"
-                          variant="contained"
-                          onClick={() => void handleSaveBranchEmployee()}
-                          disabled={employeeFormSaving || branchEmployeesLoading}
-                          sx={{
-                            textTransform: 'none',
-                            backgroundColor: '#0EA5E9',
-                            '&:hover': { backgroundColor: '#0284C7' }
-                          }}
-                        >
-                          {employeeFormSaving
-                            ? 'Saving...'
-                            : employeeFormState.id ? 'Update Employee' : 'Add Employee'}
-                        </Button>
-                        <Button
-                          size="small"
-                          variant="text"
-                          onClick={resetBranchEmployeeForm}
-                          disabled={employeeFormSaving}
-                          sx={{ textTransform: 'none', color: '#94A3B8' }}
-                        >
-                          Reset
-                        </Button>
-                      </Stack>
-                    </Stack>
-
-                    <TableContainer sx={{ maxHeight: 190, overflowY: 'auto', border: '1px solid rgba(148, 163, 184, 0.2)', borderRadius: 1 }}>
-                      <Table stickyHeader size="small" aria-label="Manage branch team">
-                        <TableHead>
-                          <TableRow>
-                            <TableCell sx={{ backgroundColor: '#0F172A', color: '#CBD5E1', fontSize: 11 }}>Employee</TableCell>
-                            <TableCell sx={{ backgroundColor: '#0F172A', color: '#CBD5E1', fontSize: 11 }} align="right">Pockets</TableCell>
-                            <TableCell sx={{ backgroundColor: '#0F172A', color: '#CBD5E1', fontSize: 11 }} align="right">Customers</TableCell>
-                            <TableCell sx={{ backgroundColor: '#0F172A', color: '#CBD5E1', fontSize: 11 }}>Status</TableCell>
-                            <TableCell sx={{ backgroundColor: '#0F172A', color: '#CBD5E1', fontSize: 11 }}>Actions</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {branchTeamEmployees.map((employee) => (
-                            <TableRow key={employee.id} sx={{ '& td': { color: '#E2E8F0', borderColor: 'rgba(148, 163, 184, 0.12)' } }}>
-                              <TableCell sx={{ fontSize: 11 }}>
-                                <Stack direction="row" spacing={0.8} alignItems="center">
-                                  <Box
-                                    sx={{
-                                      width: 11,
-                                      height: 11,
-                                      borderRadius: 0.6,
-                                      border: '1px solid rgba(255, 255, 255, 0.4)',
-                                      backgroundColor: normalizeHexColor(employee.colorCode, GRID1_FALLBACK_COLOR)
-                                    }}
-                                  />
-                                  <Box>
-                                    <Typography sx={{ fontSize: 11 }}>{employee.name}</Typography>
-                                    <Typography sx={{ fontSize: 10, color: '#94A3B8' }}>{employee.employeeCode}</Typography>
-                                  </Box>
-                                </Stack>
-                              </TableCell>
-                              <TableCell sx={{ fontSize: 11 }} align="right">
-                                {Number(employee.allocatedPocketsCount || 0)}
-                              </TableCell>
-                              <TableCell sx={{ fontSize: 11 }} align="right">
-                                {Number(employee.allocatedCustomerCount || 0)}
-                              </TableCell>
-                              <TableCell sx={{ fontSize: 11 }}>
-                                {employee.isActive ? 'Active' : 'Inactive'}
-                              </TableCell>
-                              <TableCell sx={{ fontSize: 11 }}>
-                                <Stack direction="row" spacing={0.6}>
-                                  <Button
-                                    size="small"
-                                    variant="text"
-                                    onClick={() => handleEditBranchEmployee(employee)}
-                                    disabled={employeeFormSaving || employeeRowActionId === employee.id}
-                                    sx={{ textTransform: 'none', minWidth: 0, px: 0.6, color: '#7DD3FC' }}
-                                  >
-                                    Edit
-                                  </Button>
-                                  {employee.isActive ? (
-                                    <Button
-                                      size="small"
-                                      variant="text"
-                                      onClick={() => void handleDeactivateBranchEmployee(employee.id)}
-                                      disabled={employeeFormSaving || employeeRowActionId === employee.id}
-                                      sx={{ textTransform: 'none', minWidth: 0, px: 0.6, color: '#FCA5A5' }}
-                                    >
-                                      Deactivate
-                                    </Button>
-                                  ) : (
-                                    <Button
-                                      size="small"
-                                      variant="text"
-                                      onClick={() => void handleReactivateBranchEmployee(employee)}
-                                      disabled={employeeFormSaving || employeeRowActionId === employee.id}
-                                      sx={{ textTransform: 'none', minWidth: 0, px: 0.6, color: '#86EFAC' }}
-                                    >
-                                      Activate
-                                    </Button>
-                                  )}
-                                </Stack>
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                          {branchTeamEmployees.length === 0 && (
-                            <TableRow>
-                              <TableCell colSpan={5} sx={{ color: '#94A3B8', fontSize: 11 }}>
-                                No employees found for this branch.
-                              </TableCell>
-                            </TableRow>
-                          )}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
-                  </>
-                )}
-              </>
-            )}
-          </Stack>
-
-          <FormControlLabel
-            control={(
-              <Checkbox
-                size="small"
-                checked={showTerritoryCustomers}
-                onChange={(event) => setShowTerritoryCustomers(event.target.checked)}
-                disabled={!mapLoaded}
-              />
-            )}
-            label="Show Customers (Selected Branches)"
-            sx={{
-              m: 0,
-              '& .MuiFormControlLabel-label': { fontSize: 12, color: '#CBD5E1' }
-            }}
-          />
-
           <FormControlLabel
             control={(
               <Checkbox
@@ -4194,179 +4652,12 @@ export default function Dashboard() {
                 disabled={!mapLoaded || !showBranches}
               />
             )}
-            label="Show Other Branches"
+            label="Show Unselected Branches"
             sx={{
               m: 0,
               '& .MuiFormControlLabel-label': { fontSize: 12, color: '#CBD5E1' }
             }}
           />
-
-          <Divider sx={{ borderColor: 'rgba(148, 163, 184, 0.35)' }} />
-
-          <Typography sx={{ fontSize: 12, fontWeight: 700, color: '#F8FAFC' }}>
-            Manager Override
-          </Typography>
-
-          <Stack direction="row" spacing={1} sx={{ mb: 0.2 }}>
-            <Button
-              size="small"
-              variant={showPocketLayout ? 'contained' : 'outlined'}
-              onClick={() => {
-                const nextVisible = !showPocketLayout;
-                setShowPocketLayout(nextVisible);
-                if (
-                  nextVisible
-                  && employeeContextBranchId
-                  && assignedGridPockets.features.length === 0
-                ) {
-                  setTerritoryError(null);
-                  void loadEmployeeTerritoryAssignment(employeeContextBranchId, allocationLevel);
-                }
-              }}
-              disabled={!mapLoaded || !employeeContextBranchId}
-              sx={{
-                textTransform: 'none',
-                minWidth: 0,
-                ...(showPocketLayout
-                  ? {
-                      backgroundColor: '#0EA5E9',
-                      '&:hover': { backgroundColor: '#0284C7' }
-                    }
-                  : {
-                      color: '#CBD5E1',
-                      borderColor: 'rgba(148, 163, 184, 0.5)'
-                    })
-              }}
-            >
-              {showPocketLayout ? 'Hide Pocket Layout' : 'Show Pocket Layout'}
-            </Button>
-            <Button
-              size="small"
-              variant="text"
-              disabled={!mapLoaded || !employeeContextBranchId}
-              onClick={() => {
-                setTerritoryError(null);
-                void loadEmployeeTerritoryAssignment(employeeContextBranchId, allocationLevel);
-              }}
-              sx={{ textTransform: 'none', minWidth: 0, color: '#7DD3FC' }}
-            >
-              Reload Pocket Layout
-            </Button>
-            <Button
-              size="small"
-              variant="text"
-              disabled={!mapLoaded || !employeeContextBranchId || allocationRepairLoading}
-              onClick={() => void handleRepairBranchTerritories()}
-              sx={{ textTransform: 'none', minWidth: 0, color: '#FCD34D' }}
-            >
-              {allocationRepairLoading ? 'Repairing...' : 'Repair Branch Territories'}
-            </Button>
-          </Stack>
-
-          <FormControlLabel
-            control={(
-              <Checkbox
-                size="small"
-                checked={managerOverrideEnabled}
-                onChange={(event) => setManagerOverrideEnabled(event.target.checked)}
-                // --- ORIGINAL BACKUP ---
-                // disabled={!mapLoaded || assignedGridPockets.features.length === 0 || !showPocketLayout}
-                disabled={
-                  !mapLoaded
-                  || assignedGridPockets.features.length === 0
-                  || !showPocketLayout
-                  || allocationFallbackLocked
-                }
-              />
-            )}
-            label="Enable Manual Reassignment"
-            sx={{
-              m: 0,
-              '& .MuiFormControlLabel-label': { fontSize: 12, color: '#CBD5E1' }
-            }}
-          />
-
-          <FormControl fullWidth size="small">
-            <InputLabel id="selection-mode-label" sx={{ color: '#CBD5E1' }}>
-              Selection Tool
-            </InputLabel>
-            <Select
-              labelId="selection-mode-label"
-              value={selectionMode}
-              label="Selection Tool"
-              onChange={(event) => {
-                setSelectionMode(event.target.value as SelectionMode);
-                setLassoDraftCoordinates([]);
-                setLassoCursorCoordinate(null);
-                resetSelectionPreview();
-              }}
-              // --- ORIGINAL BACKUP ---
-              // disabled={!managerOverrideEnabled || !mapLoaded}
-              disabled={!managerOverrideEnabled || !mapLoaded || allocationFallbackLocked}
-              sx={{
-                color: '#E2E8F0',
-                '& .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(148, 163, 184, 0.5)' },
-                '& .MuiSvgIcon-root': { color: '#CBD5E1' }
-              }}
-            >
-              <MenuItem value="box">Box Drag</MenuItem>
-              <MenuItem value="lasso">Polygon Lasso</MenuItem>
-            </Select>
-          </FormControl>
-
-          {managerOverrideEnabled && selectionMode === 'lasso' && (
-            <Stack direction="row" spacing={1}>
-              <Button
-                size="small"
-                variant="outlined"
-                onClick={() => finishLassoSelection(false)}
-                disabled={lassoDraftCoordinates.length < 3}
-                sx={{
-                  borderColor: 'rgba(125, 211, 252, 0.65)',
-                  color: '#BAE6FD',
-                  textTransform: 'none',
-                  fontSize: 11
-                }}
-              >
-                Close Lasso
-              </Button>
-              <Button
-                size="small"
-                variant="text"
-                onClick={clearManagerSelection}
-                sx={{ color: '#94A3B8', textTransform: 'none', fontSize: 11 }}
-              >
-                Clear
-              </Button>
-            </Stack>
-          )}
-
-          {managerOverrideEnabled && (
-            <Typography sx={{ fontSize: 11, color: '#94A3B8' }}>
-              {selectionMode === 'box'
-                ? 'Drag on the map to multi-select pockets. Click a pocket to select one.'
-                : 'Click to trace a lasso polygon. Double-click or "Close Lasso" to select.'}
-            </Typography>
-          )}
-
-          <Typography sx={{ fontSize: 11, color: '#CBD5E1' }}>
-            Selected Pockets: {selectedPocketIds.length}
-          </Typography>
-
-          {activeAssignmentBranchId && (
-            <Button
-              size="small"
-              variant="outlined"
-              onClick={() => setShowPocketAllocationsPanel((previous) => !previous)}
-              sx={{
-                textTransform: 'none',
-                borderColor: 'rgba(148, 163, 184, 0.5)',
-                color: '#CBD5E1'
-              }}
-            >
-              {showPocketAllocationsPanel ? 'Hide Pocket Allocations' : 'Show Pocket Allocations'}
-            </Button>
-          )}
 
           {territoryLoading && (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -4375,36 +4666,20 @@ export default function Dashboard() {
             </Box>
           )}
 
-          {territorySummary && (
-            <Stack spacing={0.3}>
-              <Typography sx={{ fontSize: 11, color: '#94A3B8' }}>
-                Territories: {territorySummary.territories}
-              </Typography>
-              <Typography sx={{ fontSize: 11, color: '#94A3B8' }}>
-                Source Points: {territorySummary.points} ({territorySummary.sourceType})
-              </Typography>
-              <Typography sx={{ fontSize: 11, color: '#94A3B8' }}>
-                Visible Customers: {territorySummary.customersVisible}
-              </Typography>
-              <Typography sx={{ fontSize: 11, color: '#94A3B8' }}>
-                Customer View: {territoryCustomerView === 'original_customers' ? 'Original Customers' : 'Selected Pockets'}
-              </Typography>
-              <Typography sx={{ fontSize: 11, color: '#94A3B8' }}>
-                Selected Branch: {selectedTerritoryBranchIds.length}/{MAX_TERRITORY_BRANCHES}
-              </Typography>
-              <Typography sx={{ fontSize: 11, color: '#94A3B8' }}>
-                Other Branches: {showOtherBranches ? 'Visible' : 'Hidden'}
-              </Typography>
-            </Stack>
-          )}
-
           {territoryError && (
             <Alert severity="error" sx={{ py: 0.3, '& .MuiAlert-message': { fontSize: 12 } }}>
               {territoryError}
             </Alert>
           )}
+
+          {showTerritoryZeroCoverageState && (
+            <Alert severity="info" sx={{ py: 0.3, '& .MuiAlert-message': { fontSize: 12 } }}>
+              {territoryZeroCoverageMessage}
+            </Alert>
+          )}
         </Stack>
       </Paper>
+      )}
 
       {managerOverrideEnabled && employeeMetrics.length > 0 && (
         <Paper

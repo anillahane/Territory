@@ -1,4 +1,4 @@
-import { useState, useEffect, type SyntheticEvent } from 'react';
+import { useState, useEffect, useRef, type SyntheticEvent } from 'react';
 import {
   Box,
   Typography,
@@ -42,6 +42,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useStore } from '../store/useStore';
 import api from '../services/api';
 import BranchEmployeePocketMapping from '../components/BranchEmployeePocketMapping';
+import { clearWindowInterval, replaceWindowInterval } from '../utils/polling';
 
 interface Job {
   jobId: string;
@@ -77,7 +78,7 @@ export default function BatchProcessing() {
   const [selectedJobStats, setSelectedJobStats] = useState<Job | null>(null);
   const [statsDialogOpen, setStatsDialogOpen] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null); // Track currently processing job
-  const [pollingInterval, setPollingInterval] = useState<number | null>(null);
+  const pollingIntervalRef = useRef<number | null>(null);
   const [batchTab, setBatchTab] = useState<'jobs' | 'mapping'>(requestedBatchTab);
 
   useEffect(() => {
@@ -94,32 +95,27 @@ export default function BatchProcessing() {
   // Cleanup polling on unmount
   useEffect(() => {
     return () => {
-      if (pollingInterval) {
-        clearInterval(pollingInterval);
-      }
+      pollingIntervalRef.current = clearWindowInterval(pollingIntervalRef.current);
     };
-  }, [pollingInterval]);
+  }, []);
 
   // Start polling for active job updates
   const startPolling = (jobId: string) => {
     console.log('Starting polling for job:', jobId);
     setActiveJobId(jobId);
-    
-    // Poll every 2 seconds
-    const interval = setInterval(() => {
-      loadJobHistory();
-    }, 2000);
-    
-    setPollingInterval(interval);
+    pollingIntervalRef.current = replaceWindowInterval(
+      pollingIntervalRef.current,
+      () => {
+        loadJobHistory();
+      },
+      2000
+    );
   };
 
   // Stop polling
   const stopPolling = () => {
     console.log('Stopping polling');
-    if (pollingInterval) {
-      clearInterval(pollingInterval);
-      setPollingInterval(null);
-    }
+    pollingIntervalRef.current = clearWindowInterval(pollingIntervalRef.current);
     setActiveJobId(null);
   };
 
@@ -796,7 +792,7 @@ export default function BatchProcessing() {
                 />
                 {replaceExisting && (
                   <Alert severity="warning" sx={{ mt: 1 }}>
-                    Existing rows in Customer Pocket Mappings will be deleted before saving this upload.
+                    Existing rows in Customer Pocket Mappings will be replaced only after this upload is saved successfully.
                   </Alert>
                 )}
               </>

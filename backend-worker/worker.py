@@ -97,10 +97,18 @@ def calculate_indices(x, y):
 
 def encode_indices(indices, alphabet):
     """Encode indices to Pocket ID"""
+    def resolve_alphabet_index(value):
+        numeric_value = int(value)
+        if numeric_value < 0 or numeric_value >= len(alphabet):
+            raise ValueError(
+                f"Grid index {numeric_value} is outside supported Pocket ID bounds (0-{len(alphabet) - 1})"
+            )
+        return numeric_value
+
     parts = []
     for idx in indices:
-        row_char = alphabet[idx['row'] % 30]
-        col_char = alphabet[idx['col'] % 30]
+        row_char = alphabet[resolve_alphabet_index(idx['row'])]
+        col_char = alphabet[resolve_alphabet_index(idx['col'])]
         parts.append(f"{row_char}{col_char}")
     return '-'.join(parts)
 
@@ -291,6 +299,54 @@ def get_branches():
             })
         return branches
 
+def delete_existing_mappings(conn, job_id, wipe_all, replace_scope_branch_ids):
+    """Delete existing mappings using scoped semantics unless an explicit global wipe is requested."""
+    if wipe_all:
+        result = conn.execute(text("DELETE FROM customer_pocket_mappings"))
+        print(f"⚠️ Global mapping wipe requested for job {job_id}: deleted {result.rowcount or 0} rows")
+        return int(result.rowcount or 0)
+
+    branch_ids = [
+        str(branch_id).strip()
+        for branch_id in (replace_scope_branch_ids or [])
+        if str(branch_id).strip()
+    ]
+    if not branch_ids:
+        raise ValueError("replaceExisting requires scoped branch IDs when confirmWipeAll is false")
+
+    result = conn.execute(
+        text("""
+            DELETE FROM customer_pocket_mappings
+            WHERE existing_branch_id = ANY(:branch_ids)
+               OR nearest_branch_id = ANY(:branch_ids)
+        """),
+        {"branch_ids": branch_ids}
+    )
+    return int(result.rowcount or 0)
+
+def record_job_errors(conn, job_id, batch_number, mappings_batch, error_message):
+    """Persist failed batch rows without aborting the whole job."""
+    if not mappings_batch:
+        return
+
+    payload_rows = []
+    for mapping in mappings_batch:
+        payload_rows.append({
+            "job_id": job_id,
+            "customer_id": mapping.get("customer_id"),
+            "batch_number": batch_number,
+            "error_message": error_message,
+            "payload": json.dumps(mapping)
+        })
+
+    conn.execute(
+        text("""
+            INSERT INTO job_errors (job_id, customer_id, batch_number, error_message, payload)
+            VALUES (:job_id, :customer_id, :batch_number, :error_message, CAST(:payload AS jsonb))
+        """),
+        payload_rows
+    )
+
 def find_nearest_branch_for_pocket(pocket_lat, pocket_lon, branches):
     """Find nearest branch to a pocket center"""
     if not branches:
@@ -318,6 +374,12 @@ def process_job(job_data):
     file_path = job_data['filePath']
     config = job_data['config']
     replace_existing = parse_bool_flag(job_data.get('replaceExisting', False), False)
+    confirm_wipe_all = parse_bool_flag(job_data.get('confirmWipeAll', False), False)
+    replace_scope_branch_ids = [
+        str(branch_id).strip()
+        for branch_id in (job_data.get('replaceScopeBranchIds') or [])
+        if str(branch_id).strip()
+    ]
 
     # --- ORIGINAL BACKUP ---
     # Normalize file path to avoid cwd-dependent failures from manually requeued jobs.
@@ -434,6 +496,16 @@ def process_job(job_data):
         lon_col = next((c for c in ['canon_long', 'longitude', 'lon'] if c in df.columns), None)
         id_col = next((c for c in ['lan', 'customerid', 'customer_id', 'id'] if c in df.columns), None)
         branch_col = next((c for c in ['branch_code', 'branchcode', 'branch code'] if c in df.columns), None)
+        bucket_col = next((
+            c for c in [
+                'customer_bucket',
+                'customerbucket',
+                'bucket',
+                'customer_tag',
+                'customertag',
+                'tag'
+            ] if c in df.columns
+        ), None)
         
         if not lat_col or not lon_col:
             raise ValueError("Could not find latitude/longitude columns")
@@ -455,6 +527,7 @@ def process_job(job_data):
                     uploaded_branch_code = None
                     existing_branch_id = None
                     distance_customer_to_existing_branch = None
+                    customer_bucket = None
 
                     if branch_col and pd.notna(row[branch_col]):
                         branch_code = str(row[branch_col]).strip()
@@ -467,6 +540,11 @@ def process_job(job_data):
                                     lat, lon,
                                     existing_branch['lat'], existing_branch['lon']
                                 )
+
+                    if bucket_col and pd.notna(row[bucket_col]):
+                        parsed_bucket = str(row[bucket_col]).strip()
+                        if parsed_bucket:
+                            customer_bucket = parsed_bucket
                     
                     # --- ORIGINAL BACKUP ---
                     # # Identify containing pocket at 5km level.
@@ -508,9 +586,16 @@ def process_job(job_data):
                             pocket_centers[pocket_id]['nearestBranch'] = branch_info
 
                     selected_branch_info = pocket_centers[pocket_id].get('nearestBranch')
-                    # Revised mapping distance is pocket-center to branch distance.
                     if selected_branch_info:
-                        distance_customer_to_branch = selected_branch_info['distance']
+                        distance_pocket_to_branch = selected_branch_info['distance']
+                        distance_customer_to_branch = haversine_distance(
+                            lat,
+                            lon,
+                            selected_branch_info['branchLat'],
+                            selected_branch_info['branchLon']
+                        )
+                        if not math.isfinite(distance_pocket_to_branch) or not math.isfinite(distance_customer_to_branch):
+                            raise ValueError("Invalid branch distance resolved for mapped customer")
                         
                         # Store mapping
                         all_mappings.append({
@@ -522,11 +607,12 @@ def process_job(job_data):
                             'pocket_id': pocket_id,
                             'distance_customer_to_pocket': nearest_pocket['distance'],
                             'nearest_branch_id': selected_branch_info['branchId'],
-                            'distance_pocket_to_branch': selected_branch_info['distance'],
+                            'distance_pocket_to_branch': distance_pocket_to_branch,
                             'distance_customer_to_branch': distance_customer_to_branch,
                             'uploaded_branch_code': uploaded_branch_code,
                             'existing_branch_id': existing_branch_id,
-                            'distance_customer_to_existing_branch': distance_customer_to_existing_branch
+                            'distance_customer_to_existing_branch': distance_customer_to_existing_branch,
+                            'customer_bucket': customer_bucket
                         })
                 
                 except Exception as e:
@@ -572,27 +658,79 @@ def process_job(job_data):
             stats_df.to_excel(writer, sheet_name='Statistics', index=False)
         
         print(f"💾 Saving {len(all_mappings)} mappings to database...")
-        
-        # Bulk insert mappings in small batches to avoid PostgreSQL parameter limit
+
         replaced_mappings_count = 0
+        persisted_mappings_count = 0
         if all_mappings:
-            if replace_existing:
-                with db_engine.connect() as conn:
-                    delete_result = conn.execute(text("DELETE FROM customer_pocket_mappings"))
-                    conn.commit()
-                    replaced_mappings_count = delete_result.rowcount if delete_result.rowcount is not None else 0
-            batch_size = 100
-            for i in range(0, len(all_mappings), batch_size):
-                batch = all_mappings[i:i + batch_size]
-                mappings_df = pd.DataFrame(batch)
-                mappings_df.to_sql(
-                    'customer_pocket_mappings',
-                    db_engine,
-                    if_exists='append',
-                    index=False
+            batch_size = 1000
+            insert_sql = text("""
+                INSERT INTO customer_pocket_mappings (
+                    job_id,
+                    customer_id,
+                    customer_lat,
+                    customer_lon,
+                    pocket_id,
+                    distance_customer_to_pocket,
+                    nearest_branch_id,
+                    distance_pocket_to_branch,
+                    distance_customer_to_branch,
+                    uploaded_branch_code,
+                    existing_branch_id,
+                    distance_customer_to_existing_branch,
+                    customer_bucket
+                ) VALUES (
+                    :job_id,
+                    :customer_id,
+                    :customer_lat,
+                    :customer_lon,
+                    :pocket_id,
+                    :distance_customer_to_pocket,
+                    :nearest_branch_id,
+                    :distance_pocket_to_branch,
+                    :distance_customer_to_branch,
+                    :uploaded_branch_code,
+                    :existing_branch_id,
+                    :distance_customer_to_existing_branch,
+                    :customer_bucket
                 )
-                if (i + batch_size) % 1000 == 0:
-                    print(f"  Saved {min(i + batch_size, len(all_mappings))}/{len(all_mappings)} mappings...")
+                ON CONFLICT (customer_id) DO UPDATE SET
+                    job_id = EXCLUDED.job_id,
+                    customer_lat = EXCLUDED.customer_lat,
+                    customer_lon = EXCLUDED.customer_lon,
+                    pocket_id = EXCLUDED.pocket_id,
+                    distance_customer_to_pocket = EXCLUDED.distance_customer_to_pocket,
+                    nearest_branch_id = EXCLUDED.nearest_branch_id,
+                    distance_pocket_to_branch = EXCLUDED.distance_pocket_to_branch,
+                    distance_customer_to_branch = EXCLUDED.distance_customer_to_branch,
+                    uploaded_branch_code = EXCLUDED.uploaded_branch_code,
+                    existing_branch_id = EXCLUDED.existing_branch_id,
+                    distance_customer_to_existing_branch = EXCLUDED.distance_customer_to_existing_branch,
+                    customer_bucket = EXCLUDED.customer_bucket,
+                    updated_at = CURRENT_TIMESTAMP
+            """)
+            with db_engine.begin() as conn:
+                if replace_existing:
+                    replaced_mappings_count = delete_existing_mappings(
+                        conn,
+                        job_id,
+                        confirm_wipe_all,
+                        replace_scope_branch_ids
+                    )
+
+                for i in range(0, len(all_mappings), batch_size):
+                    batch = all_mappings[i:i + batch_size]
+                    batch_number = (i // batch_size) + 1
+                    nested = conn.begin_nested()
+                    try:
+                        conn.execute(insert_sql, batch)
+                        nested.commit()
+                        persisted_mappings_count += len(batch)
+                    except Exception as batch_error:
+                        nested.rollback()
+                        record_job_errors(conn, job_id, batch_number, batch, str(batch_error))
+                        print(f"  Failed batch {batch_number}: {batch_error}")
+                    if (i + batch_size) % 1000 == 0 or (i + batch_size) >= len(all_mappings):
+                        print(f"  Saved {min(i + batch_size, len(all_mappings))}/{len(all_mappings)} mappings...")
         
         # Finalize job
         stats = {
@@ -600,8 +738,10 @@ def process_job(job_data):
             "pocketStats": pocket_stats,
             "totalPockets": len(pocket_stats),
             "totalAccounts": processed_count,
-            "mappingsPersisted": len(all_mappings),
+            "mappingsPersisted": persisted_mappings_count,
             "replaceExisting": bool(replace_existing),
+            "confirmWipeAll": bool(confirm_wipe_all),
+            "replaceScopeBranchIds": replace_scope_branch_ids,
             "replacedMappingsCount": int(replaced_mappings_count),
             "fallbackPocketConfigHits": int(fallback_pocket_config_hits),
             "territoryUrl": f"/api/v1/batch/territories/{job_id}",
@@ -630,13 +770,13 @@ def process_job(job_data):
         print(f"✅ Job {job_id} completed successfully")
         print(f"   Processed: {processed_count} rows")
         print(f"   Unique pockets: {len(pocket_stats)}")
-        print(f"   Mappings saved: {len(all_mappings)}")
+        print(f"   Mappings saved: {persisted_mappings_count}")
         
         return {
             'jobId': job_id,
             'total': processed_count,
             'pocketStats': pocket_stats,
-            'mappingsPersisted': len(all_mappings),
+            'mappingsPersisted': persisted_mappings_count,
             'replacedMappingsCount': int(replaced_mappings_count),
             'fallbackPocketConfigHits': int(fallback_pocket_config_hits),
             'buffer': None  # File saved to disk

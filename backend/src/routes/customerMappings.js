@@ -1,9 +1,35 @@
 const express = require('express');
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
+const { requireRole } = require('../middleware/auth');
 const mappingService = require('../services/MappingService');
 const logger = require('../config/logger');
 
 const router = express.Router();
+
+const parseBooleanQueryParam = (value, defaultValue = true) => {
+  if (value === undefined || value === null || value === '') {
+    return defaultValue;
+  }
+
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) {
+    return defaultValue;
+  }
+
+  if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) {
+    return false;
+  }
+
+  if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) {
+    return true;
+  }
+
+  return defaultValue;
+};
 
 const normalizeOptionalId = (value, errorMessage, errorCode, maxLength = 50) => {
   if (value === undefined || value === null) {
@@ -56,6 +82,8 @@ router.get(
     const jobId = normalizeOptionalId(req.query.jobId, 'Invalid job ID', 'INVALID_JOB_ID');
     const customerId = req.query.customerId || '';
     const pocketId = normalizeOptionalId(req.query.pocketId, 'Invalid pocket ID', 'INVALID_POCKET_ID');
+    const includeStats = parseBooleanQueryParam(req.query.includeStats, true);
+    const includeBranchImpact = parseBooleanQueryParam(req.query.includeBranchImpact, true);
 
     // Validate and set defaults for page
     if (isNaN(page) || page < 1) {
@@ -81,11 +109,15 @@ router.get(
       page,
       pageSize,
     };
+    const options = {
+      includeStats,
+      includeBranchImpact,
+    };
 
-    logger.info('Fetching customer mappings', { filters, pagination });
+    logger.info('Fetching customer mappings', { filters, pagination, options });
 
     // Call service to get mappings
-    const result = await mappingService.getMappings(filters, pagination);
+    const result = await mappingService.getMappings(filters, pagination, options);
 
     res.json(result);
   })
@@ -238,6 +270,7 @@ router.post(
  */
 router.delete(
   '/',
+  requireRole('admin'),
   asyncHandler(async (req, res) => {
     const { olderThan, jobId } = req.query;
 

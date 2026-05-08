@@ -101,20 +101,29 @@ function encodeIndices(indices, alphabet = DEFAULT_ALPHABET) {
     throw new Error('Alphabet must contain exactly 30 characters');
   }
 
-  const normalizeAlphabetIndex = (value) => {
+  const resolveAlphabetIndex = (value) => {
     const numericValue = Number(value);
     if (!Number.isFinite(numericValue)) {
       throw new Error(`Invalid grid index encountered while encoding Pocket ID: ${value}`);
     }
 
     const normalizedInteger = Math.trunc(numericValue);
-    return ((normalizedInteger % 30) + 30) % 30;
+    if (normalizedInteger !== numericValue) {
+      throw new Error(`Grid index must be an integer while encoding Pocket ID: ${value}`);
+    }
+
+    if (normalizedInteger < 0 || normalizedInteger >= alphabet.length) {
+      throw new Error(
+        `Grid index ${normalizedInteger} is outside supported Pocket ID bounds (0-${alphabet.length - 1})`
+      );
+    }
+
+    return normalizedInteger;
   };
   
   const parts = indices.map(({ row, col }) => {
-    // JavaScript modulo keeps negative sign; normalize to [0, 29] to avoid "undefined" tokens.
-    const rowChar = alphabet[normalizeAlphabetIndex(row)];
-    const colChar = alphabet[normalizeAlphabetIndex(col)];
+    const rowChar = alphabet[resolveAlphabetIndex(row)];
+    const colChar = alphabet[resolveAlphabetIndex(col)];
     return `${rowChar}${colChar}`;
   });
   

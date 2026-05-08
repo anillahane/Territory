@@ -5,7 +5,7 @@
  */
 
 const MappingService = require('../../src/services/MappingService');
-const { query } = require('../../src/config/database');
+const { query, transaction } = require('../../src/config/database');
 
 // Mock the database module
 jest.mock('../../src/config/database');
@@ -108,7 +108,7 @@ describe('MappingService Unit Tests', () => {
 
       // Mock successful database insert for each batch
       query.mockImplementation((queryText, values) => {
-        const rowCount = values.length / 12;
+        const rowCount = values.length / 13;
         return Promise.resolve({ rowCount });
       });
 
@@ -122,9 +122,9 @@ describe('MappingService Unit Tests', () => {
       expect(query).toHaveBeenCalledTimes(3);
       
       // Verify batch sizes
-      const firstBatchSize = query.mock.calls[0][1].length / 12;
-      const secondBatchSize = query.mock.calls[1][1].length / 12;
-      const thirdBatchSize = query.mock.calls[2][1].length / 12;
+      const firstBatchSize = query.mock.calls[0][1].length / 13;
+      const secondBatchSize = query.mock.calls[1][1].length / 13;
+      const thirdBatchSize = query.mock.calls[2][1].length / 13;
       
       expect(firstBatchSize).toBe(1000);
       expect(secondBatchSize).toBe(1000);
@@ -155,7 +155,7 @@ describe('MappingService Unit Tests', () => {
         callCount++;
         if (callCount === 1) {
           // First batch succeeds
-          const rowCount = values.length / 12;
+          const rowCount = values.length / 13;
           return Promise.resolve({ rowCount });
         } else {
           // Second batch fails
@@ -185,6 +185,74 @@ describe('MappingService Unit Tests', () => {
       expect(result.success).toBe(true);
       expect(result.insertedCount).toBe(0);
       expect(result.errors).toHaveLength(0);
+      expect(query).not.toHaveBeenCalled();
+    });
+
+    test('should replace existing mappings inside a transaction after inserts succeed', async () => {
+      const jobId = 'job-123';
+      const mappings = [
+        {
+          customerId: 'CUST001',
+          customerLat: 40.7128,
+          customerLon: -74.0060,
+          pocketId: '00-00-00-00-00',
+          distanceCustomerToPocket: 150.5,
+          nearestBranchId: 'B001',
+          distancePocketToBranch: 500.0,
+          distanceCustomerToBranch: 650.5,
+        },
+      ];
+      const client = {
+        query: jest.fn()
+          .mockResolvedValueOnce({ rowCount: 1 })
+          .mockResolvedValueOnce({ rowCount: 7 }),
+      };
+      transaction.mockImplementation(async (callback) => callback(client));
+
+      const result = await MappingService.saveMappings(jobId, mappings, {
+        replaceExisting: true,
+      });
+
+      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(client.query).toHaveBeenCalledTimes(2);
+      expect(client.query.mock.calls[0][0]).toContain('INSERT INTO customer_pocket_mappings');
+      expect(client.query.mock.calls[1][0]).toContain('DELETE FROM customer_pocket_mappings WHERE job_id <> $1');
+      expect(client.query.mock.calls[1][1]).toEqual([jobId]);
+      expect(result).toMatchObject({
+        success: true,
+        insertedCount: 1,
+        replacedCount: 7,
+      });
+      expect(query).not.toHaveBeenCalled();
+    });
+
+    test('should not delete existing mappings when transactional replacement insert fails', async () => {
+      const jobId = 'job-rollback';
+      const mappings = [
+        {
+          customerId: 'CUST001',
+          customerLat: 40.7128,
+          customerLon: -74.0060,
+          pocketId: '00-00-00-00-00',
+          distanceCustomerToPocket: 150.5,
+          nearestBranchId: 'B001',
+          distancePocketToBranch: 500.0,
+          distanceCustomerToBranch: 650.5,
+        },
+      ];
+      const client = {
+        query: jest.fn().mockRejectedValue(new Error('insert failed')),
+      };
+      transaction.mockImplementation(async (callback) => callback(client));
+
+      await expect(MappingService.saveMappings(jobId, mappings, {
+        replaceExisting: true,
+      })).rejects.toThrow('insert failed');
+
+      expect(transaction).toHaveBeenCalledTimes(1);
+      expect(client.query).toHaveBeenCalledTimes(1);
+      expect(client.query.mock.calls[0][0]).toContain('INSERT INTO customer_pocket_mappings');
+      expect(client.query.mock.calls.some((call) => String(call[0]).includes('DELETE FROM customer_pocket_mappings'))).toBe(false);
       expect(query).not.toHaveBeenCalled();
     });
 
@@ -530,6 +598,45 @@ describe('MappingService Unit Tests', () => {
       // Verify that the WHERE clause doesn't include customer_id filter
       const countCall = query.mock.calls.find(call => call[0].includes('COUNT(*)'));
       expect(countCall[0]).not.toContain('customer_id ILIKE');
+    });
+
+    test('should skip stats and branch impact queries when disabled', async () => {
+      query.mockImplementation((queryText) => {
+        if (queryText.includes('COUNT(*)')) {
+          return Promise.resolve({ rows: [{ total: 1 }] });
+        }
+
+        return Promise.resolve({
+          rows: [
+            {
+              id: 1,
+              job_id: 'job-fast',
+              customer_id: 'CUST001',
+              customer_lat: 40.7128,
+              customer_lon: -74.0060,
+              pocket_id: '00-00-00-00-00',
+              distance_customer_to_pocket: 150.5,
+              nearest_branch_id: 'B001',
+              branch_name: 'NYC Branch',
+              distance_pocket_to_branch: 500.0,
+              distance_customer_to_branch: 650.5,
+              created_at: new Date(),
+            },
+          ],
+        });
+      });
+
+      const result = await MappingService.getMappings(
+        { jobId: 'job-fast' },
+        { page: 1, pageSize: 100 },
+        { includeStats: false, includeBranchImpact: false }
+      );
+
+      expect(result.pagination.totalRecords).toBe(1);
+      expect(result.stats).toBeUndefined();
+      expect(query).toHaveBeenCalledTimes(2);
+      expect(query.mock.calls.some((call) => String(call[0]).includes('WITH base_data'))).toBe(false);
+      expect(query.mock.calls.some((call) => String(call[0]).includes('GROUP BY cpm.existing_branch_id'))).toBe(false);
     });
   });
 });

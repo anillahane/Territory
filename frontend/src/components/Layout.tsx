@@ -16,16 +16,19 @@ import {
   Divider,
   IconButton,
   Checkbox,
+  Radio,
   Tooltip,
   Collapse,
 } from '@mui/material';
 import {
   Dashboard as DashboardIcon,
+  Map as MapIcon,
   Settings as SettingsIcon,
   Business as BusinessIcon,
   Group as GroupIcon,
   Calculate as CalculateIcon,
   CloudUpload as CloudUploadIcon,
+  Storage as StorageIcon,
   TableChart as TableChartIcon,
   HealthAndSafety as HealthAndSafetyIcon,
   Menu as MenuIcon,
@@ -49,10 +52,11 @@ export default function Layout() {
   const toggleDashboardGridLevel = useStore((state) => state.toggleDashboardGridLevel);
   const showBranches = useStore((state) => state.showBranches);
   const setShowBranches = useStore((state) => state.setShowBranches);
-  const isDashboardRoute = location.pathname === '/';
+  const isMapRoute = location.pathname === '/' || location.pathname === '/voronoi';
 
   const navItems = [
     { path: '/', label: 'Dashboard', icon: <DashboardIcon /> },
+    { path: '/voronoi', label: 'Voronoi Territory View', icon: <MapIcon /> },
     { path: '/branches', label: 'Branches', icon: <BusinessIcon /> },
     { path: '/employee-mapping', label: 'Employee Mapping', icon: <GroupIcon /> },
     { path: '/batch', label: 'Batch Processing', icon: <CloudUploadIcon /> },
@@ -71,6 +75,7 @@ export default function Layout() {
   //   { path: '/admin/territory-health', label: 'Territory Health', icon: <HealthAndSafetyIcon /> },
   // ];
   const adminItems = [
+    { path: '/admin/territory-data', label: 'Territory Data', icon: <StorageIcon /> },
     { path: '/calculator', label: 'Pocket ID Calculator', icon: <CalculateIcon /> },
     { path: '/config', label: 'System Configuration', icon: <SettingsIcon /> },
     { path: '/admin/territory-health', label: 'Territory Health', icon: <HealthAndSafetyIcon /> },
@@ -256,7 +261,7 @@ export default function Layout() {
             );
           })}
 
-          {isDashboardRoute && sidebarOpen && (
+          {isMapRoute && sidebarOpen && (
             <Box
               sx={{
                 mt: 1.25,
@@ -336,7 +341,7 @@ export default function Layout() {
                       }}
                     >
                       <Box sx={{ display: 'flex', alignItems: 'center', minWidth: 0 }}>
-                        <Checkbox
+                        <Radio
                           size="small"
                           checked={isSelected}
                           onChange={() => toggleDashboardGridLevel(gridLevel.id)}
@@ -530,8 +535,8 @@ export default function Layout() {
           display: 'flex',
           flexDirection: 'column',
           overflowX: 'hidden',
-          overflowY: isDashboardRoute ? 'hidden' : 'scroll',
-          scrollbarGutter: isDashboardRoute ? 'auto' : 'stable',
+          overflowY: isMapRoute ? 'hidden' : 'scroll',
+          scrollbarGutter: isMapRoute ? 'auto' : 'stable',
           scrollbarWidth: 'thin',
           '&::-webkit-scrollbar': {
             width: '10px'

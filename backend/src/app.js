@@ -5,8 +5,10 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const logger = require('./config/logger');
+const { ensureDatabaseReady } = require('./config/database');
 
 // Import routes
+const authRoutes = require('./routes/auth');
 const configRoutes = require('./routes/config');
 const branchRoutes = require('./routes/branches');
 const pocketRoutes = require('./routes/pocket');
@@ -23,6 +25,7 @@ const adminRoutes = require('./routes/admin');
 
 // Import middleware
 const { errorHandler } = require('./middleware/errorHandler');
+const { requireAuth, requireRole } = require('./middleware/auth');
 
 const isTestEnv = process.env.NODE_ENV === 'test';
 const queuesDisabled = process.env.DISABLE_QUEUES === 'true' || isTestEnv;
@@ -118,31 +121,28 @@ app.use(
 );
 
 // API routes
-// --- ORIGINAL BACKUP ---
-// app.use(`/api/${API_VERSION}/config`, configRoutes);
-// app.use(`/api/${API_VERSION}/branches`, branchRoutes);
-// app.use(`/api/${API_VERSION}/pocket`, pocketRoutes);
-// app.use(`/api/${API_VERSION}/nearest`, nearestRoutes);
-// app.use(`/api/${API_VERSION}/batch`, batchRoutes);
-// app.use(`/api/${API_VERSION}/territories`, territoriesRoutes);
-// app.use(`/api/${API_VERSION}/employees`, employeesRoutes);
-// app.use(`/api/${API_VERSION}/grids`, gridsRoutes);
-// app.use(`/api/${API_VERSION}/jobs`, jobsRoutes);
-// app.use(`/api/${API_VERSION}/templates`, templatesRoutes);
-// app.use(`/api/${API_VERSION}/customer-mappings`, customerMappingsRoutes);
-// app.use('/health', healthRoutes);
-app.use(`/api/${API_VERSION}/config`, configRoutes);
-app.use(`/api/${API_VERSION}/branches`, branchRoutes);
-app.use(`/api/${API_VERSION}/pocket`, pocketRoutes);
-app.use(`/api/${API_VERSION}/nearest`, nearestRoutes);
-app.use(`/api/${API_VERSION}/batch`, batchRoutes);
-app.use(`/api/${API_VERSION}/territories`, territoriesRoutes);
-app.use(`/api/${API_VERSION}/employees`, employeesRoutes);
-app.use(`/api/${API_VERSION}/grids`, gridsRoutes);
-app.use(`/api/${API_VERSION}/jobs`, jobsRoutes);
-app.use(`/api/${API_VERSION}/templates`, templatesRoutes);
-app.use(`/api/${API_VERSION}/customer-mappings`, customerMappingsRoutes);
-app.use(`/api/${API_VERSION}/admin`, adminRoutes);
+const requireEditorForMutations = (req, res, next) => {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    next();
+    return;
+  }
+
+  requireRole('editor')(req, res, next);
+};
+
+app.use(`/api/${API_VERSION}/auth`, authRoutes);
+app.use(`/api/${API_VERSION}/config`, requireAuth, requireRole('admin'), configRoutes);
+app.use(`/api/${API_VERSION}/branches`, requireAuth, requireEditorForMutations, branchRoutes);
+app.use(`/api/${API_VERSION}/pocket`, requireAuth, requireEditorForMutations, pocketRoutes);
+app.use(`/api/${API_VERSION}/nearest`, requireAuth, requireEditorForMutations, nearestRoutes);
+app.use(`/api/${API_VERSION}/batch`, requireAuth, requireEditorForMutations, batchRoutes);
+app.use(`/api/${API_VERSION}/territories`, requireAuth, requireEditorForMutations, territoriesRoutes);
+app.use(`/api/${API_VERSION}/employees`, requireAuth, requireEditorForMutations, employeesRoutes);
+app.use(`/api/${API_VERSION}/grids`, requireAuth, requireEditorForMutations, gridsRoutes);
+app.use(`/api/${API_VERSION}/jobs`, requireAuth, requireRole('admin'), jobsRoutes);
+app.use(`/api/${API_VERSION}/templates`, requireAuth, requireEditorForMutations, templatesRoutes);
+app.use(`/api/${API_VERSION}/customer-mappings`, requireAuth, requireEditorForMutations, customerMappingsRoutes);
+app.use(`/api/${API_VERSION}/admin`, requireAuth, requireRole('admin'), adminRoutes);
 app.use('/health', healthRoutes);
 
 // Root endpoint
@@ -198,14 +198,23 @@ app.use(errorHandler);
 
 let server = null;
 
-const startServer = () =>
-  app.listen(PORT, () => {
+const startServer = async () => {
+  await ensureDatabaseReady();
+  return app.listen(PORT, () => {
     logger.info(`Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
     logger.info(`API version: ${API_VERSION}`);
   });
+};
 
 if (require.main === module) {
-  server = startServer();
+  startServer()
+    .then((instance) => {
+      server = instance;
+    })
+    .catch((error) => {
+      logger.error('Unable to start server', { error: error.message });
+      process.exit(1);
+    });
 }
 
 // Graceful shutdown

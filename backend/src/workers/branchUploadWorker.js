@@ -171,9 +171,17 @@ async function processBranchUpload(job) {
       if (uploadMode === 'overwrite') {
         const existingBranchCountResult = await client.query('SELECT COUNT(*)::int AS count FROM branches');
         existingBranchCount = existingBranchCountResult.rows[0].count;
+        const scopedBranchIds = branches.map((branch) => branch.id);
 
         try {
-          const deleteMappingsResult = await client.query('DELETE FROM customer_pocket_mappings');
+          const deleteMappingsResult = await client.query(
+            `
+              DELETE FROM customer_pocket_mappings
+              WHERE existing_branch_id = ANY($1::text[])
+                 OR nearest_branch_id = ANY($1::text[])
+            `,
+            [scopedBranchIds]
+          );
           clearedMappings = deleteMappingsResult.rowCount || 0;
         } catch (err) {
           // Some environments may not have this table migrated yet.

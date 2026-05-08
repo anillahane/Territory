@@ -22,37 +22,70 @@ class MappingService {
    * @param {string|null} [mappings[].uploadedBranchCode] - Raw branch_code from uploaded file
    * @param {string|null} [mappings[].existingBranchId] - Existing mapped branch resolved from branch_code
    * @param {number|null} [mappings[].distanceCustomerToExistingBranch] - Distance from customer to existing branch (meters)
+   * @param {string|null} [mappings[].customerBucket] - Uploaded customer bucket/tag used for bucket-based allocation
    * @returns {Promise<{success: boolean, insertedCount: number, errors: Array<string>}>}
    */
-  async saveMappings(jobId, mappings) {
+  async saveMappings(jobId, mappings, options = {}) {
     if (!jobId || !mappings || !Array.isArray(mappings)) {
       throw new Error('Invalid parameters: jobId and mappings array are required');
     }
 
     if (mappings.length === 0) {
-      return { success: true, insertedCount: 0, errors: [] };
+      return { success: true, insertedCount: 0, errors: [], replacedCount: 0 };
+    }
+
+    const replaceExisting = Boolean(options.replaceExisting);
+    const wipeAll = Boolean(options.wipeAll);
+    const replaceScopeBranchIds = Array.isArray(options.replaceScopeBranchIds)
+      ? Array.from(new Set(options.replaceScopeBranchIds.map((value) => String(value || '').trim()).filter(Boolean)))
+      : [];
+
+    if (!options.client) {
+      return transaction(async (client) => this.saveMappings(jobId, mappings, {
+        ...options,
+        client,
+        replaceExisting,
+        wipeAll,
+        replaceScopeBranchIds
+      }));
     }
 
     const BATCH_SIZE = 1000;
     let totalInserted = 0;
     const errors = [];
+    let replacedCount = 0;
+    const client = options.client;
 
     logger.info('Starting bulk mapping insert', {
       jobId,
       totalMappings: mappings.length,
       batchSize: BATCH_SIZE,
+      replaceExisting,
+      wipeAll,
+      replaceScopeBranchIds,
     });
+
+    if (replaceExisting) {
+      replacedCount = await this._deleteExistingMappings(client, {
+        jobId,
+        wipeAll,
+        replaceScopeBranchIds
+      });
+    }
 
     // Process mappings in batches of 1000
     for (let i = 0; i < mappings.length; i += BATCH_SIZE) {
       const batch = mappings.slice(i, i + BATCH_SIZE);
       const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
       const totalBatches = Math.ceil(mappings.length / BATCH_SIZE);
+      const savepointName = `mapping_batch_${batchNumber}`;
 
       try {
-        const insertedCount = await this._insertBatch(jobId, batch);
+        await client.query(`SAVEPOINT ${savepointName}`);
+        const insertedCount = await this._insertBatch(jobId, batch, client.query.bind(client));
+        await client.query(`RELEASE SAVEPOINT ${savepointName}`);
         totalInserted += insertedCount;
-        
+
         logger.debug('Batch insert successful', {
           jobId,
           batchNumber,
@@ -71,27 +104,34 @@ class MappingService {
           stack: error.stack,
         });
         errors.push(errorMsg);
-
-        // Continue processing remaining batches
-        continue;
+        await client.query(`ROLLBACK TO SAVEPOINT ${savepointName}`);
+        await client.query(`RELEASE SAVEPOINT ${savepointName}`);
+        await this._recordBatchErrors(client, {
+          jobId,
+          batchNumber,
+          batch,
+          error
+        });
       }
     }
 
     const success = errors.length === 0;
-    
+
     logger.info('Bulk mapping insert completed', {
       jobId,
       totalMappings: mappings.length,
       totalInserted,
       success,
       errorCount: errors.length,
+      replacedCount,
     });
 
-    return {
-      success,
-      insertedCount: totalInserted,
-      errors,
-    };
+      return {
+        success,
+        insertedCount: totalInserted,
+        errors,
+        replacedCount,
+      };
   }
 
   /**
@@ -105,10 +145,12 @@ class MappingService {
    * @param {number} [pagination.pageSize=100] - Number of records per page
    * @returns {Promise<{data: Array<Object>, pagination: Object}>}
    */
-  async getMappings(filters = {}, pagination = {}) {
+  async getMappings(filters = {}, pagination = {}, options = {}) {
     const page = Math.max(1, pagination.page || 1);
     const pageSize = Math.max(1, Math.min(1000, pagination.pageSize || 100));
     const offset = (page - 1) * pageSize;
+    const includeStats = options.includeStats !== false;
+    const includeBranchImpact = includeStats && options.includeBranchImpact !== false;
 
     // Build WHERE clause
     const whereClauses = [];
@@ -141,10 +183,6 @@ class MappingService {
       FROM customer_pocket_mappings cpm
       ${whereClause}
     `;
-
-    const countResult = await query(countQuery, queryParams);
-    const totalRecords = parseInt(countResult.rows[0].total, 10);
-    const totalPages = Math.ceil(totalRecords / pageSize);
 
     const statsQuery = `
       WITH base_data AS (
@@ -216,9 +254,6 @@ class MappingService {
       FROM base_data
     `;
 
-    const statsResult = await query(statsQuery, queryParams);
-    const statsRow = statsResult.rows[0] || {};
-
     const branchImpactQuery = `
       SELECT
         cpm.existing_branch_id,
@@ -242,8 +277,6 @@ class MappingService {
       ORDER BY comparable_accounts DESC, cpm.existing_branch_id ASC
       LIMIT 500
     `;
-    const branchImpactResult = await query(branchImpactQuery, queryParams);
-
     // Fetch paginated data with branch name
     const dataQuery = `
       SELECT 
@@ -283,7 +316,23 @@ class MappingService {
     `;
 
     const dataParams = [...queryParams, pageSize, offset];
-    const dataResult = await query(dataQuery, dataParams);
+    const pendingQueries = [query(countQuery, queryParams), query(dataQuery, dataParams)];
+    if (includeStats) {
+      pendingQueries.push(query(statsQuery, queryParams));
+      if (includeBranchImpact) {
+        pendingQueries.push(query(branchImpactQuery, queryParams));
+      }
+    }
+
+    const [
+      countResult,
+      dataResult,
+      statsResult = { rows: [] },
+      branchImpactResult = { rows: [] }
+    ] = await Promise.all(pendingQueries);
+    const totalRecords = parseInt(countResult.rows[0].total, 10);
+    const totalPages = Math.ceil(totalRecords / pageSize);
+    const statsRow = statsResult.rows[0] || {};
 
     logger.debug('Retrieved customer mappings', {
       filters,
@@ -326,44 +375,48 @@ class MappingService {
         totalRecords,
         totalPages,
       },
-      stats: {
-        uniqueCustomers: parseInt(statsRow.unique_customers || '0', 10),
-        uniquePockets: parseInt(statsRow.unique_pockets || '0', 10),
-        uniqueBranches: parseInt(statsRow.unique_branches || '0', 10),
-        avgDistance: parseFloat(statsRow.avg_distance || '0'),
-        impact: {
-          comparableAccounts: parseInt(statsRow.comparable_accounts || '0', 10),
-          sameBranchAccounts: parseInt(statsRow.same_branch_accounts || '0', 10),
-          differentBranchAccounts: parseInt(statsRow.different_branch_accounts || '0', 10),
-          sameBranchCount: parseInt(statsRow.same_branch_count || '0', 10),
-          differentBranchCount: parseInt(statsRow.different_branch_count || '0', 10),
-          totalBranchCount: parseInt(statsRow.total_branch_count || '0', 10),
-          avgExistingBranchDistance: parseFloat(statsRow.avg_existing_branch_distance || '0'),
-          avgRevisedBranchDistance: parseFloat(statsRow.avg_revised_branch_distance || '0'),
-          avgDistanceReduction: parseFloat(statsRow.avg_distance_reduction || '0'),
-          totalDistanceReduction: parseFloat(statsRow.total_distance_reduction || '0'),
-          improvedAccounts: parseInt(statsRow.improved_accounts || '0', 10),
-          unchangedDistanceAccounts: parseInt(statsRow.unchanged_distance_accounts || '0', 10),
-          worsenedAccounts: parseInt(statsRow.worsened_accounts || '0', 10),
-          sameBranchAvgOriginalDistance: parseFloat(statsRow.same_branch_avg_original_distance || '0'),
-          sameBranchAvgChangedDistance: parseFloat(statsRow.same_branch_avg_changed_distance || '0'),
-          differentBranchAvgOriginalDistance: parseFloat(statsRow.different_branch_avg_original_distance || '0'),
-          differentBranchAvgChangedDistance: parseFloat(statsRow.different_branch_avg_changed_distance || '0'),
-          sameBranchAvgImpact: parseFloat(statsRow.same_branch_avg_impact || '0'),
-          differentBranchAvgImpact: parseFloat(statsRow.different_branch_avg_impact || '0'),
-        },
-        byExistingBranch: branchImpactResult.rows.map((row) => ({
-          existingBranchId: row.existing_branch_id,
-          existingBranchName: row.existing_branch_name,
-          comparableAccounts: parseInt(row.comparable_accounts || '0', 10),
-          sameBranchAccounts: parseInt(row.same_branch_accounts || '0', 10),
-          differentBranchAccounts: parseInt(row.different_branch_accounts || '0', 10),
-          avgExistingBranchDistance: parseFloat(row.avg_existing_branch_distance || '0'),
-          avgRevisedBranchDistance: parseFloat(row.avg_revised_branch_distance || '0'),
-          avgDistanceReduction: parseFloat(row.avg_distance_reduction || '0'),
-          totalDistanceReduction: parseFloat(row.total_distance_reduction || '0'),
-        })),
-      },
+      stats: includeStats
+        ? {
+            uniqueCustomers: parseInt(statsRow.unique_customers || '0', 10),
+            uniquePockets: parseInt(statsRow.unique_pockets || '0', 10),
+            uniqueBranches: parseInt(statsRow.unique_branches || '0', 10),
+            avgDistance: parseFloat(statsRow.avg_distance || '0'),
+            impact: {
+              comparableAccounts: parseInt(statsRow.comparable_accounts || '0', 10),
+              sameBranchAccounts: parseInt(statsRow.same_branch_accounts || '0', 10),
+              differentBranchAccounts: parseInt(statsRow.different_branch_accounts || '0', 10),
+              sameBranchCount: parseInt(statsRow.same_branch_count || '0', 10),
+              differentBranchCount: parseInt(statsRow.different_branch_count || '0', 10),
+              totalBranchCount: parseInt(statsRow.total_branch_count || '0', 10),
+              avgExistingBranchDistance: parseFloat(statsRow.avg_existing_branch_distance || '0'),
+              avgRevisedBranchDistance: parseFloat(statsRow.avg_revised_branch_distance || '0'),
+              avgDistanceReduction: parseFloat(statsRow.avg_distance_reduction || '0'),
+              totalDistanceReduction: parseFloat(statsRow.total_distance_reduction || '0'),
+              improvedAccounts: parseInt(statsRow.improved_accounts || '0', 10),
+              unchangedDistanceAccounts: parseInt(statsRow.unchanged_distance_accounts || '0', 10),
+              worsenedAccounts: parseInt(statsRow.worsened_accounts || '0', 10),
+              sameBranchAvgOriginalDistance: parseFloat(statsRow.same_branch_avg_original_distance || '0'),
+              sameBranchAvgChangedDistance: parseFloat(statsRow.same_branch_avg_changed_distance || '0'),
+              differentBranchAvgOriginalDistance: parseFloat(statsRow.different_branch_avg_original_distance || '0'),
+              differentBranchAvgChangedDistance: parseFloat(statsRow.different_branch_avg_changed_distance || '0'),
+              sameBranchAvgImpact: parseFloat(statsRow.same_branch_avg_impact || '0'),
+              differentBranchAvgImpact: parseFloat(statsRow.different_branch_avg_impact || '0'),
+            },
+            byExistingBranch: includeBranchImpact
+              ? branchImpactResult.rows.map((row) => ({
+                  existingBranchId: row.existing_branch_id,
+                  existingBranchName: row.existing_branch_name,
+                  comparableAccounts: parseInt(row.comparable_accounts || '0', 10),
+                  sameBranchAccounts: parseInt(row.same_branch_accounts || '0', 10),
+                  differentBranchAccounts: parseInt(row.different_branch_accounts || '0', 10),
+                  avgExistingBranchDistance: parseFloat(row.avg_existing_branch_distance || '0'),
+                  avgRevisedBranchDistance: parseFloat(row.avg_revised_branch_distance || '0'),
+                  avgDistanceReduction: parseFloat(row.avg_distance_reduction || '0'),
+                  totalDistanceReduction: parseFloat(row.total_distance_reduction || '0'),
+                }))
+              : [],
+          }
+        : undefined,
     };
   }
 
@@ -428,6 +481,69 @@ class MappingService {
     }
   }
 
+  async _deleteExistingMappings(client, { jobId, wipeAll, replaceScopeBranchIds }) {
+    if (wipeAll) {
+      const deleteResult = await client.query('DELETE FROM customer_pocket_mappings');
+      logger.warn('Performed global mapping wipe before replacement upload', {
+        jobId,
+        deletedCount: deleteResult.rowCount || 0
+      });
+      return Number(deleteResult.rowCount || 0);
+    }
+
+    if (!Array.isArray(replaceScopeBranchIds) || replaceScopeBranchIds.length === 0) {
+      throw new Error('replaceExisting requires scoped branch IDs when confirmWipeAll is false');
+    }
+
+    const deleteResult = await client.query(
+      `
+        DELETE FROM customer_pocket_mappings
+        WHERE existing_branch_id = ANY($1::text[])
+           OR nearest_branch_id = ANY($1::text[])
+      `,
+      [replaceScopeBranchIds]
+    );
+
+    logger.info('Performed scoped mapping wipe before replacement upload', {
+      jobId,
+      replaceScopeBranchIds,
+      deletedCount: deleteResult.rowCount || 0
+    });
+
+    return Number(deleteResult.rowCount || 0);
+  }
+
+  async _recordBatchErrors(client, { jobId, batchNumber, batch, error }) {
+    await client.query(
+      `
+        INSERT INTO job_errors (job_id, customer_id, batch_number, error_message, payload)
+        SELECT
+          $1::varchar,
+          row_data.customer_id::varchar,
+          $2::integer,
+          $3::text,
+          row_data.payload::jsonb
+        FROM jsonb_to_recordset($4::jsonb) AS row_data(customer_id text, payload jsonb)
+      `,
+      [
+        jobId,
+        batchNumber,
+        error.message,
+        JSON.stringify(batch.map((mapping) => ({
+          customer_id: mapping.customerId,
+          payload: {
+            customerId: mapping.customerId,
+            customerLat: mapping.customerLat,
+            customerLon: mapping.customerLon,
+            pocketId: mapping.pocketId,
+            nearestBranchId: mapping.nearestBranchId,
+            existingBranchId: mapping.existingBranchId || null
+          }
+        })))
+      ]
+    );
+  }
+
   /**
    * Insert a single batch of mappings using parameterized query
    * @private
@@ -435,13 +551,13 @@ class MappingService {
    * @param {Array<Object>} batch - Batch of mapping objects
    * @returns {Promise<number>} Number of records inserted
    */
-  async _insertBatch(jobId, batch) {
+  async _insertBatch(jobId, batch, executeQuery = query) {
     // Build parameterized query for bulk insert
     const values = [];
     const placeholders = [];
     
     batch.forEach((mapping, index) => {
-      const baseIndex = index * 12; // 12 columns per row
+      const baseIndex = index * 13; // 13 columns per row
       
       // Add values for this row
       values.push(
@@ -456,10 +572,11 @@ class MappingService {
         mapping.distanceCustomerToBranch,
         mapping.uploadedBranchCode || null,
         mapping.existingBranchId || null,
-        mapping.distanceCustomerToExistingBranch ?? null
+        mapping.distanceCustomerToExistingBranch ?? null,
+        mapping.customerBucket || null
       );
       
-      // Create placeholder string for this row: ($1, $2, ..., $12)
+      // Create placeholder string for this row: ($1, $2, ..., $13)
       const rowPlaceholders = [
         `$${baseIndex + 1}`,
         `$${baseIndex + 2}`,
@@ -473,15 +590,16 @@ class MappingService {
         `$${baseIndex + 10}`,
         `$${baseIndex + 11}`,
         `$${baseIndex + 12}`,
+        `$${baseIndex + 13}`,
       ];
       
       placeholders.push(`(${rowPlaceholders.join(', ')})`);
     });
 
-    const queryText = `
-      INSERT INTO customer_pocket_mappings (
-        job_id,
-        customer_id,
+      const queryText = `
+        INSERT INTO customer_pocket_mappings (
+          job_id,
+          customer_id,
         customer_lat,
         customer_lon,
         pocket_id,
@@ -491,13 +609,28 @@ class MappingService {
         distance_customer_to_branch,
         uploaded_branch_code,
         existing_branch_id,
-        distance_customer_to_existing_branch
-      )
-      VALUES ${placeholders.join(', ')}
-    `;
+          distance_customer_to_existing_branch,
+          customer_bucket
+        )
+        VALUES ${placeholders.join(', ')}
+        ON CONFLICT (customer_id) DO UPDATE SET
+          job_id = EXCLUDED.job_id,
+          customer_lat = EXCLUDED.customer_lat,
+          customer_lon = EXCLUDED.customer_lon,
+          pocket_id = EXCLUDED.pocket_id,
+          distance_customer_to_pocket = EXCLUDED.distance_customer_to_pocket,
+          nearest_branch_id = EXCLUDED.nearest_branch_id,
+          distance_pocket_to_branch = EXCLUDED.distance_pocket_to_branch,
+          distance_customer_to_branch = EXCLUDED.distance_customer_to_branch,
+          uploaded_branch_code = EXCLUDED.uploaded_branch_code,
+          existing_branch_id = EXCLUDED.existing_branch_id,
+          distance_customer_to_existing_branch = EXCLUDED.distance_customer_to_existing_branch,
+          customer_bucket = EXCLUDED.customer_bucket,
+          updated_at = CURRENT_TIMESTAMP
+      `;
 
     try {
-      const result = await query(queryText, values);
+      const result = await executeQuery(queryText, values);
       return result.rowCount;
     } catch (error) {
       // Log detailed error information

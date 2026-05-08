@@ -242,6 +242,10 @@ describe('Geometry Module', () => {
       const result2 = encodePocketId(12.5, 75.3, config);
       expect(result1.pocketId).toBe(result2.pocketId);
     });
+
+    test('should reject coordinates that resolve outside the supported alphabet bounds', () => {
+      expect(() => encodePocketId(7.0, 68.0, config)).toThrow(/outside supported pocket id bounds/i);
+    });
   });
 
   describe('decodePocketId', () => {

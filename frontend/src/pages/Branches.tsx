@@ -41,7 +41,26 @@ interface Branch {
   pocket_id: string;
   created_at: string;
   updated_at: string;
+  coverage_status?: Record<string, {
+    status: 'ready' | 'stale' | 'missing' | 'failed';
+    sourceJobId?: string | null;
+    computedAt?: string | null;
+  }>;
 }
+
+const COVERAGE_STATUS_LABELS: Record<string, string> = {
+  current_ownership: 'Current',
+  closest_branch: 'Closest',
+  strongest_presence: 'Presence',
+  mutually_exclusive: 'Exclusive'
+};
+
+const COVERAGE_STATUS_CHIP_PROPS: Record<string, { color: 'success' | 'warning' | 'default' | 'error'; variant: 'filled' | 'outlined' }> = {
+  ready: { color: 'success', variant: 'filled' },
+  stale: { color: 'warning', variant: 'filled' },
+  missing: { color: 'default', variant: 'outlined' },
+  failed: { color: 'error', variant: 'filled' }
+};
 
 export default function Branches() {
   const { setError, setSuccess } = useStore();
@@ -81,6 +100,7 @@ export default function Branches() {
             pocket_id: branch.pocket_id || branch.pocketId,
             created_at: branch.created_at || branch.createdAt,
             updated_at: branch.updated_at || branch.updatedAt,
+            coverage_status: branch.coverage_status || branch.coverageStatus || {},
           }))
         : [];
       setBranches(normalizedBranches);
@@ -357,6 +377,39 @@ export default function Branches() {
           sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}
         />
       ),
+    },
+    {
+      field: 'coverage_status',
+      headerName: 'Coverage Data Status',
+      width: 420,
+      sortable: false,
+      renderCell: (params) => {
+        const coverageStatus = (params.row.coverage_status || {}) as Branch['coverage_status'];
+        return (
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, py: 0.5 }}>
+            {Object.entries(COVERAGE_STATUS_LABELS).map(([basisType, label]) => {
+              const entry = coverageStatus?.[basisType] || { status: 'missing' };
+              const chipProps = COVERAGE_STATUS_CHIP_PROPS[entry.status] || COVERAGE_STATUS_CHIP_PROPS.missing;
+              const tooltipParts = [
+                `${label}: ${entry.status}`,
+                entry.sourceJobId ? `Job: ${entry.sourceJobId}` : null,
+                entry.computedAt ? `Updated: ${new Date(entry.computedAt).toLocaleString()}` : null
+              ].filter(Boolean);
+
+              return (
+                <Tooltip key={`${params.row.id}-${basisType}`} title={tooltipParts.join(' | ')}>
+                  <Chip
+                    size="small"
+                    label={`${label}: ${entry.status}`}
+                    color={chipProps.color}
+                    variant={chipProps.variant}
+                  />
+                </Tooltip>
+              );
+            })}
+          </Box>
+        );
+      }
     },
     {
       field: 'actions',

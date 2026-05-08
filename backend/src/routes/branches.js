@@ -6,10 +6,57 @@ const { v4: uuidv4 } = require('uuid');
 const { query, transaction } = require('../config/database');
 const { encodePocketId } = require('../utils/geometry');
 const { asyncHandler, AppError } = require('../middleware/errorHandler');
+const { requireRole } = require('../middleware/auth');
 const { branchUploadQueue } = require('../config/queue');
 const logger = require('../config/logger');
+const { validateUploadedExcelFile } = require('../utils/fileValidation');
 
 const router = express.Router();
+const BRANCH_COVERAGE_BASIS_TYPES = [
+  'current_ownership',
+  'closest_branch',
+  'strongest_presence',
+  'mutually_exclusive'
+];
+
+const getCoverageDatasetStatus = ({
+  datasetRow,
+  latestJobId,
+  branchUpdatedAt
+}) => {
+  if (!datasetRow) {
+    return {
+      status: 'missing',
+      sourceJobId: null,
+      computedAt: null
+    };
+  }
+
+  if (String(datasetRow.status || '') !== 'ready') {
+    return {
+      status: 'failed',
+      sourceJobId: datasetRow.source_job_id || null,
+      computedAt: datasetRow.computed_at || null
+    };
+  }
+
+  const computedAt = datasetRow.computed_at ? new Date(datasetRow.computed_at) : null;
+  const updatedAt = branchUpdatedAt ? new Date(branchUpdatedAt) : null;
+  const isStaleForJob = latestJobId && String(datasetRow.source_job_id || '') !== String(latestJobId);
+  const isStaleForBranchUpdate = (
+    computedAt
+    && updatedAt
+    && !Number.isNaN(computedAt.getTime())
+    && !Number.isNaN(updatedAt.getTime())
+    && computedAt.getTime() < updatedAt.getTime()
+  );
+
+  return {
+    status: (isStaleForJob || isStaleForBranchUpdate) ? 'stale' : 'ready',
+    sourceJobId: datasetRow.source_job_id || null,
+    computedAt: datasetRow.computed_at || null
+  };
+};
 
 // Configure multer for file uploads
 const upload = multer({
@@ -45,11 +92,14 @@ const branchSchema = Joi.object({
  */
 router.post(
   '/upload',
+  requireRole('admin'),
   upload.single('file'),
   asyncHandler(async (req, res) => {
     if (!req.file) {
       throw new AppError('No file uploaded', 400, 'NO_FILE');
     }
+
+    const validation = await validateUploadedExcelFile(req.file);
 
     const uploadModeRaw = String(req.body?.uploadMode || 'overwrite')
       .trim()
@@ -72,7 +122,8 @@ router.post(
       job = await branchUploadQueue.add(
         {
           fileBuffer: req.file.buffer,
-          fileName: req.file.originalname,
+          fileName: validation.sanitizedFileName,
+          rowCount: validation.rowCount,
           uploadMode,
         },
         {
@@ -93,7 +144,7 @@ router.post(
 
     logger.info('Branch upload job queued', {
       jobId: job.id,
-      fileName: req.file.originalname,
+      fileName: validation.sanitizedFileName,
       fileSize: req.file.size,
       uploadMode,
     });
@@ -103,6 +154,7 @@ router.post(
       message: 'Upload queued for processing',
       jobId: job.id,
       status: 'queued',
+      rowCount: validation.rowCount,
       uploadMode,
       statusUrl: `/api/v1/jobs/${job.id}`,
     });
@@ -161,6 +213,15 @@ router.get(
     const limit = Number.isFinite(parsedLimit) ? Math.min(500, Math.max(1, parsedLimit)) : 100;
     const offset = Number.isFinite(parsedOffset) ? Math.max(0, parsedOffset) : 0;
     const search = String(req.query.search || '').trim();
+    const requestedBasisType = String(req.query.basisType || '').trim().toLowerCase();
+
+    if (requestedBasisType && !BRANCH_COVERAGE_BASIS_TYPES.includes(requestedBasisType)) {
+      throw new AppError(
+        `Invalid basisType. Use one of: ${BRANCH_COVERAGE_BASIS_TYPES.join(', ')}`,
+        400,
+        'INVALID_BASIS_TYPE'
+      );
+    }
 
     const bboxRaw = String(req.query.bbox || '').trim();
     let bboxFilter = null;
@@ -229,8 +290,94 @@ router.get(
     const countResult = await query(countQuery, baseParams);
     const total = Number.parseInt(String(countResult.rows[0].total || '0'), 10);
 
+    let latestCoverageJobId = null;
+    let coverageDatasetByBranchId = new Map();
+    try {
+      const latestCoverageJobResult = await query(
+        `
+          SELECT cpm.job_id
+          FROM customer_pocket_mappings cpm
+          JOIN jobs j ON j.job_id = cpm.job_id
+          ORDER BY j.completed_at DESC NULLS LAST, cpm.created_at DESC
+          LIMIT 1
+        `
+      );
+      latestCoverageJobId = latestCoverageJobResult.rows[0]?.job_id || null;
+
+      const branchIds = result.rows.map((row) => String(row.id || '').trim()).filter(Boolean);
+      if (branchIds.length > 0) {
+        const coverageResult = await query(
+          `
+            SELECT
+              branch_id,
+              basis_type,
+              status,
+              source_job_id,
+              computed_at,
+              native_customer_count,
+              catchment_customer_count,
+              total_customer_count,
+              farthest_customer_distance_km
+            FROM branch_coverage_datasets
+            WHERE branch_id = ANY($1::text[])
+          `,
+          [branchIds]
+        );
+
+        coverageDatasetByBranchId = coverageResult.rows.reduce((accumulator, row) => {
+          const branchId = String(row.branch_id || '').trim();
+          const basisType = String(row.basis_type || '').trim();
+          if (!branchId || !basisType) {
+            return accumulator;
+          }
+
+          if (!accumulator.has(branchId)) {
+            accumulator.set(branchId, new Map());
+          }
+
+          accumulator.get(branchId).set(basisType, row);
+          return accumulator;
+        }, new Map());
+      }
+    } catch (error) {
+      if (!(error && (error.code === '42P01' || error.code === '42703'))) {
+        throw error;
+      }
+    }
+
     res.json({
       branches: result.rows.map((row) => ({
+        ...(requestedBasisType ? (() => {
+          const branchCoverageRows = coverageDatasetByBranchId.get(String(row.id || '').trim()) || new Map();
+          const datasetRow = branchCoverageRows.get(requestedBasisType) || null;
+          const datasetStatus = getCoverageDatasetStatus({
+            datasetRow,
+            latestJobId: latestCoverageJobId,
+            branchUpdatedAt: row.updated_at
+          });
+
+          return {
+            coverageMetrics: datasetRow ? {
+              basisType: requestedBasisType,
+              status: datasetStatus.status,
+              sourceJobId: datasetStatus.sourceJobId,
+              computedAt: datasetStatus.computedAt,
+              nativeCustomerCount: Number(datasetRow.native_customer_count || 0),
+              catchmentCustomerCount: Number(datasetRow.catchment_customer_count || 0),
+              totalCustomerCount: Number(datasetRow.total_customer_count || 0),
+              farthestCustomerDistanceKm: Number(datasetRow.farthest_customer_distance_km || 0)
+            } : {
+              basisType: requestedBasisType,
+              status: datasetStatus.status,
+              sourceJobId: datasetStatus.sourceJobId,
+              computedAt: datasetStatus.computedAt,
+              nativeCustomerCount: 0,
+              catchmentCustomerCount: 0,
+              totalCustomerCount: 0,
+              farthestCustomerDistanceKm: 0
+            }
+          };
+        })() : {}),
         id: row.id,
         city: row.city,
         lat: row.lat,
@@ -238,6 +385,15 @@ router.get(
         pocketId: row.pocket_id,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        coverageStatus: BRANCH_COVERAGE_BASIS_TYPES.reduce((accumulator, basisType) => {
+          const branchCoverageRows = coverageDatasetByBranchId.get(String(row.id || '').trim()) || new Map();
+          accumulator[basisType] = getCoverageDatasetStatus({
+            datasetRow: branchCoverageRows.get(basisType) || null,
+            latestJobId: latestCoverageJobId,
+            branchUpdatedAt: row.updated_at
+          });
+          return accumulator;
+        }, {}),
       })),
       pagination: {
         total,
@@ -287,6 +443,7 @@ router.get(
  */
 router.post(
   '/',
+  requireRole('admin'),
   asyncHandler(async (req, res) => {
     // Validate request body
     const { error, value } = branchSchema.validate(req.body);
@@ -356,6 +513,7 @@ router.post(
  */
 router.put(
   '/:id',
+  requireRole('admin'),
   asyncHandler(async (req, res) => {
     const { id } = req.params;
 
@@ -426,6 +584,7 @@ router.put(
  */
 router.delete(
   '/:id',
+  requireRole('admin'),
   asyncHandler(async (req, res) => {
     const { id } = req.params;
 

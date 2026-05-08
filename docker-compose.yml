@@ -6,9 +6,9 @@ services:
     image: postgis/postgis:15-3.3
     container_name: location-pockets-db
     environment:
-      POSTGRES_DB: location_pockets
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${DB_NAME:-location_pockets}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     ports:
       - "5434:5432"
     volumes:
@@ -44,12 +44,16 @@ services:
       PORT: 3000
       DB_HOST: postgres
       DB_PORT: 5432
-      DB_NAME: location_pockets
-      DB_USER: postgres
-      DB_PASSWORD: postgres
+      DB_NAME: ${DB_NAME:-location_pockets}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       CORS_ORIGIN: http://localhost:5173
+      JWT_SECRET: ${JWT_SECRET}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      SCAN_HOOK_URL: ${SCAN_HOOK_URL:-}
     ports:
       - "3000:3000"
     volumes:
@@ -87,7 +91,7 @@ services:
     container_name: location-pockets-python-worker
     environment:
       REDIS_URL: redis://redis:6379
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/location_pockets
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-location_pockets}
       UPLOAD_DIR: /app/uploads
       PYTHON_WORKER_THRESHOLD: 5000
     volumes:

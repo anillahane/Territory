@@ -56,7 +56,7 @@ export const DASHBOARD_GRID_LEVELS: Array<{ id: DashboardGridLevelId; label: str
 const defaultDashboardMapPanel: DashboardMapPanel = {
   zoomLevel: 4.5,
   center: [78.9629, 20.5937],
-  gridOverlay: '500 km, 100 km, 20 km',
+  gridOverlay: '20 km',
   mapLoaded: false,
   mapError: null
 };
@@ -148,7 +148,7 @@ export const useStore = create<AppState>((set) => ({
   clearCustomerDots: () => set({ customerDots: [] }),
 
   // Map state
-  selectedGridLevel: 0, // 500km
+  selectedGridLevel: 2, // 20km
   setSelectedGridLevel: (level) => set({ selectedGridLevel: level }),
   showGrid: true,
   setShowGrid: (show) => set({ showGrid: show }),
@@ -188,11 +188,11 @@ export const useStore = create<AppState>((set) => ({
       },
     })),
   resetDashboardMapPanel: () => set({ dashboardMapPanel: defaultDashboardMapPanel }),
-  dashboardSelectedGridLevels: DASHBOARD_GRID_LEVELS.map((level) => level.id),
+  dashboardSelectedGridLevels: ['20km'],
   toggleDashboardGridLevel: (id) =>
     set((state) => ({
-      dashboardSelectedGridLevels: state.dashboardSelectedGridLevels.includes(id)
-        ? state.dashboardSelectedGridLevels.filter((existingId) => existingId !== id)
-        : [...state.dashboardSelectedGridLevels, id]
+      dashboardSelectedGridLevels: state.dashboardSelectedGridLevels[0] === id
+        ? state.dashboardSelectedGridLevels
+        : [id]
     })),
 }));

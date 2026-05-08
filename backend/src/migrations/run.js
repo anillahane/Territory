@@ -5,8 +5,10 @@ const { pool } = require('../config/database');
 const logger = require('../config/logger');
 
 async function runMigrations() {
+  const client = await pool.connect();
   try {
     logger.info('Starting database migrations...');
+    await client.query('SET statement_timeout = 0');
 
     const migrationFiles = fs
       .readdirSync(__dirname)
@@ -17,7 +19,7 @@ async function runMigrations() {
       const migrationPath = path.join(__dirname, migrationFileName);
       const sql = fs.readFileSync(migrationPath, 'utf8');
       logger.info(`Running migration: ${migrationFileName}`);
-      await pool.query(sql);
+      await client.query(sql);
     }
 
     logger.info('Database migrations completed successfully');
@@ -25,6 +27,8 @@ async function runMigrations() {
   } catch (error) {
     logger.error('Migration failed:', error);
     process.exit(1);
+  } finally {
+    client.release();
   }
 }
 

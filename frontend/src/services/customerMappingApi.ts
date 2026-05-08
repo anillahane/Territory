@@ -51,6 +51,8 @@ class CustomerMappingApiService {
       if (params.jobId) queryParams.jobId = params.jobId;
       if (params.customerId) queryParams.customerId = params.customerId;
       if (params.pocketId) queryParams.pocketId = params.pocketId;
+      if (params.includeStats !== undefined) queryParams.includeStats = params.includeStats;
+      if (params.includeBranchImpact !== undefined) queryParams.includeBranchImpact = params.includeBranchImpact;
 
       const response = await this.client.get<MappingsApiResponse>(
         '/customer-mappings',
